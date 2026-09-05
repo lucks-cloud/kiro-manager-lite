@@ -138,6 +138,57 @@ export interface ParsedImport {
   fullData?: AccountExportData
 }
 
+/** 取第一个非空字段，用于兼容各家导出的不同命名 */
+function pick(entry: Record<string, unknown>, ...names: string[]): string | undefined {
+  for (const name of names) {
+    const value = entry[name]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+    if (typeof value === 'number') return String(value)
+  }
+  return undefined
+}
+
+/**
+ * 解析一条精简 JSON 记录。
+ *
+ * 各家导出的字段命名差别很大：camelCase、snake_case、把登录方式写成 login_provider，
+ * 还可能把原始 token 文件整块塞在 kiro_auth_token_raw 里。登录方式认不出来会被当成
+ * BuilderId，进而按 IdC 要求 clientId/secret——社交账号本来就没有这两个值，
+ * 于是整批导入全部「校验失败」。所以这里把已知别名一次性覆盖掉。
+ */
+function parseJsonEntry(raw: Record<string, unknown>): AccountImportItem {
+  // 有些导出把完整的 kiro-auth-token.json 原样嵌在里面，那份里的字段最权威
+  const nested = (raw.kiro_auth_token_raw ?? raw.kiroAuthTokenRaw ?? {}) as Record<string, unknown>
+  const entry = { ...nested, ...raw }
+
+  const provider = pick(
+    entry,
+    'provider',
+    'idp',
+    'login_provider',
+    'loginProvider',
+    'login_option',
+    'loginOption'
+  )
+  const authMethod = pick(entry, 'authMethod', 'auth_method')
+
+  return {
+    email: pick(entry, 'email', 'login_hint', 'loginHint'),
+    password: pick(entry, 'password'),
+    refreshToken: pick(entry, 'refreshToken', 'refresh_token') || '',
+    clientId: pick(entry, 'clientId', 'client_id'),
+    clientSecret: pick(entry, 'clientSecret', 'client_secret'),
+    region: pick(entry, 'region', 'authRegion', 'auth_region'),
+    /*
+     * provider 缺失时按 authMethod 兜底：social 说明是社交登录，
+     * 具体是 GitHub 还是 Google 无从判断，取 Google 只为让它走 social 分支
+     * （两者刷新都只用 refreshToken，走同一个 Kiro auth service）。
+     */
+    provider: provider || (authMethod?.toLowerCase() === 'social' ? 'Google' : undefined),
+    nickname: pick(entry, 'nickname')
+  }
+}
+
 /** 统一解析导入内容：完整 JSON / 精简 JSON 数组 / 卡密 / CSV / TXT */
 export function parseImportContent(raw: string): ParsedImport {
   const text = raw.trim()
@@ -153,18 +204,7 @@ export function parseImportContent(raw: string): ParsedImport {
 
     // 精简 JSON 数组 / 单对象
     const list = Array.isArray(parsed) ? parsed : [parsed]
-    const items = list
-      .map((entry: Record<string, string>) => ({
-        email: entry.email,
-        password: entry.password,
-        refreshToken: entry.refreshToken || entry.refresh_token || '',
-        clientId: entry.clientId || entry.client_id,
-        clientSecret: entry.clientSecret || entry.client_secret,
-        region: entry.region,
-        provider: entry.provider || entry.idp,
-        nickname: entry.nickname
-      }))
-      .filter((item) => !!item.refreshToken)
+    const items = list.map(parseJsonEntry).filter((item) => !!item.refreshToken)
     return { items }
   } catch {
     // 非 JSON：CSV / 卡密 / TXT

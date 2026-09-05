@@ -5,9 +5,10 @@
  */
 import { computed, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
-import { CodeOutlined } from '@ant-design/icons-vue'
+import { CodeOutlined, CopyOutlined } from '@ant-design/icons-vue'
 import { useAccountsStore } from '@/stores/accounts'
 import { useSettingsStore } from '@/stores/settings'
+import { copyText } from '@/utils/ui'
 import { parseImportContent } from '@/utils/transfer'
 import { DEFAULT_SETTINGS } from '@shared/types'
 import type { BatchResult } from '@shared/types'
@@ -50,6 +51,13 @@ const visibleMessages = computed(() => result.value?.messages.slice(0, MAX_VISIB
 const hiddenMessageCount = computed(() =>
   Math.max(0, (result.value?.messages.length ?? 0) - MAX_VISIBLE_MESSAGES)
 )
+
+/** 复制完整日志：界面只渲染前 200 条，但排查问题需要全部内容 */
+function copyLog(): void {
+  const lines = result.value?.messages ?? []
+  if (!lines.length) return
+  copyText(lines.join('\n'), `已复制 ${lines.length} 条日志`)
+}
 
 const importConcurrency = computed(
   () => settingsStore.settings.importConcurrency || DEFAULT_SETTINGS.importConcurrency
@@ -148,7 +156,14 @@ async function submit(): Promise<void> {
 
     <template v-if="result?.messages.length">
       <a-divider style="margin: 14px 0 10px" />
-      <div class="section-title">导入日志</div>
+      <div class="log-head">
+        <span class="section-title">导入日志</span>
+        <!-- 复制的是全部日志，不只是界面上截断显示的那 200 条 -->
+        <a-button type="text" size="small" @click="copyLog">
+          <template #icon><CopyOutlined /></template>
+          复制全部
+        </a-button>
+      </div>
       <div class="token-box mono" style="max-height: 140px">
         <div v-for="(line, i) in visibleMessages" :key="i">{{ line }}</div>
         <div v-if="hiddenMessageCount" class="muted">
@@ -160,6 +175,14 @@ async function submit(): Promise<void> {
 </template>
 
 <style scoped>
+/* 标题与复制按钮同一行：标题左、按钮右 */
+.log-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .modal-title {
   display: inline-flex;
   align-items: center;

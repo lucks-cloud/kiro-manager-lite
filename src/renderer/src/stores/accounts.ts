@@ -387,7 +387,15 @@ export const useAccountsStore = defineStore('accounts', () => {
 
     try {
       await runPool(valid, limit, async (item, index) => {
-        const idp = normalizeIdp(item.provider)
+        /*
+         * 登录方式认不出来时的兜底：没有 clientId / clientSecret 的账号不可能是 IdC
+         * （IdC 刷新必须带这两个值），只能是社交登录。否则会被当成 BuilderId 送去校验，
+         * 直接报「IdC 账号需要同时提供 Client ID 与 Client Secret」而整批失败。
+         */
+        const idp =
+          !item.provider && !item.clientId && !item.clientSecret
+            ? 'Google'
+            : normalizeIdp(item.provider)
         try {
           const res = await window.api.verifyCredentials({
             refreshToken: item.refreshToken,

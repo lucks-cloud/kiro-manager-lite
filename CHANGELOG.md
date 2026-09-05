@@ -3,6 +3,34 @@
 本文件记录 Kiro Manager Lite 的版本变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.0.20] - 2026-09-05
+
+本版本修复社交登录账号批量导入时被误判为 IdC、整批报「需要同时提供 Client ID 与 Client Secret」
+的问题，并为导入日志补上一键复制。
+
+### 修复
+
+#### 社交登录账号批量导入整批失败
+
+- 部分导出文件用 snake_case 命名，登录方式写在 `login_provider` 而非 `provider` / `idp`。
+  此前解析不到该字段就默认按 BuilderId 处理，进而以 IdC 口径校验并要求
+  clientId / clientSecret——社交账号本就没有这两个值，于是整批「校验失败」
+- 精简 JSON 的字段解析改为按别名取值，一次覆盖已知写法：
+  登录方式认 `provider` / `idp` / `login_provider` / `loginProvider` / `login_option`，
+  refreshToken、clientId、clientSecret、region、email 也同时兼容 camelCase 与 snake_case
+- 这类导出常把整份 `kiro-auth-token.json` 原样嵌在 `kiro_auth_token_raw` 里，
+  现会先展开该对象再用外层字段覆盖；登录方式仍缺失时按其中的 `authMethod` 兜底
+- 兜底判定：即便登录方式仍无法识别，只要没有 clientId / clientSecret 就按社交登录处理。
+  IdC 刷新必须带这两个值，缺失时不可能是 IdC——这样遇到未见过的导出格式也不会整批失败
+
+### 新增
+
+- 导入日志标题右侧新增「复制全部」，一键复制完整日志。界面为控制 DOM 数量只渲染前 200 条，
+  但复制取的是全量内容并提示真实条数，便于排查被截断的那部分
+- 从文件导入与粘贴文本导入两个弹窗同步支持
+
+> 安装遇到问题？请查看 [安装说明与常见问题](./INSTALL.md)。
+
 ## [1.0.19] - 2026-08-25
 
 本版本新增账号 API Key 删除与批量设置备注，修复 Builder ID 生成 / 列表 API Key 报错、
@@ -1010,6 +1038,7 @@ Key 列表，同时把账号卡片与工具栏上并列的两个刷新入口收�
 
 > 安装遇到问题？请查看 [安装说明与常见问题](./INSTALL.md)。
 
+[1.0.20]: https://github.com/lucks-cloud/kiro-manager-lite/releases/tag/v1.0.20
 [1.0.19]: https://github.com/lucks-cloud/kiro-manager-lite/releases/tag/v1.0.19
 [1.0.18]: https://github.com/lucks-cloud/kiro-manager-lite/releases/tag/v1.0.18
 [1.0.17]: https://github.com/lucks-cloud/kiro-manager-lite/releases/tag/v1.0.17
