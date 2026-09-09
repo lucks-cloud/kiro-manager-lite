@@ -23,7 +23,11 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
     build: {
       rollupOptions: {
-        input: { index: resolve(__dirname, 'src/preload/index.ts') }
+        input: {
+          index: resolve(__dirname, 'src/preload/index.ts'),
+          // 内置浏览器顶部工具条的 preload，与主窗口的 preload 完全隔离
+          portalBar: resolve(__dirname, 'src/preload/portalBar.ts')
+        }
       }
     }
   },

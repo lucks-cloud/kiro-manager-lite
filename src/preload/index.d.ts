@@ -15,6 +15,7 @@ import type {
   ChatTestResult,
   CreateApiKeyResult,
   DeleteApiKeyResult,
+  ExportBundle,
   IpcResult,
   KeyGatewayConflict,
   KeyGatewayData,
@@ -196,6 +197,11 @@ export interface Api {
     sheet: XlsxSheet,
     filename: string
   ) => Promise<IpcResult<{ saved: boolean; path?: string }>>
+  /** 打包导出：把多个文件装进一个 zip 落盘 */
+  exportToZip: (
+    bundle: ExportBundle,
+    filename: string
+  ) => Promise<IpcResult<{ saved: boolean; path?: string; count?: number }>>
   importFromFile: () => Promise<IpcResult<ImportedFile | null>>
   writeClipboard: (text: string) => void
 

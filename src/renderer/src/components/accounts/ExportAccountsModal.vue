@@ -4,17 +4,27 @@ import { message } from 'ant-design-vue'
 import {
   CodeOutlined,
   CopyOutlined,
+  DownOutlined,
   DownloadOutlined,
   FileOutlined,
   FileTextOutlined,
+  FileZipOutlined,
   KeyOutlined,
   SnippetsOutlined,
   TableOutlined
 } from '@ant-design/icons-vue'
 import { useAccountsStore } from '@/stores/accounts'
 import { useSettingsStore } from '@/stores/settings'
-import { buildExportContent, exportFilename, type ExportFormat } from '@/utils/transfer'
+import {
+  buildExportContent,
+  buildSplitBundle,
+  bundleFilename,
+  exportFilename,
+  type ExportFormat
+} from '@/utils/transfer'
+import { toPlain } from '@/utils/ipc'
 import { copyText } from '@/utils/ui'
+import type { ExportBundle } from '@shared/types'
 
 /**
  * selectedIds 为调用方当前勾选的账号。
@@ -29,6 +39,8 @@ const settingsStore = useSettingsStore()
 
 const format = ref<ExportFormat>('json')
 const includeCredentials = ref(true)
+/** 打包导出进行中：账号多时生成 zip 要一会儿，按钮要有反馈 */
+const zipping = ref(false)
 
 /** 勾选集合，账号上千时用 Set 过滤 */
 const selectedSet = computed(() => new Set(props.selectedIds ?? []))
@@ -80,6 +92,12 @@ const effectiveCredentials = computed(() =>
 /** 剪贴板本身就是复制，不需要额外的复制按钮 */
 const showCopyButton = computed(() => format.value !== 'clipboard')
 
+/**
+ * 打包相关的入口只在「多个账号 + 落盘格式」时出现：
+ * 单个账号打包没有意义，剪贴板格式压根不产生文件。
+ */
+const canBundle = computed(() => targets.value.length > 1 && format.value !== 'clipboard')
+
 watch(
   () => props.open,
   (open) => {
@@ -115,6 +133,39 @@ async function saveFile(): Promise<void> {
   if (!res.data?.saved) return
   message.success(`已导出 ${targets.value.length} 个账号`)
   close()
+}
+
+/** 多账号时才有意义：把当前格式的单个文件压成 zip */
+async function saveZip(): Promise<void> {
+  if (targets.value.length === 0) return void message.warning('没有可导出的账号')
+  const bundle: ExportBundle = {
+    files: [{ name: exportFilename(format.value, targets.value), content: content() }]
+  }
+  await sendZip(bundle, `已打包导出 ${targets.value.length} 个账号`)
+}
+
+/** 逐个分割：每账号一个 JSON，再加 all.json / all.txt / all.xlsx，一起压成 zip */
+async function saveSplitZip(): Promise<void> {
+  if (targets.value.length === 0) return void message.warning('没有可导出的账号')
+  const bundle = buildSplitBundle(format.value, targets.value, {
+    includeCredentials: effectiveCredentials.value,
+    appVersion: settingsStore.appInfo?.version ?? '1.0.0'
+  })
+  await sendZip(bundle, `已分割导出 ${targets.value.length} 个账号`)
+}
+
+async function sendZip(bundle: ExportBundle, successText: string): Promise<void> {
+  zipping.value = true
+  try {
+    // 响应式代理无法结构化克隆，过 IPC 前先剥成普通对象
+    const res = await window.api.exportToZip(toPlain(bundle), bundleFilename(targets.value))
+    if (!res.success) return void message.error(res.error || '导出失败')
+    if (!res.data?.saved) return
+    message.success(`${successText}（共 ${res.data.count ?? 0} 个文件）`)
+    close()
+  } finally {
+    zipping.value = false
+  }
 }
 
 function submit(): void {
@@ -167,7 +218,32 @@ function submit(): void {
         <template #icon><CopyOutlined /></template>
         复制到剪贴板
       </a-button>
-      <a-button type="primary" @click="submit">
+      <!-- 多账号时导出按钮右侧挂一个下拉，提供打包与分割两种方式 -->
+      <a-button-group v-if="canBundle">
+        <a-button type="primary" :loading="zipping" @click="submit">
+          <template #icon><DownloadOutlined /></template>
+          导出
+        </a-button>
+        <a-dropdown placement="topRight">
+          <a-button type="primary" :loading="zipping">
+            <DownOutlined />
+          </a-button>
+          <template #overlay>
+            <a-menu>
+              <a-menu-item key="zip" @click="saveZip">
+                <FileZipOutlined />
+                导出为压缩包
+              </a-menu-item>
+              <a-menu-item key="split" @click="saveSplitZip">
+                <SnippetsOutlined />
+                逐个分割导出
+              </a-menu-item>
+            </a-menu>
+          </template>
+        </a-dropdown>
+      </a-button-group>
+
+      <a-button v-else type="primary" @click="submit">
         <template #icon>
           <SnippetsOutlined v-if="format === 'clipboard'" />
           <DownloadOutlined v-else />

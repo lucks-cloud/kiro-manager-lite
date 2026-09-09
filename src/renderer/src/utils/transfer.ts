@@ -4,6 +4,7 @@ import type {
   Account,
   AccountExportData,
   AccountImportItem,
+  ExportBundle,
   IdpType,
   KeyEntry
 } from '@shared/types'
@@ -400,4 +401,63 @@ export function buildApiKeyExportContent(
 
 export function apiKeyExportFilename(): string {
   return `kiro-api-keys-${exportStamp()}.txt`
+}
+
+// ============ 分割导出（打包成 zip） ============
+
+/** 压缩包文件名：与多账号导出同一套命名，只是换成 .zip */
+export function bundleFilename(accounts: Account[]): string {
+  if (accounts.length === 1) {
+    const name = safeNamePart(accounts[0].nickname || accounts[0].email.split('@')[0])
+    if (name) return `kiro-account-${name}-${exportStamp()}.zip`
+  }
+  return `kiro-accounts-${exportStamp()}.zip`
+}
+
+/**
+ * 逐个分割导出：每个账号一个独立文件，外加一个整批的 all 文件，打成一个压缩包。
+ *
+ * 全部文件都用**当前选中的格式**，不混格式：选 JSON 得到 N 个 .json + all.json，
+ * 选 TXT 得到 N 个 .txt + all.txt，以此类推。
+ *
+ * 单账号文件沿用 exportFilename 的命名，和「只选一个账号导出」时拿到的文件名完全一致，
+ * 这样从包里取出单个文件也能直接回导。
+ * 同名冲突（两个账号昵称相同）会自动补 -2、-3 后缀，否则 zip 里会出现重复条目。
+ */
+export function buildSplitBundle(
+  format: ExportFormat,
+  accounts: Account[],
+  options: { includeCredentials?: boolean; appVersion?: string } = {}
+): ExportBundle {
+  const { includeCredentials = true, appVersion = '1.0.0' } = options
+  const build = (list: Account[]): string =>
+    buildExportContent(format, list, { includeCredentials, appVersion })
+
+  const used = new Set<string>()
+  const uniqueName = (name: string): string => {
+    if (!used.has(name)) {
+      used.add(name)
+      return name
+    }
+    const dot = name.lastIndexOf('.')
+    const base = dot > 0 ? name.slice(0, dot) : name
+    const ext = dot > 0 ? name.slice(dot) : ''
+    for (let i = 2; ; i++) {
+      const candidate = `${base}-${i}${ext}`
+      if (!used.has(candidate)) {
+        used.add(candidate)
+        return candidate
+      }
+    }
+  }
+
+  const files = accounts.map((account) => ({
+    name: uniqueName(exportFilename(format, [account])),
+    content: build([account])
+  }))
+
+  // 整批汇总一份，便于一次性回导或肉眼核对；扩展名跟随所选格式
+  files.push({ name: uniqueName(`all.${EXPORT_EXTENSION[format]}`), content: build(accounts) })
+
+  return { files }
 }

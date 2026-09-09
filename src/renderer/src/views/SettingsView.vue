@@ -255,6 +255,15 @@ function clearAll(): void {
             />
           </a-space>
         </a-form-item>
+        <a-form-item label="控件尺寸">
+          <a-radio-group
+            :value="settings.componentSize"
+            @change="(e: any) => update({ componentSize: e.target.value })"
+          >
+            <a-radio value="default">默认尺寸</a-radio>
+            <a-radio value="large">大尺寸</a-radio>
+          </a-radio-group>
+        </a-form-item>
         <a-form-item label="隐私打码" class="field-inline">
           <SettingSwitch field="privacyMode" />
           <span class="muted">列表与详情中隐藏邮箱、昵称、API Key 等隐私信息</span>

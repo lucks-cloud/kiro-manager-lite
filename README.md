@@ -13,8 +13,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.0.20-6c5ce7" alt="version">
-  <img src="https://img.shields.io/badge/updated-2026--09--05-2f9e44" alt="updated">
+  <img src="https://img.shields.io/badge/version-1.0.21-6c5ce7" alt="version">
+  <img src="https://img.shields.io/badge/updated-2026--09--09-2f9e44" alt="updated">
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="license">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="platform">
   <img src="https://img.shields.io/badge/Vue-3-42b883" alt="vue">
@@ -51,6 +51,8 @@
 - 用该账号凭证在应用内的私密窗口直接进 Kiro 官网后台，省去先切号再手动登录
 - 会话分区不持久化、退出即清，也不碰你自己浏览器里的登录身份；每次打开前先清空 cookie，避免显示上一个账号
 - 页面内的跳转全程留在应用内（含站外链接与二级弹窗），不会跳到系统浏览器丢掉会话
+- 自带工具条：后退 / 前进 / 刷新、可跳任意网址的地址栏、加载进度条，以及「更多」菜单（IP 查询、打开百度、复制链接、开发者工具等）；弹出的窗口同样带完整工具条
+- 首屏卡住会自动重试并把进度显示在标题位，次数用尽才给错误页，不再干等 30 秒白屏
 - 请求头伪装成普通 Chrome，并可在设置的「内置浏览器」里指定地区（内置 50 个常用地区，也支持自定义 BCP 47 标签）
 
 ### 🔑 API Key 管理
@@ -79,6 +81,7 @@
 - 账号支持卡密、精简 JSON、完整备份 JSON、CSV 和 TXT，可粘贴内容或一次选择多个文件导入
 - 导出范围只有一条规则：**勾选了就导勾选的，没勾选就导全部**，不需要在弹窗里再选一次
 - API Key 导出两种格式：`apikey----地区`（分隔符与卡密一致，可回导并还原区域）或每行一个裸 Key
+- 选中多个账号时可「导出为压缩包」或「逐个分割导出」：后者每个账号一个独立文件、外加一个整批的 `all` 文件，一起打成压缩包，文件名与单个导出一致，取出即可回导
 - 导出可保存到文件或复制到剪贴板，账号导出可选择是否包含敏感凭证
 - 导出成功后自动打开所在文件夹并选中该文件，也可在设置里关掉
 - 账号与 Key 的大批量校验 / 刷新并发数均可配置
@@ -104,7 +107,7 @@
 
 ### ⚙️ 个性化设置
 
-- 深色模式、主题色、积分精度与删除前确认
+- 深色模式、主题色、控件尺寸（默认 / 大尺寸）、积分精度与删除前确认
 - **隐私打码**：一键遮住邮箱、昵称、API Key、User ID 与备注，截图或录屏前很有用。
   邮箱的遮罩串由 md5 前缀生成，同一账号每次结果一致，打码状态下仍能横向比对是不是同一个号
 - **内置浏览器**：指定应用内打开的网页使用哪个地区，50 个常用地区可搜索选择，也可自定义 BCP 47 标签。
@@ -118,14 +121,14 @@
 
 <p align="center">
   <a href="https://github.com/lucks-cloud/kiro-manager-lite/releases/latest">
-    <img src="https://img.shields.io/badge/⬇%20下载最新版-v1.0.20-6c5ce7?style=for-the-badge" alt="下载最新版">
+    <img src="https://img.shields.io/badge/⬇%20下载最新版-v1.0.21-6c5ce7?style=for-the-badge" alt="下载最新版">
   </a>
   <a href="https://github.com/lucks-cloud/kiro-manager-lite/releases">
     <img src="https://img.shields.io/badge/全部版本-Releases-24292f?style=for-the-badge&logo=github" alt="全部版本">
   </a>
 </p>
 
-**最新版本：v1.0.20**（2026-09-05） · 变更详情见 [CHANGELOG.md](CHANGELOG.md)
+**最新版本：v1.0.21**（2026-09-09） · 变更详情见 [CHANGELOG.md](CHANGELOG.md)
 
 ### 选择对应的安装包
 
@@ -289,7 +292,7 @@ src/
     kiroPermissions.ts   自动同意 AI 操作：两套机制读写与还原
     kiroCapability.ts    当前 IDE 版本是否支持自定义网关端点
     kiroProcess.ts       IDE 进程检测、打开、关闭与重启
-    kiroPortal.ts        前往官网：应用内私密窗口与地区
+    kiroPortal.ts        内置浏览器：私密窗口、工具条、看门狗重试与地区
     ── API Key 网关
     keyService.ts        Key 管理与网关编排
     keyGateway.ts        本地 KRS / CPS 转发
@@ -307,6 +310,8 @@ src/
     browser.ts           系统浏览器唤起
     xlsxWriter.ts        Excel 导出
   preload/               contextBridge 暴露的 API 白名单
+    index.ts             主窗口用
+    portalBar.ts         内置浏览器工具条用，与主窗口完全隔离
   renderer/src/
     stores/              Pinia：accounts / keys / settings / update
     views/               Home / Accounts / Keys / Tools / Logs / Settings / About
@@ -330,7 +335,7 @@ src/
 
 ## 🔖 更新日志
 
-各版本变更记录见 [CHANGELOG.md](CHANGELOG.md)，当前版本 v1.0.20，最后更新于 2026-09-05。
+各版本变更记录见 [CHANGELOG.md](CHANGELOG.md)，当前版本 v1.0.21，最后更新于 2026-09-09。
 
 ---
 

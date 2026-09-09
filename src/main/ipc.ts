@@ -47,7 +47,7 @@ import {
   shellApproveTargetPath
 } from './kiroPermissions'
 import { clearLogs, exportLogs, getLogDir, queryLogs } from './logger'
-import { buildXlsx } from './xlsxWriter'
+import { buildXlsx, buildZip } from './xlsxWriter'
 import {
   addKey,
   configureGateway,
@@ -97,6 +97,7 @@ import type {
   SwitchAccountInput,
   TraySnapshot,
   VerifyCredentialsInput,
+  ExportBundle,
   XlsxSheet
 } from '../shared/types'
 
@@ -464,6 +465,25 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     await writeFile(result.filePath, content, 'utf-8')
     revealExported(result.filePath)
     return ok({ saved: true, path: result.filePath })
+  })
+
+  // 打包导出：把多个文件塞进一个 zip 再落盘
+  handle('file:export-zip', async (_e, bundle: ExportBundle, filename: string) => {
+    const entries = bundle.files ?? []
+    if (!entries.length) throw new Error('没有可打包的内容')
+
+    const result = await dialog.showSaveDialog(getWindow()!, {
+      title: '导出压缩包',
+      defaultPath: filename,
+      filters: [
+        { name: '压缩包', extensions: ['zip'] },
+        { name: '全部文件', extensions: ['*'] }
+      ]
+    })
+    if (result.canceled || !result.filePath) return ok({ saved: false })
+    await writeFile(result.filePath, buildZip(entries))
+    revealExported(result.filePath)
+    return ok({ saved: true, path: result.filePath, count: entries.length })
   })
 
   // xlsx 是二进制 zip，走不了上面的 utf-8 通道；渲染层只传结构化数据，落盘前在主进程组装

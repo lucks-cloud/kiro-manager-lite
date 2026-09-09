@@ -235,6 +235,22 @@ export const useAccountsStore = defineStore('accounts', () => {
     profileArn?: string
   }
 
+  /**
+   * 一批导入所用的 createdAt 基准。
+   *
+   * 取「现在」与「库里最大 createdAt」的较大值：批内会按条数往上加偏移，
+   * 若只用 Date.now()，上一批很大（比如 5000 条，占掉 5 秒的偏移空间）时，
+   * 紧接着导入的第二批会落进上一批的区间里，排序就交叠了。
+   * 不用展开运算符求最大值——账号上万时 Math.max(...arr) 会爆栈。
+   */
+  function importBaseTime(): number {
+    let max = Date.now()
+    for (const account of accounts.value) {
+      if ((account.createdAt || 0) > max) max = account.createdAt
+    }
+    return max
+  }
+
   function buildAccount(snapshot: AccountSnapshot, input: BuildInput): Account {
     const now = Date.now()
     const idp = (input.provider || 'BuilderId') as IdpType
@@ -382,6 +398,9 @@ export const useAccountsStore = defineStore('accounts', () => {
     const created: Account[] = []
     // 本批已入队的 email|idp，用 Set 查重避免逐个线性扫描（几千条时是 O(n²)）
     const createdKeys = new Set<string>()
+    /** 本批统一的时间基准，各条按输入下标偏移，保证列表顺序与文件顺序一致 */
+    const baseTime = importBaseTime()
+    const total = valid.length
     // 导入并发独立于批量刷新的并发，单独设置更好控速；上下限由 runPool 兜底
     const limit = settingsStore.settings.importConcurrency || DEFAULT_SETTINGS.importConcurrency
 
@@ -418,20 +437,26 @@ export const useAccountsStore = defineStore('accounts', () => {
             return
           }
           createdKeys.add(key)
-          created.push(
-            buildAccount(
-              { ...res.data, email },
-              {
-                refreshToken: item.refreshToken,
-                clientId: item.clientId,
-                clientSecret: item.clientSecret,
-                region: item.region,
-                provider: idp,
-                password: item.password,
-                nickname: item.nickname
-              }
-            )
+          const account = buildAccount(
+            { ...res.data, email },
+            {
+              refreshToken: item.refreshToken,
+              clientId: item.clientId,
+              clientSecret: item.clientSecret,
+              region: item.region,
+              provider: idp,
+              password: item.password,
+              nickname: item.nickname
+            }
           )
+          /*
+           * createdAt 按输入顺序定序，而不是用 buildAccount 里的「此刻」。
+           * 导入是并发的，各账号完成校验的先后与文件顺序无关；不定序的话
+           * 同一批在列表里的排列是随机的，看着像乱序。
+           * 倒序排列下用 total - index，让文件里靠前的排在列表更上方。
+           */
+          account.createdAt = baseTime + (total - index)
+          created.push(account)
           result.success++
         } catch (e) {
           result.failed++
@@ -460,8 +485,18 @@ export const useAccountsStore = defineStore('accounts', () => {
     const created: Account[] = []
     // 与 importItems 一致，用 Set 查重避免逐条线性扫描
     const createdKeys = new Set<string>()
+    /*
+     * createdAt 一律按「导入这一刻」重排，不沿用备份文件里的原值。
+     *
+     * 列表默认按 createdAt 倒序，沿用原值会让刚恢复的账号按它们的历史时间
+     * 散落在列表各处，用户根本找不到自己刚导进来的是哪些。
+     * 批内按下标偏移，倒序下用 total - i 让文件里靠前的排在更上方。
+     */
+    const baseTime = importBaseTime()
+    const list = data.accounts ?? []
+    const total = list.length
 
-    for (const raw of data.accounts ?? []) {
+    for (const [i, raw] of list.entries()) {
       if (!raw?.credentials?.refreshToken) {
         result.failed++
         continue
@@ -481,8 +516,8 @@ export const useAccountsStore = defineStore('accounts', () => {
         usage: raw.usage ?? emptyUsage(),
         subscription: raw.subscription ?? { type: 'Free' },
         status: raw.status ?? 'unknown',
-        createdAt: raw.createdAt ?? Date.now(),
-        lastUsedAt: raw.lastUsedAt ?? Date.now()
+        createdAt: baseTime + (total - i),
+        lastUsedAt: raw.lastUsedAt ?? baseTime
       })
       result.success++
     }

@@ -105,7 +105,11 @@ watch(
 </script>
 
 <template>
-  <a-config-provider :theme="settingsStore.themeConfig" :locale="zhCN" component-size="large">
+  <a-config-provider
+    :theme="settingsStore.themeConfig"
+    :locale="zhCN"
+    :component-size="settingsStore.settings.componentSize"
+  >
     <div class="app-shell">
       <AppSidebar />
       <div class="app-body">

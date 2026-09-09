@@ -498,6 +498,11 @@ export interface XlsxSheet {
   rows: XlsxCellValue[][]
 }
 
+/** 打包导出：把多个文本文件装进一个 zip */
+export interface ExportBundle {
+  files: { name: string; content: string }[]
+}
+
 // ============================================
 // 常用工具：Kiro Agent 命令审批配置
 // ============================================
@@ -566,6 +571,12 @@ export interface AppSettings {
   /** 主题色 */
   primaryColor: string
   darkMode: boolean
+  /**
+   * 全局控件尺寸。
+   * large 是本应用一直以来的默认观感（按钮、输入框都偏大，信息密度低但好点）；
+   * default 是 Ant Design 原生尺寸，一屏能放下更多内容。
+   */
+  componentSize: 'default' | 'large'
   /** 侧栏折叠 */
   sidebarCollapsed: boolean
   /** 隐私打码：列表与详情中隐藏邮箱、昵称等隐私信息 */
@@ -654,6 +665,8 @@ export interface AppSettings {
 export const DEFAULT_SETTINGS: AppSettings = {
   primaryColor: '#7c3aed',
   darkMode: false,
+  // 保持既有观感：老用户升级上来不会突然变小
+  componentSize: 'large',
   sidebarCollapsed: false,
   privacyMode: false,
   usagePrecision: false,

@@ -126,6 +126,9 @@ const api = {
     invoke('file:export', content, filename),
   exportToXlsx: (sheet: unknown, filename: string) =>
     invoke('file:export-xlsx', sheet, filename),
+  /** 打包导出：多个文件装进一个 zip */
+  exportToZip: (bundle: unknown, filename: string) =>
+    invoke('file:export-zip', bundle, filename),
   importFromFile: () => invoke('file:import'),
   writeClipboard: (text: string) => clipboard.writeText(text),
 

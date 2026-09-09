@@ -45,11 +45,14 @@ function dosDateTime(date: Date): { time: number; date: number } {
   }
 }
 
-/** 打包成 zip：统一用 deflate，不写 data descriptor，长度直接填在本地头里 */
-function zip(files: { name: string; content: string }[], now = new Date()): Buffer {
+/**
+ * 打包成 zip：统一用 deflate，不写 data descriptor，长度直接填在本地头里。
+ * content 允许直接给 Buffer，这样 xlsx 这类二进制也能塞进同一个包。
+ */
+function zip(files: { name: string; content: string | Buffer }[], now = new Date()): Buffer {
   const { time, date } = dosDateTime(now)
   const entries: ZipEntry[] = files.map((file) => {
-    const raw = Buffer.from(file.content, 'utf-8')
+    const raw = Buffer.isBuffer(file.content) ? file.content : Buffer.from(file.content, 'utf-8')
     return { name: file.name, raw, deflated: deflateRawSync(raw, { level: 9 }), crc: crc32(raw) }
   })
 
@@ -274,6 +277,14 @@ function buildWorksheet(sheet: XlsxSheet, columnStyles: number[]): string {
     (rows.length ? `<autoFilter ref="${dimension}"/>` : '') +
     '</worksheet>'
   )
+}
+
+/**
+ * 通用 zip 打包，供「分割导出」把多个文件装进一个压缩包。
+ * 复用 xlsx 那套 ZIP 实现，不为此再引一个压缩库。
+ */
+export function buildZip(files: { name: string; content: string | Buffer }[]): Buffer {
+  return zip(files)
 }
 
 /** 把一张表渲染成 xlsx 文件内容 */

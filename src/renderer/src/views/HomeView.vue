@@ -140,30 +140,55 @@ const warnRows = computed(() =>
   ].filter((row) => row.list.length > 0)
 )
 
-/** 额度统计：只统计正常且有额度的账号 */
+/**
+ * 额度统计：只统计正常且有额度的账号。
+ *
+ * 可用额度必须**逐账号先 clamp 再求和**，不能用「总额度 − 总已用」：
+ * 账号降档后 limit 会跟着变小（比如原本 2000 的号用掉 1900，之后掉成 50 积分的普通号），
+ * 这一个号就贡献 −1850，直接把汇总值拖成负数——而实际上它的可用额度是 0，不是负的。
+ * 同理进度条按 min(已用, 额度) 累加，percentUsed 天然落在 0~100，不会出现「已超额」的假象。
+ */
 const usageStats = computed(() => {
   let totalLimit = 0
   let totalUsed = 0
+  /** 计入进度的已用量：单账号不超过它自己的额度 */
+  let effectiveUsed = 0
+  /** 可用额度：Σ max(0, 额度 − 已用) */
+  let available = 0
+  /** 已用超过当前额度的账号数，多半是降过档 */
+  let overQuotaCount = 0
   let validAccountCount = 0
+
   for (const a of accountsStore.accounts) {
     if (a.status !== 'active') continue
     const limit = a.usage.limit ?? 0
     if (limit <= 0) continue
+    const used = a.usage.current ?? 0
+
     totalLimit += limit
-    totalUsed += a.usage.current ?? 0
+    totalUsed += used
+    effectiveUsed += Math.min(used, limit)
+    available += Math.max(0, limit - used)
+    if (used > limit) overQuotaCount++
     validAccountCount++
   }
-  const percentUsed = totalLimit > 0 ? (totalUsed / totalLimit) * 100 : 0
+
   return {
     totalLimit,
     totalUsed,
-    remaining: totalLimit - totalUsed,
-    percentUsed,
+    available,
+    /** 已用超出各自额度的部分合计，仅用于提示 */
+    excess: totalUsed - effectiveUsed,
+    percentUsed: totalLimit > 0 ? (effectiveUsed / totalLimit) * 100 : 0,
+    overQuotaCount,
     validAccountCount
   }
 })
 
-const overQuota = computed(() => usageStats.value.percentUsed > 100)
+/** 可用额度见底时标红 */
+const noQuotaLeft = computed(
+  () => usageStats.value.validAccountCount > 0 && usageStats.value.available <= 0
+)
 
 /** 使用率文案：开启两位小数时保留 2 位，否则 1 位 */
 const percentText = computed(() => usageStats.value.percentUsed.toFixed(precision.value ? 2 : 1))
@@ -358,9 +383,9 @@ function previewOf(list: Account[]): string {
           <div class="tile-value">{{ formatCredits(usageStats.totalUsed, precision) }}</div>
         </div>
         <div class="tile">
-          <div class="tile-head muted"><ThunderboltOutlined style="color: #52c41a" /> 剩余额度</div>
-          <div class="tile-value" :style="{ color: overQuota ? '#ff4d4f' : '#52c41a' }">
-            {{ formatCredits(usageStats.remaining, precision) }}
+          <div class="tile-head muted"><ThunderboltOutlined style="color: #52c41a" /> 可用额度</div>
+          <div class="tile-value" :style="{ color: noQuotaLeft ? '#ff4d4f' : '#52c41a' }">
+            {{ formatCredits(usageStats.available, precision) }}
           </div>
         </div>
         <div class="tile">
@@ -385,17 +410,21 @@ function previewOf(list: Account[]): string {
         </span>
       </div>
       <a-progress
-        :percent="Math.min(usageStats.percentUsed, 100)"
+        :percent="usageStats.percentUsed"
         :stroke-color="usageBarColor"
         :show-info="false"
         :stroke-width="10"
       />
+      <!--
+        降档提示：已用量超过当前额度不是「超额消费」，而是额度变小了
+        （原本高档位用掉的积分，掉档后比新额度还多）。这类账号可用额度按 0 计。
+      -->
       <a-alert
-        v-if="overQuota"
-        type="error"
+        v-if="usageStats.overQuotaCount"
+        type="warning"
         show-icon
         style="margin-top: 8px"
-        :message="`已超额 +${(usageStats.percentUsed - 100).toFixed(precision ? 2 : 1)}%，超额积分 ${formatCredits(Math.abs(usageStats.remaining), precision)}`"
+        :message="`${usageStats.overQuotaCount} 个账号的已用积分超过当前额度（合计 ${formatCredits(usageStats.excess, precision)}），多为订阅降档所致，其可用额度按 0 计算`"
       />
     </a-card>
 

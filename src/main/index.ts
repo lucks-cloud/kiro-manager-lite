@@ -4,6 +4,7 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { applyRuntimeSettings, registerIpc } from './ipc'
 import { getSettings } from './store'
 import { normalizePortalLocale } from '../shared/portalLocale'
+import { closePortalWindow } from './kiroPortal'
 import {
   cancelLogin,
   handleProtocolUrl,
@@ -275,6 +276,8 @@ app.on('will-quit', () => {
   flushGatewayHistory()
   // 同步还原 Kiro IDE 端点后再退出，避免 IDE 指向已停止的本地网关。
   shutdownKeyServiceSync()
+  // 内置浏览器是 BaseWindow，不受主窗口关闭影响，得显式收掉
+  closePortalWindow()
   destroyTray()
   void shutdownLogger()
 })
