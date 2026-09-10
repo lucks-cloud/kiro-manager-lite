@@ -3,6 +3,7 @@ import { DEFAULT_REGION } from '@shared/regions'
 import type {
   Account,
   AccountExportData,
+  AccountGroup,
   AccountImportItem,
   ExportBundle,
   IdpType,
@@ -218,12 +219,15 @@ export function parseImportContent(raw: string): ParsedImport {
 export function buildExportContent(
   format: ExportFormat,
   accounts: Account[],
-  options: { includeCredentials: boolean; appVersion: string }
+  options: { includeCredentials: boolean; appVersion: string; groups?: AccountGroup[] }
 ): string {
-  const { includeCredentials, appVersion } = options
+  const { includeCredentials, appVersion, groups } = options
 
   switch (format) {
     case 'json': {
+      // 只带上这批账号真正用到的分组，避免把无关分组塞进别人的备份
+      const referenced = new Set(accounts.map((a) => a.groupId).filter(Boolean) as string[])
+      const usedGroups = (groups ?? []).filter((g) => referenced.has(g.id))
       const data: AccountExportData = {
         app: 'kiro-account-lite',
         version: appVersion,
@@ -232,7 +236,8 @@ export function buildExportContent(
           includeCredentials
             ? rest
             : { ...rest, password: undefined, credentials: { ...rest.credentials, accessToken: '', refreshToken: '' } }
-        )
+        ),
+        ...(usedGroups.length ? { groups: usedGroups } : {})
       }
       return JSON.stringify(data, null, 2)
     }
@@ -427,11 +432,11 @@ export function bundleFilename(accounts: Account[]): string {
 export function buildSplitBundle(
   format: ExportFormat,
   accounts: Account[],
-  options: { includeCredentials?: boolean; appVersion?: string } = {}
+  options: { includeCredentials?: boolean; appVersion?: string; groups?: AccountGroup[] } = {}
 ): ExportBundle {
-  const { includeCredentials = true, appVersion = '1.0.0' } = options
+  const { includeCredentials = true, appVersion = '1.0.0', groups } = options
   const build = (list: Account[]): string =>
-    buildExportContent(format, list, { includeCredentials, appVersion })
+    buildExportContent(format, list, { includeCredentials, appVersion, groups })
 
   const used = new Set<string>()
   const uniqueName = (name: string): string => {

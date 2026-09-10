@@ -2,6 +2,7 @@
 import { computed, h, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import {
+  AppstoreOutlined,
   CodeOutlined,
   DeleteOutlined,
   DownOutlined,
@@ -26,7 +27,10 @@ import ImportAccountsFileModal from '@/components/accounts/ImportAccountsFileMod
 import ImportAccountsTextModal from '@/components/accounts/ImportAccountsTextModal.vue'
 import ExportAccountsModal from '@/components/accounts/ExportAccountsModal.vue'
 import EditAccountModal from '@/components/accounts/EditAccountModal.vue'
-import BatchNoteModal from '@/components/accounts/BatchNoteModal.vue'
+import BatchNoteModal from '@/components/common/BatchNoteModal.vue'
+import GroupPickerModal from '@/components/common/GroupPickerModal.vue'
+import GroupPanel from '@/components/common/GroupPanel.vue'
+import DisplayModeSelect from '@/components/common/DisplayModeSelect.vue'
 import AccountDetailDrawer from '@/components/accounts/AccountDetailDrawer.vue'
 import AccountTestModal from '@/components/accounts/AccountTestModal.vue'
 import CreateApiKeyModal from '@/components/accounts/CreateApiKeyModal.vue'
@@ -35,6 +39,7 @@ import SwitchResultModal from '@/components/accounts/SwitchResultModal.vue'
 import { useAccountsStore } from '@/stores/accounts'
 import { useSettingsStore } from '@/stores/settings'
 import { displayEmail as maskedEmail } from '@/utils/display'
+import { accountGroupApi } from '@/utils/groupApi'
 import { toPlain } from '@/utils/ipc'
 import {
   bodyPopupContainer,
@@ -44,7 +49,7 @@ import {
   notifyResult
 } from '@/utils/ui'
 import { shouldSkipAccountUsageRefresh } from '@shared/refreshPolicy'
-import type { Account, SwitchAccountResult } from '@shared/types'
+import type { Account, AccountDisplayMode, SwitchAccountResult } from '@shared/types'
 
 const accountsStore = useAccountsStore()
 const settingsStore = useSettingsStore()
@@ -61,6 +66,7 @@ function openImport(kind: 'file' | 'text'): void {
 }
 const exportOpen = ref(false)
 const batchNoteOpen = ref(false)
+const batchGroupOpen = ref(false)
 const editTarget = ref<Account | null>(null)
 const detailTarget = ref<Account | null>(null)
 const testTarget = ref<Account | null>(null)
@@ -116,6 +122,18 @@ const sortLabel = computed(
 )
 
 const filterOpen = ref(false)
+const groupOpen = ref(false)
+/**
+ * 分组面板里正开着改名弹窗或删除确认。
+ * 这些弹窗 teleport 到 body，点它们会被 popover 当成「点了外面」而自动收起，
+ * 面板连同弹窗一起被卸载。busy 期间按住 popover 不让它关。
+ */
+const groupBusy = ref(false)
+
+function onGroupOpenChange(open: boolean): void {
+  if (!open && groupBusy.value) return
+  groupOpen.value = open
+}
 
 /** 筛选面板里生效的条件数量，显示在筛选按钮的角标上 */
 const activeFilterCount = computed(() => {
@@ -124,6 +142,7 @@ const activeFilterCount = computed(() => {
     f.statuses.length +
     f.subscriptions.length +
     f.idps.length +
+    // 分组筛选另有独立按钮与角标，这里不重复计入，只在「清除筛选」时一并清掉
     // != null：输入框清空时给的是 null，按 !== undefined 判断会把它算成一个生效条件
     (f.usageMin != null ? 1 : 0) +
     (f.usageMax != null ? 1 : 0) +
@@ -142,6 +161,69 @@ const privacyMode = computed(() => settingsStore.settings.privacyMode)
 function togglePrivacy(): void {
   void settingsStore.update({ privacyMode: !privacyMode.value })
 }
+
+/** 展示形态：卡片 / 紧凑卡片 / 列表，和隐私打码一样持久化在设置里 */
+const displayMode = computed(() => settingsStore.settings.accountDisplayMode)
+
+function setDisplayMode(mode: AccountDisplayMode): void {
+  void settingsStore.update({ accountDisplayMode: mode })
+}
+
+/** 分组读写门面：面板与批量弹窗都用它，屏蔽「账号同步写 / Key 走 IPC」的差异 */
+const groupApi = accountGroupApi()
+
+function toggleGroupFilter(id: string): void {
+  const list = accountsStore.filter.groupIds
+  accountsStore.filter.groupIds = list.includes(id)
+    ? list.filter((v) => v !== id)
+    : [...list, id]
+}
+
+/** 批量备注：覆盖式改写所选账号的备注，留空即清空 */
+function applyBatchNote(note: string): void {
+  const changed = accountsStore.setNoteForAccounts(accountsStore.selectedIds, note)
+  message.success(note.trim() ? `已为 ${changed} 个账号设置备注` : `已清空 ${changed} 个账号的备注`)
+  batchNoteOpen.value = false
+}
+
+/**
+ * 一张带报错的卡片比同类卡片高出多少像素 = 报错行本身 + 它上面那道间距。
+ *
+ * 与 AccountCard 里 .error-line 的样式硬绑定，改那边的行高 / padding / 间距
+ * 必须同步改这里，否则虚拟滚动算出的行高会和实际差一截：
+ *   卡片   28（18 行高 + 上下 5px padding）+ 12（卡片竖向间距）= 40
+ *   紧凑   28 + 8（紧凑模式收紧后的间距）= 36
+ *   列表   24（padding 收成 3px）+ 8（折行间距，报错独占一行）= 32
+ */
+const ERROR_ROW_EXTRA: Record<AccountDisplayMode, number> = { card: 40, compact: 36, list: 32 }
+
+/**
+ * 有了这个值，虚拟滚动就只给「真的有报错卡片」的那一行加高，
+ * 而不是一见到报错就把所有行一起抬高。
+ */
+function gridItemExtra(item: GridItem): number {
+  if (item.kind !== 'account' || !item.account.lastError) return 0
+  return ERROR_ROW_EXTRA[displayMode.value]
+}
+
+/**
+ * 每种形态的单元格预估高度与最小列宽。
+ *
+ * 列宽给 list 一个不可能满足的值，列数就恒为 1 —— 虚拟滚动那边
+ * 「宽度算列数」的逻辑不用为列表模式开分支。
+ */
+const gridLayout = computed(() => {
+  switch (displayMode.value) {
+    case 'compact':
+      // 用量块压成两行后比卡片模式矮不少，首帧的预估值跟着调低
+      return { minColumnWidth: 320, estimatedHeight: 235 }
+    case 'list':
+      // 用量块改成两行排布后一条约 70px，预估值跟着调高
+      return { minColumnWidth: 100000, estimatedHeight: 76 }
+    default:
+      return { minColumnWidth: 320, estimatedHeight: 330 }
+  }
+})
 
 const sorted = computed(() => {
   const list = [...accountsStore.filtered]
@@ -509,6 +591,39 @@ function logoutIde(account: Account): void {
           </a-badge>
         </a-popover>
 
+        <a-popover
+          :open="groupOpen"
+          trigger="click"
+          placement="bottomRight"
+          :get-popup-container="bodyPopupContainer"
+          @open-change="onGroupOpenChange"
+        >
+          <template #title>
+            <span>分组</span>
+          </template>
+          <template #content>
+            <GroupPanel
+              v-if="groupOpen"
+              :api="groupApi"
+              :selected="accountsStore.filter.groupIds"
+              :matched="accountsStore.filtered.length"
+              entity="账号"
+              @toggle="toggleGroupFilter"
+              @clear="accountsStore.filter.groupIds = []"
+              @busy="groupBusy = $event"
+            />
+          </template>
+          <a-badge :count="accountsStore.filter.groupIds.length" :offset="[-4, 4]">
+            <a-button
+              size="small"
+              :type="accountsStore.filter.groupIds.length ? 'primary' : 'default'"
+            >
+              <template #icon><AppstoreOutlined /></template>
+              分组
+            </a-button>
+          </a-badge>
+        </a-popover>
+
         <a-dropdown>
           <a-button size="small">
             <template #icon><SortAscendingOutlined /></template>
@@ -561,6 +676,10 @@ function logoutIde(account: Account): void {
           </template>
           {{ privacyMode ? '隐私打码中' : '隐私打码' }}
         </a-button>
+
+        <!-- 展示形态：卡片 / 紧凑卡片 / 列表，选择会持久化 -->
+        <DisplayModeSelect :value="displayMode" @change="setDisplayMode" />
+
         <!-- 批量操作与删除都作用于全部勾选项（不受当前搜索影响） -->
         <a-dropdown v-if="accountsStore.selectedIds.length">
           <a-button size="small">
@@ -572,6 +691,10 @@ function logoutIde(account: Account): void {
               <a-menu-item key="note" @click="batchNoteOpen = true">
                 <EditOutlined />
                 批量设置备注
+              </a-menu-item>
+              <a-menu-item key="group" @click="batchGroupOpen = true">
+                <AppstoreOutlined />
+                批量设置分组
               </a-menu-item>
             </a-menu>
           </template>
@@ -618,14 +741,20 @@ function logoutIde(account: Account): void {
     </div>
 
     <!-- 全量渲染交给虚拟滚动，上千个账号也只保留视口内的 DOM -->
+    <!--
+      key 绑定展示形态：切换形态时行高相差很大，而虚拟滚动量到的高度只允许变高，
+      重挂载一次让它重新测量，省掉一套「重置测量」的对外接口。
+    -->
     <VirtualGrid
       v-else
       ref="gridRef"
+      :key="displayMode"
       :items="gridItems"
       :item-key="gridItemKey"
-      :min-column-width="320"
-      :gap="14"
-      :estimated-height="330"
+      :item-extra="gridItemExtra"
+      :min-column-width="gridLayout.minColumnWidth"
+      :gap="displayMode === 'list' ? 8 : 14"
+      :estimated-height="gridLayout.estimatedHeight"
     >
       <template #default="{ item }">
         <AccountCard
@@ -633,6 +762,7 @@ function logoutIde(account: Account): void {
           :account="item.account"
           :selected="selectedIdSet.has(item.account.id)"
           :busy-action="rowBusy[item.account.id]"
+          :mode="displayMode"
           @toggle-select="(checked) => toggleSelect(item.account.id, checked)"
           @detail="detailTarget = item.account"
           @create-api-key="apiKeyTarget = item.account"
@@ -647,7 +777,12 @@ function logoutIde(account: Account): void {
           @test="testTarget = item.account"
           @usage="usageTarget = item.account"
         />
-        <button v-else class="add-card" @click="addOpen = true">
+        <button
+          v-else
+          class="add-card"
+          :class="{ 'add-card-row': displayMode === 'list' }"
+          @click="addOpen = true"
+        >
           <PlusOutlined class="add-card-icon" />
           <span class="add-card-title">添加账号</span>
           <span class="add-card-sub muted">在线登录或粘贴凭证</span>
@@ -672,7 +807,16 @@ function logoutIde(account: Account): void {
     <BatchNoteModal
       v-if="batchNoteOpen"
       :ids="accountsStore.selectedIds"
+      entity="账号"
+      @submit="applyBatchNote"
       @close="batchNoteOpen = false"
+    />
+    <GroupPickerModal
+      v-if="batchGroupOpen"
+      :api="groupApi"
+      :ids="accountsStore.selectedIds"
+      entity="账号"
+      @close="batchGroupOpen = false"
     />
     <AccountDetailDrawer
       v-if="detailTarget"
@@ -776,6 +920,22 @@ function logoutIde(account: Account): void {
 .add-card:hover {
   border-color: var(--kal-primary);
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
+}
+
+/* 列表模式下它是一条通栏，图标与文字横排，高度与账号行看齐 */
+.add-card-row {
+  flex-direction: row;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 12px;
+}
+
+.add-card-row .add-card-icon {
+  font-size: 18px;
+}
+
+.add-card-row .add-card-title {
+  font-size: 13.5px;
 }
 
 .add-card-icon {

@@ -288,7 +288,8 @@ function displayName(account: Account): string {
 }
 
 function jumpToAccounts(patch: Partial<AccountFilter>): void {
-  accountsStore.applyFilter(patch)
+  // 从首页点过去是「给我看这批账号」，遗留的分组筛选会把结果挡掉，一并清空
+  accountsStore.applyFilter({ groupIds: [], ...patch })
   void router.push({ name: 'accounts' })
 }
 

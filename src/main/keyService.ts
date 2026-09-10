@@ -27,6 +27,7 @@ import { releasePorts } from './localPorts'
 import { log } from './logger'
 import { shouldSkipKeyUsageRefresh } from '../shared/refreshPolicy'
 import type {
+  AccountGroup,
   AccountUsage,
   KeyEntry,
   KeyGatewayConflict,
@@ -275,6 +276,69 @@ export function updateKey(id: string, note: string): KeyGatewayData {
   const entry = data.keys.find((item) => item.id === id)
   if (!entry) throw new Error('未找到该 API Key')
   entry.note = note.trim() || undefined
+  setKeyData(data)
+  return data
+}
+
+/**
+ * 整表替换分组定义（新建 / 改名 / 删除 / 排序都走这一个入口）。
+ *
+ * 只给一个「整表替换」而不是四个细粒度接口：渲染层本来就持有完整分组列表，
+ * 一次提交省掉四套 IPC，也不会出现「删了分组但键上还留着 id」的中间态 ——
+ * 这里会顺手把落在已删分组上的 groupId 清掉。
+ */
+export function setKeyGroups(groups: AccountGroup[]): KeyGatewayData {
+  const data = getKeyData()
+  const seen = new Set<string>()
+  const next: AccountGroup[] = []
+  for (const raw of groups ?? []) {
+    const name = (raw?.name ?? '').trim()
+    const id = raw?.id
+    if (!id || !name || seen.has(id)) continue
+    seen.add(id)
+    // order 一律按下标重排，避免删掉中间项后留下空洞
+    next.push({ id, name, order: next.length })
+  }
+  data.groups = next
+  for (const entry of data.keys) {
+    if (entry.groupId && !seen.has(entry.groupId)) delete entry.groupId
+  }
+  setKeyData(data)
+  return data
+}
+
+/**
+ * 批量覆盖备注，留空即清空。
+ * 单独开一个批量入口而不是让渲染层循环调 updateKey：那样每条都要落一次盘，
+ * 几百个 Key 会把界面卡住。
+ */
+export function setKeysNote(ids: string[], note: string): KeyGatewayData {
+  const data = getKeyData()
+  const target = new Set(ids.filter(Boolean))
+  const value = note.trim() || undefined
+  for (const entry of data.keys) {
+    if (target.has(entry.id)) entry.note = value
+  }
+  setKeyData(data)
+  return data
+}
+
+/**
+ * 批量设置分组：groupId 传 null 表示移出分组。
+ * 传了 id 但分组不存在时直接报错，避免把悬空 id 写进存档。
+ */
+export function setKeysGroup(ids: string[], groupId: string | null): KeyGatewayData {
+  const data = getKeyData()
+  if (groupId && !(data.groups ?? []).some((group) => group.id === groupId)) {
+    throw new Error('未找到该分组')
+  }
+  const target = new Set(ids.filter(Boolean))
+  for (const entry of data.keys) {
+    if (!target.has(entry.id)) continue
+    if (groupId) entry.groupId = groupId
+    // 未分组用「不存在该字段」表示，置 undefined 会把 undefined 写进存档
+    else delete entry.groupId
+  }
   setKeyData(data)
   return data
 }

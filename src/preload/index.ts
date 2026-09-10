@@ -56,6 +56,10 @@ const api = {
     invoke('keys:add', key, note, region),
   importKeys: (text: string, region?: string) => invoke('keys:import', text, region),
   updateKey: (id: string, note: string) => invoke('keys:update', id, note),
+  setKeysNote: (ids: string[], note: string) => invoke('keys:set-note', ids, note),
+  setKeyGroups: (groups: unknown) => invoke('keys:set-groups', groups),
+  setKeysGroup: (ids: string[], groupId: string | null) =>
+    invoke('keys:set-group', ids, groupId),
   setKeyRegion: (id: string, region: string) => invoke('keys:set-region', id, region),
   deleteKey: (id: string) => invoke('keys:delete', id),
   selectKey: (id: string | null) => invoke('keys:select', id),

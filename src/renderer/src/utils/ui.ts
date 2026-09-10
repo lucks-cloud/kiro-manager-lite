@@ -45,6 +45,8 @@ export function confirmDanger(options: {
   onOk: () => void | Promise<unknown>
   okButtonProps?: { type?: 'primary'; danger?: boolean }
   zIndex?: number
+  /** 关闭动画结束后回调，确认 / 取消都会走到；用于复位调用方的「忙」标记 */
+  afterClose?: () => void
 }): void {
   const { okButtonProps, ...rest } = options
   Modal.confirm({
@@ -62,6 +64,7 @@ export function confirmDelete(options: {
   title: string
   content?: string | VNode
   onOk: () => void | Promise<unknown>
+  afterClose?: () => void
 }): void {
   confirmDanger({
     ...options,

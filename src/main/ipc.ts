@@ -62,6 +62,9 @@ import {
   recordChatTestResult,
   selectKey,
   syncAllKeys,
+  setKeyGroups,
+  setKeysGroup,
+  setKeysNote,
   syncKey,
   testKey,
   updateKey,
@@ -86,6 +89,7 @@ import {
 import { DEFAULT_REGION } from '../shared/regions'
 import type {
   Account,
+  AccountGroup,
   AccountStoreData,
   AccountUsage,
   AppSettings,
@@ -285,6 +289,11 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   )
   handle('keys:import', (_e, text: string, region?: string) => ok(importKeys(text, region)))
   handle('keys:update', (_e, id: string, note: string) => ok(updateKey(id, note)))
+  handle('keys:set-note', (_e, ids: string[], note: string) => ok(setKeysNote(ids, note)))
+  handle('keys:set-groups', (_e, groups: AccountGroup[]) => ok(setKeyGroups(groups)))
+  handle('keys:set-group', (_e, ids: string[], groupId: string | null) =>
+    ok(setKeysGroup(ids, groupId))
+  )
   handle('keys:set-region', async (_e, id: string, region: string) =>
     ok(await updateKeyRegion(id, region))
   )

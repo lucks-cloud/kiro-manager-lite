@@ -111,7 +111,8 @@ watch(
 function content(): string {
   return buildExportContent(format.value, targets.value, {
     includeCredentials: effectiveCredentials.value,
-    appVersion: settingsStore.appInfo?.version ?? '1.0.0'
+    appVersion: settingsStore.appInfo?.version ?? '1.0.0',
+    groups: accountsStore.groups
   })
 }
 
@@ -149,7 +150,8 @@ async function saveSplitZip(): Promise<void> {
   if (targets.value.length === 0) return void message.warning('没有可导出的账号')
   const bundle = buildSplitBundle(format.value, targets.value, {
     includeCredentials: effectiveCredentials.value,
-    appVersion: settingsStore.appInfo?.version ?? '1.0.0'
+    appVersion: settingsStore.appInfo?.version ?? '1.0.0',
+    groups: accountsStore.groups
   })
   await sendZip(bundle, `已分割导出 ${targets.value.length} 个账号`)
 }

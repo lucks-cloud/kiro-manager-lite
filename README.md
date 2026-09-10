@@ -13,8 +13,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.0.21-6c5ce7" alt="version">
-  <img src="https://img.shields.io/badge/updated-2026--09--09-2f9e44" alt="updated">
+  <img src="https://img.shields.io/badge/version-1.0.22-6c5ce7" alt="version">
+  <img src="https://img.shields.io/badge/updated-2026--09--10-2f9e44" alt="updated">
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="license">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="platform">
   <img src="https://img.shields.io/badge/Vue-3-42b883" alt="vue">
@@ -31,7 +31,9 @@
 
 - 五种添加方式：Google / GitHub 社交登录、AWS Builder ID 设备码、Enterprise IAM Identity Center SSO、OIDC 凭证、读取本机已登录的 Kiro 凭证
 - 搜索、按状态 / 订阅 / 登录方式筛选、排序、多选与批量操作；上千账号用虚拟列表保持流畅
+- 自定义分组：新建 / 改名 / 删除、长按拖动排序，按分组（含「未分组」）多选筛选，可批量把选中账号移入或移出分组，卡片上直接显示分组标签
 - 卡片显示邮箱、昵称、备注、订阅档位、积分占比与 Token 剩余时间；备注可自己填，用于标记用途或来源
+- 三种展示形态可切换并记住选择：卡片、卡片紧凑（收起额度明细）、列表（一排一个的横向长条，一屏能看几十个）
 - 详情抽屉展开订阅档位、积分构成、超额费率、Token 有效期与完整凭证，支持一键复制
 
 **换号与保活**
@@ -58,6 +60,8 @@
 ### 🔑 API Key 管理
 
 - 支持单个添加、批量导入、搜索、订阅 / 状态 / 用量 / 重置时间筛选、排序、导出和批量删除
+- 与账号列表同一套自定义分组：新建 / 改名 / 删除、长按拖动排序、按分组多选筛选、批量设置分组，卡片上显示分组标签
+- 同样有卡片、卡片紧凑、列表三种展示形态可切换并记住选择
 - 每个 Key 独立绑定区域，展示订阅档位、注册邮箱、User ID、额度、重置时间和异常原因
 - 支持单个与批量刷新、真实对话测活、批量测活，以及按模型消耗倍率选择测试模型
 - 大量 Key 使用虚拟网格渲染；详情、历史、测活和导入导出弹窗均按需挂载，减少首屏开销
@@ -121,14 +125,14 @@
 
 <p align="center">
   <a href="https://github.com/lucks-cloud/kiro-manager-lite/releases/latest">
-    <img src="https://img.shields.io/badge/⬇%20下载最新版-v1.0.21-6c5ce7?style=for-the-badge" alt="下载最新版">
+    <img src="https://img.shields.io/badge/⬇%20下载最新版-v1.0.22-6c5ce7?style=for-the-badge" alt="下载最新版">
   </a>
   <a href="https://github.com/lucks-cloud/kiro-manager-lite/releases">
     <img src="https://img.shields.io/badge/全部版本-Releases-24292f?style=for-the-badge&logo=github" alt="全部版本">
   </a>
 </p>
 
-**最新版本：v1.0.21**（2026-09-09） · 变更详情见 [CHANGELOG.md](CHANGELOG.md)
+**最新版本：v1.0.22**（2026-09-10） · 变更详情见 [CHANGELOG.md](CHANGELOG.md)
 
 ### 选择对应的安装包
 
@@ -335,7 +339,7 @@ src/
 
 ## 🔖 更新日志
 
-各版本变更记录见 [CHANGELOG.md](CHANGELOG.md)，当前版本 v1.0.21，最后更新于 2026-09-09。
+各版本变更记录见 [CHANGELOG.md](CHANGELOG.md)，当前版本 v1.0.22，最后更新于 2026-09-10。
 
 ---
 

@@ -1,7 +1,9 @@
 import { acceptHMRUpdate, defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import { v4 as uuidv4 } from 'uuid'
 import {
   DEFAULT_KEY_GATEWAY_DATA,
+  type AccountGroup,
   type KeyGatewayConflict,
   type KeyGatewayData,
   type KeyGatewayStatus,
@@ -10,6 +12,12 @@ import {
   type KeyTestResult
 } from '@shared/types'
 import { shouldSkipKeyUsageRefresh } from '@shared/refreshPolicy'
+import {
+  countByGroup,
+  reorderGroups as reorderGroupList,
+  sortGroups
+} from '@/utils/groups'
+import { toPlain } from '@/utils/ipc'
 import { useSettingsStore } from '@/stores/settings'
 
 /** 网关统计的轮询间隔：RPM 是一分钟窗口，3 秒一刷足够跟手又不浪费 */
@@ -145,6 +153,92 @@ export const useKeysStore = defineStore('keys', () => {
     delete nextStats[id]
     gatewayStats.value = nextStats
     return null
+  }
+
+  /**
+   * 批量覆盖备注，留空即清空；返回实际变化的条数。
+   * 走主进程的批量接口，几百个 Key 也只落一次盘。
+   */
+  async function setNoteForKeys(
+    ids: string[],
+    note: string
+  ): Promise<{ error?: string; changed?: number }> {
+    const target = new Set(ids.filter(Boolean))
+    if (!target.size) return { changed: 0 }
+    const value = note.trim() || undefined
+    const changed = data.value.keys.filter(
+      (entry) => target.has(entry.id) && entry.note !== value
+    ).length
+    const res = await window.api.setKeysNote([...target], note)
+    if (!res.success || !res.data) return { error: res.error || '设置备注失败' }
+    replace(res.data)
+    return { changed }
+  }
+
+  // ============ 分组 ============
+  /*
+   * 分组数据存在主进程的 keyData 里，所以每个动作都是一次 IPC。
+   * 主进程只给「整表替换」一个原语（setKeyGroups），新建 / 改名 / 删除 / 排序
+   * 都在这里算出新列表再提交 —— 省掉四套通道，也不会出现「分组删了、
+   * Key 上还留着 id」的中间态（主进程会顺手清掉悬空 id）。
+   */
+
+  /** 按 order 排好的分组列表 */
+  const groups = computed(() => sortGroups(data.value.groups))
+  /** id -> 分组，供卡片取名与筛选判断已删除分组 */
+  const groupMap = computed(() => new Map(groups.value.map((group) => [group.id, group])))
+  /** 各分组下的 Key 数，外加「未分组」一项 */
+  const groupCounts = computed(() => countByGroup(data.value.keys, groups.value))
+
+  async function commitGroups(next: AccountGroup[]): Promise<string | null> {
+    const res = await window.api.setKeyGroups(toPlain(next))
+    if (!res.success || !res.data) return res.error || '保存分组失败'
+    replace(res.data)
+    return null
+  }
+
+  /** 新建分组；同名直接复用已有的那个，避免建出一堆重名分组 */
+  async function addGroup(name: string): Promise<{ error?: string; group?: AccountGroup }> {
+    const label = name.trim()
+    if (!label) return { error: '分组名称不能为空' }
+    const existing = groups.value.find((group) => group.name === label)
+    if (existing) return { group: existing }
+
+    const group: AccountGroup = { id: uuidv4(), name: label, order: groups.value.length }
+    const error = await commitGroups([...groups.value, group])
+    return error ? { error } : { group }
+  }
+
+  async function renameGroup(id: string, name: string): Promise<string | null> {
+    const label = name.trim()
+    if (!label) return '分组名称不能为空'
+    return commitGroups(groups.value.map((g) => (g.id === id ? { ...g, name: label } : g)))
+  }
+
+  /** 删除分组：主进程会把引用它的 Key 置回未分组 */
+  async function removeGroup(id: string): Promise<string | null> {
+    return commitGroups(groups.value.filter((group) => group.id !== id))
+  }
+
+  /** 拖动排序后按给定顺序重排 */
+  async function reorderGroups(orderedIds: string[]): Promise<string | null> {
+    return commitGroups(reorderGroupList(groups.value, orderedIds))
+  }
+
+  /** 批量设置分组（groupId 传 null 表示移出分组），返回实际变化的条数 */
+  async function setGroupForKeys(
+    ids: string[],
+    groupId: string | null
+  ): Promise<{ error?: string; changed?: number }> {
+    const target = new Set(ids.filter(Boolean))
+    if (!target.size) return { changed: 0 }
+    const changed = data.value.keys.filter(
+      (entry) => target.has(entry.id) && (entry.groupId ?? null) !== groupId
+    ).length
+    const res = await window.api.setKeysGroup([...target], groupId)
+    if (!res.success || !res.data) return { error: res.error || '设置分组失败' }
+    replace(res.data)
+    return { changed }
   }
 
   async function select(id: string): Promise<string | null> {
@@ -418,7 +512,17 @@ export const useKeysStore = defineStore('keys', () => {
     add,
     importText,
     update,
+    setNoteForKeys,
     remove,
+    // 分组
+    groups,
+    groupMap,
+    groupCounts,
+    addGroup,
+    renameGroup,
+    removeGroup,
+    reorderGroups,
+    setGroupForKeys,
     select,
     listModels,
     test,

@@ -1,6 +1,7 @@
 import type {
   Account,
   AccountApiKeyList,
+  AccountGroup,
   AccountSnapshot,
   AccountStoreData,
   AccountUsage,
@@ -80,6 +81,12 @@ export interface Api {
     invalid: number
   }>>
   updateKey: (id: string, note: string) => Promise<IpcResult<KeyGatewayData>>
+  /** 批量覆盖备注，留空即清空 */
+  setKeysNote: (ids: string[], note: string) => Promise<IpcResult<KeyGatewayData>>
+  /** 整表替换分组定义（新建 / 改名 / 删除 / 排序共用），顺带清掉悬空的 groupId */
+  setKeyGroups: (groups: AccountGroup[]) => Promise<IpcResult<KeyGatewayData>>
+  /** 批量设置分组，groupId 传 null 表示移出分组 */
+  setKeysGroup: (ids: string[], groupId: string | null) => Promise<IpcResult<KeyGatewayData>>
   /** 修改单个 Key 的区域 */
   setKeyRegion: (
     id: string,

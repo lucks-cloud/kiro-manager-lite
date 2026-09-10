@@ -3,6 +3,7 @@ import { computed, h, onMounted, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { message, Modal } from 'ant-design-vue'
 import {
+  AppstoreOutlined,
   CheckCircleFilled,
   CopyOutlined,
   DeleteOutlined,
@@ -54,8 +55,15 @@ import ApiKeyTestModal from '@/components/keys/ApiKeyTestModal.vue'
 import ApiKeyBatchTestModal from '@/components/keys/ApiKeyBatchTestModal.vue'
 import ApiKeyFilterPanel from '@/components/keys/ApiKeyFilterPanel.vue'
 import ExportApiKeysModal from '@/components/keys/ExportApiKeysModal.vue'
+import GroupPanel from '@/components/common/GroupPanel.vue'
+import GroupPickerModal from '@/components/common/GroupPickerModal.vue'
+import BatchNoteModal from '@/components/common/BatchNoteModal.vue'
+import DisplayModeSelect from '@/components/common/DisplayModeSelect.vue'
+import { UNGROUPED } from '@/utils/groups'
+import { keyGroupApi } from '@/utils/groupApi'
 import { DEFAULT_REGION, regionLabel } from '@shared/regions'
 import type {
+  AccountDisplayMode,
   KeyEntry,
   KeyFilter,
   KeyGatewayConflict,
@@ -103,7 +111,7 @@ const sortKey = ref<'createdAt' | 'usage' | 'checked' | 'note'>('createdAt')
 
 const filterOpen = ref(false)
 /** 筛选条件常驻本页：面板收起后条件仍然生效 */
-const filter = ref<KeyFilter>({ subscriptions: [], statuses: [] })
+const filter = ref<KeyFilter>({ subscriptions: [], statuses: [], groupIds: [] })
 
 /** 筛选面板里生效的条件数量，显示在筛选按钮的角标上 */
 const activeFilterCount = computed(() => {
@@ -111,6 +119,7 @@ const activeFilterCount = computed(() => {
   return (
     f.subscriptions.length +
     f.statuses.length +
+    // 分组筛选另有独立按钮与角标，这里不重复计入
     // != null：输入框清空时给的是 null，按 !== undefined 判断会把它算成一个生效条件
     (f.usageMin != null ? 1 : 0) +
     (f.usageMax != null ? 1 : 0) +
@@ -119,8 +128,90 @@ const activeFilterCount = computed(() => {
   )
 })
 
+/** 重置只清筛选面板自己的条件，分组筛选有独立按钮与「清除分组筛选」 */
 function resetFilter(): void {
-  filter.value = { subscriptions: [], statuses: [] }
+  filter.value = { subscriptions: [], statuses: [], groupIds: filter.value.groupIds }
+}
+
+// ============ 分组 ============
+const groupOpen = ref(false)
+/**
+ * 分组面板里正开着改名弹窗或删除确认。
+ * 这些弹窗 teleport 到 body，点它们会被 popover 当成「点了外面」而自动收起，
+ * 面板连同弹窗一起被卸载。busy 期间按住 popover 不让它关。
+ */
+const groupBusy = ref(false)
+const batchGroupOpen = ref(false)
+const batchNoteOpen = ref(false)
+
+function onGroupOpenChange(open: boolean): void {
+  if (!open && groupBusy.value) return
+  groupOpen.value = open
+}
+
+function toggleGroupFilter(id: string): void {
+  const list = filter.value.groupIds
+  filter.value.groupIds = list.includes(id) ? list.filter((v) => v !== id) : [...list, id]
+}
+
+/** 该 Key 所属分组名；分组已被删除时按未分组处理，标签不显示 */
+function groupNameOf(entry: KeyEntry): string {
+  return entry.groupId ? (store.groupMap.get(entry.groupId)?.name ?? '') : ''
+}
+
+// ============ 展示形态 ============
+/** 与账号列表同一套三形态，各记一份设置，两边可以不一样 */
+const displayMode = computed(() => settingsStore.settings.keyDisplayMode)
+
+function setDisplayMode(mode: AccountDisplayMode): void {
+  void settingsStore.update({ keyDisplayMode: mode })
+}
+
+/** 分组读写门面，与账号列表共用同一组分组组件 */
+const groupApi = keyGroupApi()
+
+/** 批量备注：覆盖式改写所选 Key 的备注，留空即清空 */
+const savingNote = ref(false)
+
+async function applyBatchNote(note: string): Promise<void> {
+  savingNote.value = true
+  try {
+    const res = await store.setNoteForKeys(selectedIds.value, note)
+    if (res.error) return void message.error(res.error)
+    message.success(
+      note.trim() ? `已为 ${res.changed ?? 0} 个 Key 设置备注` : `已清空 ${res.changed ?? 0} 个 Key 的备注`
+    )
+    batchNoteOpen.value = false
+  } finally {
+    savingNote.value = false
+  }
+}
+
+/**
+ * 每种形态的单元格预估高度与最小列宽。
+ * 列表模式给一个不可能满足的列宽，列数就恒为 1，虚拟滚动那边不用开分支。
+ */
+const gridLayout = computed(() => {
+  switch (displayMode.value) {
+    case 'compact':
+      return { minColumnWidth: 350, estimatedHeight: 250 }
+    case 'list':
+      return { minColumnWidth: 100000, estimatedHeight: 80 }
+    default:
+      return { minColumnWidth: 350, estimatedHeight: 320 }
+  }
+})
+
+/**
+ * 一张带报错的卡片比同类卡片高出多少像素 = 报错行本身 + 它上面那道间距。
+ * 与下面 .error-line 的样式硬绑定：行高 18 + 上下各 3px padding = 24，
+ * 再加 8px 间距（卡片 / 紧凑的 row-gap 与列表的网格行间距都是 8）= 32。
+ * 三种形态取值相同，所以用一个常量；改样式要同步改这里。
+ */
+const ERROR_ROW_EXTRA = 32
+
+function keyItemExtra(entry: KeyEntry): number {
+  return keyIssue(entry) ? ERROR_ROW_EXTRA : 0
 }
 
 /**
@@ -235,8 +326,16 @@ const sortLabel = computed(() => sortOptions.find((item) => item.value === sortK
 
 const filteredKeys = computed(() => {
   const needle = search.value.trim().toLowerCase()
-  const { subscriptions, statuses, usageMin, usageMax, daysRemainingMin, daysRemainingMax } =
-    filter.value
+  const {
+    subscriptions,
+    statuses,
+    groupIds,
+    usageMin,
+    usageMax,
+    daysRemainingMin,
+    daysRemainingMax
+  } = filter.value
+  const groupSet = groupIds.length ? new Set(groupIds) : null
   return [...data.value.keys]
     .filter((entry) => {
       if (needle) {
@@ -244,6 +343,11 @@ const filteredKeys = computed(() => {
           (entry.note || '').toLowerCase().includes(needle) ||
           entry.key.toLowerCase().includes(needle)
         if (!hit) return false
+      }
+      // 分组已被删除的 Key 一律视为未分组，避免残留 id 让它从列表里消失
+      if (groupSet) {
+        const key = entry.groupId && store.groupMap.has(entry.groupId) ? entry.groupId : UNGROUPED
+        if (!groupSet.has(key)) return false
       }
       if (subscriptions.length && !subscriptions.includes(keyTier(entry))) return false
       if (statuses.length && !statuses.includes(keyStatusKey(entry))) return false
@@ -1072,6 +1176,37 @@ onUnmounted(() => store.stopStatsPolling())
           </a-badge>
         </a-popover>
 
+        <!-- 分组：管理入口 + 按分组筛选，与账号列表同一套交互 -->
+        <a-popover
+          :open="groupOpen"
+          trigger="click"
+          placement="bottomRight"
+          :get-popup-container="bodyPopupContainer"
+          @open-change="onGroupOpenChange"
+        >
+          <template #title>
+            <span>分组</span>
+          </template>
+          <template #content>
+            <GroupPanel
+              v-if="groupOpen"
+              :api="groupApi"
+              :selected="filter.groupIds"
+              :matched="filteredKeys.length"
+              entity="Key"
+              @toggle="toggleGroupFilter"
+              @clear="filter.groupIds = []"
+              @busy="groupBusy = $event"
+            />
+          </template>
+          <a-badge :count="filter.groupIds.length" :offset="[-4, 4]">
+            <a-button size="small" :type="filter.groupIds.length ? 'primary' : 'default'">
+              <template #icon><AppstoreOutlined /></template>
+              分组
+            </a-button>
+          </a-badge>
+        </a-popover>
+
         <a-dropdown>
           <a-button size="small">
             <template #icon><SortAscendingOutlined /></template>
@@ -1101,10 +1236,33 @@ onUnmounted(() => store.stopStatsPolling())
           </template>
           {{ privacyMode ? '隐私打码中' : '隐私打码' }}
         </a-button>
+
+        <!-- 展示形态：卡片 / 紧凑 / 列表，选择会持久化 -->
+        <DisplayModeSelect :value="displayMode" @change="setDisplayMode" />
+
         <a-button size="small" :disabled="!batchTargets.length" @click="batchTestOpen = true">
           <template #icon><ThunderboltOutlined /></template>
           批量测活{{ batchScopeSuffix }}
         </a-button>
+        <!-- 批量操作作用于全部勾选项 -->
+        <a-dropdown v-if="selectedIds.length">
+          <a-button size="small">
+            批量操作（{{ selectedIds.length }}个）
+            <DownOutlined />
+          </a-button>
+          <template #overlay>
+            <a-menu>
+              <a-menu-item key="note" @click="batchNoteOpen = true">
+                <EditOutlined />
+                批量设置备注
+              </a-menu-item>
+              <a-menu-item key="group" @click="batchGroupOpen = true">
+                <AppstoreOutlined />
+                批量设置分组
+              </a-menu-item>
+            </a-menu>
+          </template>
+        </a-dropdown>
         <!-- 删除作用于全部勾选项（不受当前搜索影响），条数与确认弹窗里的数字一致 -->
         <a-button v-if="selectedIds.length" size="small" danger @click="removeSelected">
           <template #icon><DeleteOutlined /></template>
@@ -1125,21 +1283,30 @@ onUnmounted(() => store.stopStatsPolling())
     </div>
 
     <!-- API Key 卡片同样使用虚拟网格：无论总数多少，只挂载视口附近的卡片。 -->
+    <!--
+      key 绑定展示形态：切换形态时行高相差很大，而虚拟滚动量到的高度只允许变高，
+      重挂载一次让它重新测量。
+    -->
     <VirtualGrid
       v-if="filteredKeys.length"
+      :key="displayMode"
       class="key-grid"
       :items="filteredKeys"
       :item-key="keyItemKey"
-      :min-column-width="350"
-      :gap="14"
-      :estimated-height="320"
+      :item-extra="keyItemExtra"
+      :min-column-width="gridLayout.minColumnWidth"
+      :gap="displayMode === 'list' ? 8 : 10"
+      :estimated-height="gridLayout.estimatedHeight"
     >
       <template #default="{ item: entry }">
         <a-card
           class="key-card"
-        :class="{ active: entry.id === data.activeKeyId, selected: selectedSet.has(entry.id) }"
+        :class="[
+          `mode-${displayMode}`,
+          { active: entry.id === data.activeKeyId, selected: selectedSet.has(entry.id) }
+        ]"
         hoverable
-        @click="detailTarget = entry"
+        @click="toggleSelect(entry.id, !selectedSet.has(entry.id))"
       >
         <div class="key-head">
           <div class="key-name">
@@ -1148,7 +1315,11 @@ onUnmounted(() => store.stopStatsPolling())
               @click.stop
               @change="(event: any) => toggleSelect(entry.id, event.target.checked)"
             />
-            <div class="key-identity">
+            <!--
+              整卡点击 = 勾选 / 取消勾选，有自己语义的区域各自 stop：
+              这块开详情，用量块开积分变化，统计格开曲线，右下动作区各干各的。
+            -->
+            <div class="key-identity" @click.stop="detailTarget = entry">
               <span
                 class="key-value mono"
                 :title="privacyMode ? undefined : entry.key"
@@ -1171,6 +1342,16 @@ onUnmounted(() => store.stopStatsPolling())
           </a-tag>
           <a-tag :color="subscriptionColor(entry)" :bordered="false">
             {{ entry.subscription || '等级未知' }}
+          </a-tag>
+          <!-- 分组标签：没分组就不显示，避免每张卡都多一个空标签 -->
+          <a-tag
+            v-if="groupNameOf(entry)"
+            class="group-tag"
+            color="purple"
+            :bordered="false"
+            :title="`分组：${groupNameOf(entry)}`"
+          >
+            {{ groupNameOf(entry) }}
           </a-tag>
           <a-tooltip :title="`${regionLabel(entry.region)}，点击修改所属区域`">
             <button class="region-chip mono" @click.stop="openRegion(entry)">
@@ -1265,14 +1446,17 @@ onUnmounted(() => store.stopStatsPolling())
           </div>
         </div>
 
-        <div class="error-slot">
-          <a-tooltip v-if="keyIssue(entry)" placement="topLeft">
-            <template #title>
-              <span class="error-tip">{{ keyIssue(entry) }}</span>
-            </template>
-            <div class="error-line">{{ keyIssue(entry) }}</div>
-          </a-tooltip>
-        </div>
+        <!--
+          报错行只在真有问题时渲染。原先这里是个恒定 27px 的占位块（为了让所有卡片等高），
+          现在改由虚拟滚动的 itemExtra 只给「同一行里真有报错」的那一行加高，
+          没报错的行不必再白留一条。
+        -->
+        <a-tooltip v-if="keyIssue(entry)" placement="topLeft">
+          <template #title>
+            <span class="error-tip">{{ keyIssue(entry) }}</span>
+          </template>
+          <div class="error-line">{{ keyIssue(entry) }}</div>
+        </a-tooltip>
 
         <div class="key-actions" @click.stop>
           <div class="key-switch-action">
@@ -1405,6 +1589,24 @@ onUnmounted(() => store.stopStatsPolling())
     </a-modal>
 
     <ExportApiKeysModal v-if="exportOpen" v-model:open="exportOpen" :selected-ids="selectedIds" />
+
+    <BatchNoteModal
+      v-if="batchNoteOpen"
+      :ids="selectedIds"
+      entity="Key"
+      placeholder="例如：本地网关 / 待观察 / 某渠道"
+      :saving="savingNote"
+      @submit="applyBatchNote"
+      @close="batchNoteOpen = false"
+    />
+
+    <GroupPickerModal
+      v-if="batchGroupOpen"
+      :api="groupApi"
+      :ids="selectedIds"
+      entity="Key"
+      @close="batchGroupOpen = false"
+    />
 
     <!-- 目标取自 filteredKeys（勾选时只取勾选项）：顺序与内容都跟界面卡片保持一致 -->
     <ApiKeyBatchTestModal
@@ -1582,8 +1784,30 @@ onUnmounted(() => store.stopStatsPolling())
 .search-input { width: 100%; max-width: 480px; }
 .spacer { flex: 1 1 auto; }
 .key-grid { flex: 1 1 auto; min-height: 0; }
-.key-card { width: 100%; border: 1px solid var(--kal-border); overflow: hidden; cursor: pointer; }
-.key-card :deep(.ant-card-body) { padding-block: 18px; }
+/* 整卡可点选；连着点几十张卡时不留下一片蓝色选中文字，要复制走详情抽屉或复制按钮 */
+.key-card { width: 100%; border: 1px solid var(--kal-border); overflow: hidden; cursor: pointer; user-select: none; }
+/* 用 padding 简写覆盖 antd 默认的 24px：左右也要收，不然横向留白比纵向大一截 */
+.key-card :deep(.ant-card-body) { padding: 6px 14px; }
+/*
+ * 卡片 / 紧凑形态：卡片体改成纵向 flex 并铺满整卡，动作区用 margin-top: auto
+ * 钉在底边，富余高度（虚拟滚动的统一行高减去本卡内容）落在它上方 —— 与账号卡片一致。
+ *
+ * 块间距随之改由 row-gap 统一给：auto 外边距会把「上一块的 margin-bottom」之外的
+ * 空间全吃掉，靠各块自带的 margin-top 撑不出最小间距，而 gap 不受 auto 影响。
+ * 所以要把各块原来的 margin-top 清掉，否则会和 gap 叠加。
+ */
+.key-card:not(.mode-list) { display: flex; flex-direction: column; }
+.key-card:not(.mode-list) :deep(.ant-card-body) {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  row-gap: 8px;
+}
+.key-card:not(.mode-list) .tag-row,
+.key-card:not(.mode-list) .usage-block,
+.key-card:not(.mode-list) .stat-grid,
+.key-card:not(.mode-list) .error-line { margin-top: 0; }
+.key-card:not(.mode-list) .key-actions { margin-top: auto; }
 .key-card.selected { border-color: var(--kal-primary); box-shadow: 0 0 0 1px var(--kal-primary) inset; }
 .key-card.active { border-color: #52c41a; box-shadow: none; }
 .key-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
@@ -1599,13 +1823,20 @@ onUnmounted(() => store.stopStatsPolling())
 .key-email { margin-top: 2px; font-size: 12px; }
 .key-note { margin-top: 2px; font-size: 12px; }
 .status-tag { flex: 0 0 auto; margin: 0; }
-.tag-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 22px; margin-top: 10px; }
-.tag-row :deep(.ant-tag) { margin: 0; }
+/* 标签一律排在同一行：不换行，宽度不够时由分组标签让位，区域标签不会被挤到下一行 */
+.tag-row { display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; min-height: 22px; min-width: 0; margin-top: 10px; }
+.tag-row :deep(.ant-tag) { margin: 0; flex: 0 0 auto; }
+/*
+ * 分组名是用户自己填的，长度不可控，所以让它独自承担收缩：
+ * 能排下就完整显示（剩余宽度全归它用），排不下才截断成省略号，全名看悬停提示。
+ */
+.tag-row .group-tag { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 区域靠右对齐，与左侧的状态、等级标签同一行 */
 .region-chip { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 4px; margin-left: auto; padding: 1px 8px; border: 1px solid var(--kal-border); border-radius: 10px; background: transparent; color: var(--kal-muted); font-size: 11.5px; line-height: 18px; cursor: pointer; transition: border-color 0.15s ease, color 0.15s ease; }
 .region-chip:hover { border-color: var(--kal-primary); color: var(--kal-primary); }
 .field-hint { margin-top: 4px; font-size: 12px; line-height: 1.6; }
-.usage-block { display: flex; flex-direction: column; gap: 4px; height: 105px; margin-top: 12px; padding: 12px; box-sizing: border-box; border-radius: 12px; background: var(--kal-block-bg); cursor: pointer; transition: background 0.16s ease; }
+/* 高度按内容自然撑开：各卡结构相同、高度本来就一致，写死 105px 只会多留几像素空白 */
+.usage-block { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; padding: 10px 12px; box-sizing: border-box; border-radius: 12px; background: var(--kal-block-bg); cursor: pointer; transition: background 0.16s ease; }
 .usage-block:hover { background: var(--kal-code-bg); }
 .usage-head, .usage-foot { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 12.5px; }
 .usage-title { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
@@ -1635,8 +1866,12 @@ onUnmounted(() => store.stopStatsPolling())
 /* 成功率带两位小数后字符变长，格子窄时靠 clamp 缩字号，且禁止折行 */
 .stat-value { font-size: clamp(11px, 1.1vw, 14px); line-height: 1.25; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .stat-value small { margin-left: 1px; font-size: 10px; font-weight: 400; }
-.error-slot { height: 27px; margin-top: 8px; }
-.error-line { padding: 5px 8px; overflow: hidden; color: #ff4d4f; border-radius: 8px; background: rgba(255, 77, 79, 0.08); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; cursor: help; }
+/*
+ * 报错行。高度钉成确定值：18（行高）+ 3 + 3（上下 padding）= 24px。
+ * 加上所在形态的块间距，就是带报错的卡比同类卡高出的部分 ——
+ * 与上面 ERROR_ROW_EXTRA 的取值绑定，改这里要同步改那边。
+ */
+.error-line { padding: 3px 8px; overflow: hidden; color: #ff4d4f; border-radius: 8px; background: rgba(255, 77, 79, 0.08); font-size: 11.5px; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; cursor: help; }
 /* 卡片里一行截断，Tooltip 里完整换行展示 */
 .error-tip { white-space: pre-wrap; word-break: break-all; }
 .key-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 18px; padding: 8px 0 0; border-top: 1px solid var(--kal-border); }
@@ -1644,6 +1879,93 @@ onUnmounted(() => store.stopStatsPolling())
 .action-btn { width: 24px; min-width: 24px; height: 24px; padding: 0; }
 .switch-btn { width: auto; min-width: 0; padding-inline: 8px; gap: 4px; }
 .switch-btn.active { color: #52c41a; background: color-mix(in srgb, #52c41a 10%, transparent); }
+/* ============ 紧凑卡片 ============ */
+/*
+ * 去掉网关统计那四个小格；用量块压成两行（柱状条与百分比同排，下面是总额 + 更新时间），
+ * 与账号卡片的紧凑模式同一套做法：display: contents 把 .usage-head 从布局里摘掉，
+ * 让它的两个子元素直接成为用量块的 flex 项，再用 order 排位。
+ */
+.key-card.mode-compact .stat-grid { display: none; }
+.key-card.mode-compact .usage-block,
+.key-card.mode-list .usage-block {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 8px;
+}
+.key-card.mode-compact .usage-head,
+.key-card.mode-list .usage-head { display: contents; }
+.key-card.mode-compact .usage-title,
+.key-card.mode-list .usage-title { display: none; }
+.key-card.mode-compact .usage-bars,
+.key-card.mode-list .usage-bars { order: 1; flex: 1 1 auto; min-width: 60px; margin: 0; }
+.key-card.mode-compact .usage-percent,
+.key-card.mode-list .usage-percent { order: 2; font-size: 16px; }
+.key-card.mode-compact .usage-foot,
+.key-card.mode-list .usage-foot { order: 3; flex: 1 0 100%; }
+/* 内容压得紧，底部那条分隔线与它自身的上内边距都去掉（块间距与卡片模式同为 8px） */
+.key-card.mode-compact .key-actions { border-top: none; padding-top: 0; }
+
+/* ============ 列表模式 ============ */
+/*
+ * 一条 = 四块：Key 信息 | 标签 | 用量 | 操作区，标签那块顺带吃掉全部富余宽度。
+ * 与账号列表同一套：网格 + 容器查询按「卡片实际可用宽度」分档，
+ * 窄了依次把标签、用量、操作区挪到下一行，不挤压也不横向溢出。
+ *
+ * 真正的布局容器是 a-card 的 body（卡片自己只是外壳），所以规则打在 :deep 上。
+ */
+.key-card.mode-list { cursor: pointer; }
+.key-card.mode-list :deep(.ant-card-body) {
+  display: grid;
+  grid-template-columns: 400px minmax(190px, 1fr) 350px 320px;
+  align-items: center;
+  align-content: center;
+  column-gap: 18px;
+  row-gap: 8px;
+  padding: 8px 14px;
+}
+/* 每块写死落位：报错行跨整行、自动摆放的游标不能回退，不写死会把操作区顶到下一行 */
+.key-card.mode-list .key-head { grid-area: 1 / 1 / 2 / 2; }
+.key-card.mode-list .tag-row { grid-area: 1 / 2 / 2 / 3; margin-top: 0; }
+.key-card.mode-list .usage-block { grid-area: 1 / 3 / 2 / 4; margin-top: 0; }
+.key-card.mode-list .key-actions { grid-area: 1 / 4 / 2 / 5; margin-top: 0; padding-top: 0; border-top: none; }
+.key-card.mode-list .stat-grid { display: none; }
+.key-card.mode-list .error-line { grid-column: 1 / -1; margin-top: 0; }
+/* 区域标签在窄列里不必再靠右顶开 */
+.key-card.mode-list .region-chip { margin-left: 0; }
+.key-card.mode-list .tag-row { flex-wrap: nowrap; min-width: 0; margin-left: 6px; overflow: hidden; }
+.key-card.mode-list .usage-bars { height: 10px; }
+/* 「切换到该 Key」在一行里太长，收成图标按钮那一排的同级元素 */
+.key-card.mode-list .key-switch-action { flex: 0 0 auto; }
+
+/* 窄一档：标签掉到第二行铺满整宽 */
+@container (max-width: 1343px) {
+  .key-card.mode-list :deep(.ant-card-body) {
+    grid-template-columns: 400px minmax(0, 1fr) 350px 320px;
+  }
+  .key-card.mode-list .tag-row { grid-area: 2 / 1 / 3 / -1; margin-left: 0; }
+}
+
+/* 再窄一档：操作区掉到用量下面，第一行只剩「Key | 富余 | 用量」 */
+@container (max-width: 1153px) {
+  .key-card.mode-list :deep(.ant-card-body) {
+    grid-template-columns: minmax(0, 400px) minmax(0, 1fr) 350px;
+  }
+  .key-card.mode-list .usage-block { grid-area: 1 / 3 / 2 / 4; }
+  .key-card.mode-list .tag-row { grid-area: 2 / 1 / 3 / 3; }
+  .key-card.mode-list .key-actions { grid-area: 2 / 3 / 3 / 4; }
+}
+
+/* 兜底档：逐块竖排，正常窗口到不了这里 */
+@container (max-width: 745px) {
+  .key-card.mode-list :deep(.ant-card-body) { grid-template-columns: minmax(0, 1fr); }
+  .key-card.mode-list .key-head,
+  .key-card.mode-list .tag-row,
+  .key-card.mode-list .usage-block,
+  .key-card.mode-list .key-actions { grid-area: auto / 1 / auto / -1; }
+}
+
 .empty { margin: 70px 0; }
 .test-loading { display: grid; place-items: center; min-height: 220px; }
 .model-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 16px; max-height: 180px; overflow: auto; }

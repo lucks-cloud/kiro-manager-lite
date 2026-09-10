@@ -107,6 +107,8 @@ export interface Account {
   nickname?: string
   note?: string
   idp: IdpType
+  /** 所属分组 id；分组被删除后这里会被清空，界面按「未分组」处理 */
+  groupId?: string
   userId?: string
   profileArn?: string
   credentials: AccountCredentials
@@ -120,11 +122,24 @@ export interface Account {
   lastCheckedAt?: number
 }
 
+/**
+ * 分组：用户自定义的归类标签，顺序由 order 决定（拖动排序时重写）。
+ * 账号与 API Key 共用这一个结构 —— 字段完全一样，没理由拆成两份。
+ */
+export interface AccountGroup {
+  id: string
+  name: string
+  /** 展示顺序，越小越靠前 */
+  order: number
+}
+
 /** 持久化载荷 */
 export interface AccountStoreData {
   version: number
   accounts: Account[]
   activeAccountId?: string | null
+  /** 分组定义；老数据没有该字段时按空数组处理 */
+  groups?: AccountGroup[]
 }
 
 /** 导出文件结构 */
@@ -133,6 +148,12 @@ export interface AccountExportData {
   version: string
   exportedAt: number
   accounts: Omit<Account, 'isActive'>[]
+  /**
+   * 被导出账号所引用的分组定义。
+   * 账号里只存 groupId，不带上定义的话恢复到另一台机器就只剩悬空 id，
+   * 分组标签会全部消失。老备份没有该字段，按空处理。
+   */
+  groups?: AccountGroup[]
 }
 
 /** 简化导入项（卡密 / OIDC JSON / CSV） */
@@ -567,6 +588,14 @@ export interface UpdateCheckResult {
   publishedAt: string
 }
 
+/**
+ * 账号列表的展示形态。
+ * card：完整卡片（用量 + 额度明细）；
+ * compact：卡片去掉额度明细那一块，一屏能多放几行；
+ * list：一排一个的横向长条，信息压到一行里。
+ */
+export type AccountDisplayMode = 'card' | 'compact' | 'list'
+
 export interface AppSettings {
   /** 主题色 */
   primaryColor: string
@@ -577,6 +606,10 @@ export interface AppSettings {
    * default 是 Ant Design 原生尺寸，一屏能放下更多内容。
    */
   componentSize: 'default' | 'large'
+  /** 账号列表的展示形态，见 AccountDisplayMode */
+  accountDisplayMode: AccountDisplayMode
+  /** API Key 列表的展示形态，与账号各记一份，两边可以不一样 */
+  keyDisplayMode: AccountDisplayMode
   /** 侧栏折叠 */
   sidebarCollapsed: boolean
   /** 隐私打码：列表与详情中隐藏邮箱、昵称等隐私信息 */
@@ -667,6 +700,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   darkMode: false,
   // 保持既有观感：老用户升级上来不会突然变小
   componentSize: 'large',
+  accountDisplayMode: 'card',
+  keyDisplayMode: 'card',
   sidebarCollapsed: false,
   privacyMode: false,
   usagePrecision: false,
@@ -715,6 +750,8 @@ export interface KeyEntry {
   /** 完整密钥，ksk_ 开头 */
   key: string
   note?: string
+  /** 所属分组 id，未分组时不存该字段；分组被删除时由主进程清掉 */
+  groupId?: string
   /**
    * 该 Key 所属 AWS 区域。不同 Key 可能来自不同区域，
    * 查询额度与网关转发都按各自的区域走。旧数据由 store 迁移时补齐。
@@ -763,6 +800,8 @@ export interface KeyFilter {
   /** 订阅档位，判定口径与账号一致（见 shared/subscription） */
   subscriptions: SubscriptionType[]
   statuses: KeyStatus[]
+  /** 按分组筛选，可多选；「未分组」用 UNGROUPED 哨兵值参与 */
+  groupIds: string[]
   /** 用量占比下限（0-1） */
   usageMin?: number
   /** 用量占比上限（0-1） */
@@ -777,6 +816,8 @@ export interface KeyFilter {
 export interface KeyGatewayData {
   version: number
   keys: KeyEntry[]
+  /** 分组定义；老数据没有该字段时按空数组处理 */
+  groups?: AccountGroup[]
   /** 当前激活（用于连接）的 key id */
   activeKeyId?: string | null
   /** 总开关：开启后接管 Kiro IDE 内置对话 */

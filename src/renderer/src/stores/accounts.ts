@@ -6,6 +6,7 @@ import {
   DEFAULT_SETTINGS,
   type Account,
   type AccountExportData,
+  type AccountGroup,
   type AccountImportItem,
   type AccountSnapshot,
   type AccountStatus,
@@ -22,6 +23,7 @@ import { errorMessage, isCredentialRejected } from '@shared/errors'
 import { shouldSkipAccountUsageRefresh } from '@shared/refreshPolicy'
 import { DEFAULT_REGION } from '@shared/regions'
 import { runPool } from '@/utils/format'
+import { UNGROUPED } from '@/utils/groups'
 import { toPlain } from '@/utils/ipc'
 import { isSocialIdp, normalizeIdp } from '@/utils/transfer'
 import { useSettingsStore } from './settings'
@@ -39,7 +41,15 @@ export interface AccountFilter {
   usageMin?: number
   /** 用量占比上限（0-1） */
   usageMax?: number
+  /**
+   * 按分组筛选。空数组表示不限；特殊值 __none__ 代表「未分组」，
+   * 这样「未分组」能和普通分组一样被勾选，不必再加一个布尔开关。
+   */
+  groupIds: string[]
 }
+
+// 「未分组」哨兵值定义在 utils/groups，账号与 API Key 两边共用；这里转出去兼容既有引用
+export { UNGROUPED } from '@/utils/groups'
 
 /** 批量任务的进度状态，全局单例，同一时间只跑一件事 */
 export type AccountTaskType =
@@ -74,6 +84,8 @@ export const useAccountsStore = defineStore('accounts', () => {
   const settingsStore = useSettingsStore()
 
   const accounts = ref<Account[]>([])
+  /** 分组定义，始终按 order 升序维护，界面直接按数组顺序渲染 */
+  const groups = ref<AccountGroup[]>([])
   const activeAccountId = ref<string | null>(null)
   const selectedIds = ref<string[]>([])
   const loading = ref(false)
@@ -84,7 +96,13 @@ export const useAccountsStore = defineStore('accounts', () => {
     total: 0,
     done: 0
   })
-  const filter = ref<AccountFilter>({ search: '', statuses: [], subscriptions: [], idps: [] })
+  const filter = ref<AccountFilter>({
+    search: '',
+    statuses: [],
+    subscriptions: [],
+    idps: [],
+    groupIds: []
+  })
 
   // ============ 持久化 ============
 
@@ -94,7 +112,8 @@ export const useAccountsStore = defineStore('accounts', () => {
     return {
       version: 1,
       accounts: accounts.value,
-      activeAccountId: activeAccountId.value
+      activeAccountId: activeAccountId.value,
+      groups: groups.value
     }
   }
 
@@ -116,6 +135,8 @@ export const useAccountsStore = defineStore('accounts', () => {
       if (res.success && res.data) {
         accounts.value = res.data.accounts ?? []
         activeAccountId.value = res.data.activeAccountId ?? null
+        // order 是持久化的排序依据，读回来先归一，界面就能直接按数组顺序渲染
+        groups.value = [...(res.data.groups ?? [])].sort((a, b) => a.order - b.order)
       }
       await syncActiveFromIde()
     } finally {
@@ -133,6 +154,112 @@ export const useAccountsStore = defineStore('accounts', () => {
 
   const activeAccount = computed(() => accounts.value.find((a) => a.isActive) ?? null)
 
+  // ============ 分组 ============
+
+  /** id -> 分组，供卡片取名与筛选判断已删除分组 */
+  const groupMap = computed(() => new Map(groups.value.map((g) => [g.id, g])))
+
+  /** 各分组下的账号数，外加「未分组」一项，用于面板上的计数 */
+  const groupCounts = computed(() => {
+    const counts: Record<string, number> = { [UNGROUPED]: 0 }
+    for (const g of groups.value) counts[g.id] = 0
+    for (const a of accounts.value) {
+      const key = a.groupId && counts[a.groupId] !== undefined ? a.groupId : UNGROUPED
+      counts[key]++
+    }
+    return counts
+  })
+
+  /** 新建分组；同名直接复用已有的那个，避免建出一堆重名分组 */
+  function addGroup(name: string): AccountGroup | null {
+    const label = name.trim()
+    if (!label) return null
+    const existing = groups.value.find((g) => g.name === label)
+    if (existing) return existing
+
+    const group: AccountGroup = {
+      id: uuidv4(),
+      name: label,
+      // 追加到末尾
+      order: groups.value.length ? Math.max(...groups.value.map((g) => g.order)) + 1 : 0
+    }
+    groups.value = [...groups.value, group]
+    persist()
+    return group
+  }
+
+  function renameGroup(id: string, name: string): boolean {
+    const label = name.trim()
+    if (!label) return false
+    groups.value = groups.value.map((g) => (g.id === id ? { ...g, name: label } : g))
+    persist()
+    return true
+  }
+
+  /** 删除分组：同时把引用它的账号置回未分组，不留悬空 id */
+  function removeGroup(id: string): void {
+    // 顺手把 order 重排连续，否则删掉中间项后会留下空洞（0、2、3…）
+    groups.value = groups.value
+      .filter((g) => g.id !== id)
+      .map((g, index) => ({ ...g, order: index }))
+    let touched = false
+    const next = accounts.value.map((a) => {
+      if (a.groupId !== id) return a
+      touched = true
+      const { groupId: _drop, ...rest } = a
+      return rest as Account
+    })
+    if (touched) accounts.value = next
+    // 该分组若正被用于筛选，一并摘掉，否则列表会突然空掉
+    if (filter.value.groupIds.includes(id)) {
+      filter.value.groupIds = filter.value.groupIds.filter((g) => g !== id)
+    }
+    persist(true)
+  }
+
+  /** 按给定顺序重排（拖动排序后调用），order 重新按下标写死 */
+  function reorderGroups(orderedIds: string[]): void {
+    const byId = new Map(groups.value.map((g) => [g.id, g]))
+    const next: AccountGroup[] = []
+    orderedIds.forEach((id, index) => {
+      const g = byId.get(id)
+      if (g) {
+        next.push({ ...g, order: index })
+        byId.delete(id)
+      }
+    })
+    // 漏掉的（理论上不会有）按原顺序补在后面，避免丢分组
+    for (const g of byId.values()) next.push({ ...g, order: next.length })
+    groups.value = next
+    persist()
+  }
+
+  /**
+   * 批量设置分组：groupId 传 null 表示移出分组。
+   * 一次性换数组引用 + 单次 persist，避免逐个写盘。
+   */
+  function setGroupForAccounts(ids: string[], groupId: string | null): number {
+    const target = new Set(ids.filter(Boolean))
+    if (!target.size) return 0
+    let changed = 0
+    const next = accounts.value.map((account) => {
+      if (!target.has(account.id)) return account
+      if ((account.groupId ?? null) === groupId) return account
+      changed++
+      if (groupId === null) {
+        // 未分组用「不存在该字段」表示，置 undefined 会把 undefined 写进存档
+        const { groupId: _drop, ...rest } = account
+        return rest as Account
+      }
+      return { ...account, groupId }
+    })
+    if (changed) {
+      accounts.value = next
+      persist()
+    }
+    return changed
+  }
+
   const filtered = computed(() => {
     const {
       search,
@@ -142,13 +269,19 @@ export const useAccountsStore = defineStore('accounts', () => {
       daysRemainingMin,
       daysRemainingMax,
       usageMin,
-      usageMax
+      usageMax,
+      groupIds
     } = filter.value
     const keyword = search.trim().toLowerCase()
+    const groupSet = groupIds.length ? new Set(groupIds) : null
     return accounts.value.filter((a) => {
       if (keyword) {
         const haystack = `${a.email} ${a.nickname ?? ''} ${a.note ?? ''}`.toLowerCase()
         if (!haystack.includes(keyword)) return false
+      }
+      // 分组已被删除的账号一律视为未分组，避免残留 id 让它从列表里消失
+      if (groupSet && !groupSet.has(a.groupId && groupMap.value.has(a.groupId) ? a.groupId : UNGROUPED)) {
+        return false
       }
       if (statuses.length && !statuses.includes(a.status)) return false
       if (subscriptions.length && !subscriptions.includes(a.subscription.type)) return false
@@ -170,13 +303,20 @@ export const useAccountsStore = defineStore('accounts', () => {
     })
   })
 
-  /** 覆盖式设置筛选条件（首页告警跳转用） */
+  /**
+   * 覆盖式设置筛选条件（首页告警跳转、筛选面板重置用）。
+   *
+   * groupIds 默认沿用当前值：分组是工具栏上独立的一个按钮，有自己的角标和
+   * 「清除分组筛选」，用户点筛选面板的重置并不期待分组选择被顺带清掉。
+   * 需要连分组一起清的调用方显式传 `groupIds: []`。
+   */
   function applyFilter(patch: Partial<AccountFilter>): void {
     filter.value = {
       search: '',
       statuses: [],
       subscriptions: [],
       idps: [],
+      groupIds: filter.value.groupIds,
       daysRemainingMin: undefined,
       daysRemainingMax: undefined,
       usageMin: undefined,
@@ -479,6 +619,42 @@ export const useAccountsStore = defineStore('accounts', () => {
     return result
   }
 
+  /**
+   * 恢复备份里的分组定义，返回「备份 id -> 本机 id」映射。
+   *
+   * 同名分组复用本机已有的（只改映射，不新建），其余按备份顺序追加到末尾。
+   * 只换一次数组引用，写盘交给调用方的 persist，避免一组一次 IO。
+   */
+  function restoreGroups(incoming?: AccountGroup[]): Map<string, string> {
+    const map = new Map<string, string>()
+    if (!incoming?.length) return map
+
+    const byName = new Map(groups.value.map((g) => [g.name, g]))
+    const usedIds = new Set(groups.value.map((g) => g.id))
+    const added: AccountGroup[] = []
+    let order = groups.value.length ? Math.max(...groups.value.map((g) => g.order)) + 1 : 0
+
+    for (const raw of [...incoming].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))) {
+      const name = (raw?.name ?? '').trim()
+      if (!name || !raw?.id) continue
+      const existing = byName.get(name)
+      if (existing) {
+        map.set(raw.id, existing.id)
+        continue
+      }
+      // 备份 id 在本机没被占用就沿用，能让同一份备份反复恢复时保持稳定
+      const id = usedIds.has(raw.id) ? uuidv4() : raw.id
+      const group: AccountGroup = { id, name, order: order++ }
+      usedIds.add(id)
+      byName.set(name, group)
+      added.push(group)
+      map.set(raw.id, id)
+    }
+
+    if (added.length) groups.value = [...groups.value, ...added]
+    return map
+  }
+
   /** 恢复完整导出文件（保留用量、订阅等快照） */
   function importFullData(data: AccountExportData): BatchResult {
     const result: BatchResult = { success: 0, failed: 0, skipped: 0, messages: [] }
@@ -495,6 +671,13 @@ export const useAccountsStore = defineStore('accounts', () => {
     const baseTime = importBaseTime()
     const list = data.accounts ?? []
     const total = list.length
+    /*
+     * 先把备份里的分组定义落地，得到「备份里的 id -> 本机的 id」映射。
+     * 备份文件的 id 在本机可能不存在（换机恢复），直接沿用会变成悬空 id；
+     * 同名分组则复用本机已有的那个，不重复建。
+     */
+    const groupsBefore = groups.value.length
+    const groupIdMap = restoreGroups(data.groups)
 
     for (const [i, raw] of list.entries()) {
       if (!raw?.credentials?.refreshToken) {
@@ -508,8 +691,17 @@ export const useAccountsStore = defineStore('accounts', () => {
         continue
       }
       createdKeys.add(key)
+      /*
+       * 分组 id 先走映射；映射不到时若本机正好有这个分组（同机恢复、或老备份
+       * 没带 groups 字段）就沿用，否则当未分组处理，不留悬空引用。
+       */
+      const mappedGroupId = raw.groupId
+        ? groupIdMap.get(raw.groupId) ?? (groupMap.value.has(raw.groupId) ? raw.groupId : undefined)
+        : undefined
+      const { groupId: _dropGroupId, ...restRaw } = raw
       created.push({
-        ...raw,
+        ...restRaw,
+        ...(mappedGroupId ? { groupId: mappedGroupId } : {}),
         id: raw.id || uuidv4(),
         idp,
         isActive: false,
@@ -522,10 +714,9 @@ export const useAccountsStore = defineStore('accounts', () => {
       result.success++
     }
 
-    if (created.length) {
-      accounts.value = [...accounts.value, ...created]
-      persist(true)
-    }
+    if (created.length) accounts.value = [...accounts.value, ...created]
+    // 只新增了分组（账号全跳过）也要落盘，否则新分组下次启动就丢了
+    if (created.length || groups.value.length !== groupsBefore) persist(true)
     if (result.skipped) result.messages.push(`跳过 ${result.skipped} 个已存在的账号`)
     console.info(
       `[Account] 导入备份完成：新增 ${result.success}，跳过 ${result.skipped}，失败 ${result.failed}`
@@ -1057,6 +1248,15 @@ export const useAccountsStore = defineStore('accounts', () => {
     addByOnlineLogin,
     updateAccount,
     setNoteForAccounts,
+    // 分组
+    groups,
+    groupMap,
+    groupCounts,
+    addGroup,
+    renameGroup,
+    removeGroup,
+    reorderGroups,
+    setGroupForAccounts,
     removeAccounts,
     importItems,
     importFullData,
