@@ -15,6 +15,13 @@ import { UNGROUPED } from '@/utils/groups'
 import type { GroupApi } from '@/utils/groupApi'
 import type { AccountGroup } from '@shared/types'
 
+/**
+ * 改名弹窗与删除确认的层级。
+ * antd 的 popover 是 1030、modal 是 1000，本面板挂在 popover 里，
+ * 不抬高的话弹窗会被压在分组列表后面 —— 看得见蒙层却看不见内容。
+ */
+const POPUP_Z_INDEX = 1100
+
 const props = defineProps<{
   api: GroupApi
   /** 当前参与筛选的分组 id（含 UNGROUPED） */
@@ -88,6 +95,8 @@ function remove(group: AccountGroup): void {
     content: count
       ? `确认删除分组「${group.name}」？其下 ${count} 个${props.entity}会变为未分组，${props.entity}本身不会被删除。`
       : `确认删除分组「${group.name}」？`,
+    // 本面板挂在 popover 里（层级 1030），确认框默认 1000 会被压在分组列表后面
+    zIndex: POPUP_Z_INDEX,
     onOk: async () => {
       const error = await props.api.remove(group.id)
       if (error) message.error(error)
@@ -158,6 +167,7 @@ async function reorder(orderedIds: string[]): Promise<void> {
       title="编辑分组名称"
       centered
       width="420px"
+      :z-index="POPUP_Z_INDEX"
       ok-text="保存"
       cancel-text="取消"
       @ok="submitRename"

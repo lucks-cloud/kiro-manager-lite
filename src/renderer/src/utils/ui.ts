@@ -65,6 +65,8 @@ export function confirmDelete(options: {
   content?: string | VNode
   onOk: () => void | Promise<unknown>
   afterClose?: () => void
+  /** 从 popover（1030）或自定义层级的弹窗里发起时必须传，否则确认框会被盖住 */
+  zIndex?: number
 }): void {
   confirmDanger({
     ...options,

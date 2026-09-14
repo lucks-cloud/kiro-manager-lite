@@ -3,6 +3,25 @@
 本文件记录 Kiro Manager Lite 的版本变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.0.23] - 2026-09-10
+
+本版本修掉分组功能的两个可用性问题：分组多了会把面板撑到屏幕外，
+以及从分组面板发起的删除确认被压在列表后面看不见。
+
+### 优化
+
+- 分组列表限高约五行，超出自身滚动，上百个分组也不会把面板 / 弹窗撑到屏幕外；
+  滚动条占位固定，出现时格子宽度不会突变
+- 分组列表滚动后仍可正常拖动排序：几何快照取相对内容盒的坐标，
+  中途滚轮滚动会用滚动增量校正跟手位移
+- 拖到列表上下边缘时自动滚动，分组多到需要滚动时也够得着远处的位置
+
+### 修复
+
+- 修复分组里删除分组时确认框看不见：antd 的 popover 层级是 1030、弹窗是 1000，
+  从分组面板发起的确认框会被压在分组列表后面，只看得到蒙层。
+  改名弹窗与删除 / 移出确认统一抬到 1030 之上（批量分组弹窗内部同理）
+
 ## [1.0.22] - 2026-09-10
 
 本版本给账号与 API Key 两个列表加上自定义分组和三种展示形态，卡片改为整卡点选，
@@ -1172,6 +1191,7 @@ Key 列表，同时把账号卡片与工具栏上并列的两个刷新入口收�
 
 > 安装遇到问题？请查看 [安装说明与常见问题](./INSTALL.md)。
 
+[1.0.23]: https://github.com/lucks-cloud/kiro-manager-lite/releases/tag/v1.0.23
 [1.0.22]: https://github.com/lucks-cloud/kiro-manager-lite/releases/tag/v1.0.22
 [1.0.21]: https://github.com/lucks-cloud/kiro-manager-lite/releases/tag/v1.0.21
 [1.0.20]: https://github.com/lucks-cloud/kiro-manager-lite/releases/tag/v1.0.20

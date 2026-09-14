@@ -81,6 +81,8 @@ let dragFrom = -1
 let rowTol = 20
 let startX = 0
 let startY = 0
+/** 进入拖拽那一刻的滚动位置：分组多到列表自己滚动时，要用滚动增量校正位移 */
+let startScrollTop = 0
 
 let pressTimer: ReturnType<typeof setTimeout> | undefined
 let settleTimer: ReturnType<typeof setTimeout> | undefined
@@ -121,7 +123,8 @@ function takeSnapshot(): void {
 function updateDrag(clientX: number, clientY: number): void {
   if (dragFrom < 0) return
   dragDx.value = clientX - startX
-  dragDy.value = clientY - startY
+  // 快照坐标不随滚动变化，但光标是屏幕坐标：中途滚动了就要把增量补回来
+  dragDy.value = clientY - startY + ((gridRef.value?.scrollTop ?? 0) - startScrollTop)
 
   const dragged = snapshot[dragFrom]
   const cx = dragged.left + dragDx.value
@@ -166,8 +169,24 @@ function cellStyle(id: string): Record<string, string> | undefined {
   return { transform: `translate(${s?.x ?? 0}px, ${s?.y ?? 0}px)` }
 }
 
+/**
+ * 拖到列表上下边缘时自动滚动。
+ * 列表限了高，分组多的时候目标位置可能在视口外，没有这个就够不着。
+ * 只在 mousemove 里推进，和跟手位移同一节奏。
+ */
+function autoScroll(clientY: number): void {
+  const el = gridRef.value
+  if (!el || el.scrollHeight <= el.clientHeight) return
+  const rect = el.getBoundingClientRect()
+  const EDGE = 28
+  const STEP = 10
+  if (clientY < rect.top + EDGE) el.scrollTop -= STEP
+  else if (clientY > rect.bottom - EDGE) el.scrollTop += STEP
+}
+
 function onDragMove(e: MouseEvent): void {
   if (!dragId.value) return
+  autoScroll(e.clientY)
   updateDrag(e.clientX, e.clientY)
 }
 
@@ -263,6 +282,7 @@ function startPress(id: string, e: MouseEvent): void {
     dragFrom = snapshot.findIndex((s) => s.id === id)
     startX = e.clientX
     startY = e.clientY
+    startScrollTop = gridRef.value?.scrollTop ?? 0
     dragDx.value = 0
     dragDy.value = 0
     dragId.value = id
@@ -352,11 +372,39 @@ onBeforeUnmount(endDrag)
 </template>
 
 <style scoped>
-/* 一排两个 */
+/*
+ * 一排两个，最多约五行高，超出自己滚动 ——
+ * 几十上百个分组时不能把面板 / 弹窗一路撑到屏幕外。
+ *
+ * position: relative 让它成为格子的 offsetParent：拖拽的几何快照用的是
+ * offsetTop / offsetLeft，相对内容盒取值，滚动时不会变，快照因此始终有效。
+ */
 .group-grid {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+  max-height: 232px;
+  overflow-y: auto;
+  /* 滚动条占位，避免出现滚动条时格子宽度突变 */
+  scrollbar-gutter: stable;
+}
+
+.group-grid::-webkit-scrollbar {
+  width: 6px;
+}
+
+.group-grid::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.group-grid::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: rgba(140, 140, 160, 0.35);
+}
+
+.group-grid::-webkit-scrollbar-thumb:hover {
+  background: rgba(140, 140, 160, 0.6);
 }
 
 /*

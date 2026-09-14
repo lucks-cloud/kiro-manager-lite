@@ -14,6 +14,9 @@ import { confirmDanger, confirmDelete } from '@/utils/ui'
 import type { GroupApi } from '@/utils/groupApi'
 import type { AccountGroup } from '@shared/types'
 
+/** 弹窗内再弹的东西（改名、删除确认、移出确认）都要抬到本弹窗（1000）之上 */
+const SUB_POPUP_Z_INDEX = 1100
+
 const props = defineProps<{
   api: GroupApi
   ids: string[]
@@ -69,6 +72,8 @@ function remove(group: AccountGroup): void {
     content: count
       ? `确认删除分组「${group.name}」？其下 ${count} 个${props.entity}会变为未分组，${props.entity}本身不会被删除。`
       : `确认删除分组「${group.name}」？`,
+    // 从本弹窗（1000）里发起，确认框要抬到它上面才看得见
+    zIndex: SUB_POPUP_Z_INDEX,
     onOk: async () => {
       const error = await props.api.remove(group.id)
       if (error) return void message.error(error)
@@ -103,7 +108,7 @@ function confirmUnassign(): void {
     title: '移出分组',
     content: `确认将所选 ${props.ids.length} 个${props.entity}移出分组？${props.entity}本身与分组都不会被删除。`,
     okText: '移出分组',
-    zIndex: 1100,
+    zIndex: SUB_POPUP_Z_INDEX,
     onOk: async () => {
       const res = await props.api.assign(props.ids, null)
       if (res.error) return void message.error(res.error)
@@ -173,7 +178,7 @@ function confirmUnassign(): void {
       title="编辑分组名称"
       centered
       width="420px"
-      :z-index="1100"
+      :z-index="SUB_POPUP_Z_INDEX"
       ok-text="保存"
       cancel-text="取消"
       @ok="submitRename"
