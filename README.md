@@ -9,12 +9,12 @@
 </p>
 
 <p align="center">
-  多账号一键切换 · 账号 API Key 申请 · 本地网关与真实调用统计 · 自动刷新与流式测活 · 内置私密浏览器 · 托盘常驻
+  多账号一键切换 · 自定义分组与三种展示形态 · 订阅开通与账单管理 · 账号 API Key 管理 · 本地网关与真实调用统计 · 自动刷新与流式测活 · 内置私密浏览器 · 托盘常驻
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.0.23-6c5ce7" alt="version">
-  <img src="https://img.shields.io/badge/updated-2026--09--10-2f9e44" alt="updated">
+  <img src="https://img.shields.io/badge/version-1.0.24-6c5ce7" alt="version">
+  <img src="https://img.shields.io/badge/updated-2026--09--21-2f9e44" alt="updated">
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="license">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="platform">
   <img src="https://img.shields.io/badge/Vue-3-42b883" alt="vue">
@@ -30,7 +30,7 @@
 **添加与列表**
 
 - 五种添加方式：Google / GitHub 社交登录、AWS Builder ID 设备码、Enterprise IAM Identity Center SSO、OIDC 凭证、读取本机已登录的 Kiro 凭证
-- 搜索、按状态 / 订阅 / 登录方式筛选、排序、多选与批量操作；上千账号用虚拟列表保持流畅
+- 搜索、按状态 / 订阅 / 登录方式 / 积分占比 / 导入时间范围（精确到时分秒）筛选、排序、多选与批量操作；上千账号用虚拟列表保持流畅
 - 自定义分组：新建 / 改名 / 删除、长按拖动排序，按分组（含「未分组」）多选筛选，可批量把选中账号移入或移出分组，卡片上直接显示分组标签
 - 卡片显示邮箱、昵称、备注、订阅档位、积分占比与 Token 剩余时间；备注可自己填，用于标记用途或来源
 - 三种展示形态可切换并记住选择：卡片、卡片紧凑（收起额度明细）、列表（一排一个的横向长条，一屏能看几十个）
@@ -41,12 +41,20 @@
 - 一键把账号凭证写入 Kiro IDE 切换当前登录身份，可选切号后自动重启 IDE
 - 切号前会逐个实测 `profileArn` 候选再落盘 —— 写错这个字段是 IDE 报「Invalid token」的主因
 - 批量刷新 Token / 用量与积分，支持定时自动刷新；「主动续期」会在 IDE 当前账号的 Token 剩约 15 分钟时抢先续期并写盘，避免 IDE 自己刷新时撞车被登出
-- 真实流式对话测活：可指定模型、实时看输出、随时中止。只有 runtime 面的真实对话才能暴露封禁账号
+- 真实流式对话测活：实时看输出、随时中止。只有 runtime 面的真实对话才能暴露封禁账号
+- 测活的模型改为可搜索的级联选择，二级是该模型自己的推理档位（Claude 系 low / medium / high / xhigh / max，GPT 系另有 none，没有这一层的模型不显示二级）；只选主模型时自动补上它的默认档位
 
 **账号 API Key**
 
 - 卡片上的钥匙图标直接用该账号凭证向 Kiro 控制面申请 Key，并列出它已创建的全部 Key（名称、前缀、创建时间）
 - 完整明文上游只在创建时返回一次，因此生成后单独弹窗展示并提供复制，未复制就关闭会二次确认；关闭后列表里只剩前缀
+
+**订阅管理**
+
+- 点卡片上的订阅标签即进订阅管理，弹窗内先查状态再分流：已订阅的账号直接用内置浏览器打开 Stripe 账单页（改套餐、退订都在那边做），未订阅的账号列出官方可开通的档位
+- 档位卡片显示名称、价格、计费周期与特性，并标出当前套餐；每个档位两个动作 —— 生成支付链接并用内置浏览器打开，或只把链接复制到剪贴板（想换个地方付款、先存下来都不用打开浏览器）
+- 查询前按需为该账号续期 Token：门户的订阅接口认的是 cookie 里的 AccessToken，而 IDE 只续它自己在用的那个账号
+- 查询失败就地显示原始报错并附「关闭 / 重试」，不必关掉重开
 
 **前往官网**
 
@@ -59,11 +67,11 @@
 
 ### 🔑 API Key 管理
 
-- 支持单个添加、批量导入、搜索、订阅 / 状态 / 用量 / 重置时间筛选、排序、导出和批量删除
+- 支持单个添加、批量导入、搜索、订阅 / 状态 / 用量 / 重置时间 / 导入时间范围筛选、排序、导出和批量删除
 - 与账号列表同一套自定义分组：新建 / 改名 / 删除、长按拖动排序、按分组多选筛选、批量设置分组，卡片上显示分组标签
 - 同样有卡片、卡片紧凑、列表三种展示形态可切换并记住选择
 - 每个 Key 独立绑定区域，展示订阅档位、注册邮箱、User ID、额度、重置时间和异常原因
-- 支持单个与批量刷新、真实对话测活、批量测活，以及按模型消耗倍率选择测试模型
+- 支持单个与批量刷新、真实对话测活、批量测活；测活的模型同样是可搜索的级联选择，能选推理档位并显示消耗倍率
 - 大量 Key 使用虚拟网格渲染；详情、历史、测活和导入导出弹窗均按需挂载，减少首屏开销
 
 ### 🌐 本地网关与调用统计
@@ -111,7 +119,7 @@
 
 ### ⚙️ 个性化设置
 
-- 深色模式、主题色、控件尺寸（默认 / 大尺寸）、积分精度与删除前确认
+- 深色模式、主题色、控件尺寸（默认 / 大尺寸，两个列表页的工具栏那一排跟着一起变）、积分精度与删除前确认
 - **隐私打码**：一键遮住邮箱、昵称、API Key、User ID 与备注，截图或录屏前很有用。
   邮箱的遮罩串由 md5 前缀生成，同一账号每次结果一致，打码状态下仍能横向比对是不是同一个号
 - **内置浏览器**：指定应用内打开的网页使用哪个地区，50 个常用地区可搜索选择，也可自定义 BCP 47 标签。
@@ -125,14 +133,14 @@
 
 <p align="center">
   <a href="https://github.com/lucks-cloud/kiro-manager-lite/releases/latest">
-    <img src="https://img.shields.io/badge/⬇%20下载最新版-v1.0.23-6c5ce7?style=for-the-badge" alt="下载最新版">
+    <img src="https://img.shields.io/badge/⬇%20下载最新版-v1.0.24-6c5ce7?style=for-the-badge" alt="下载最新版">
   </a>
   <a href="https://github.com/lucks-cloud/kiro-manager-lite/releases">
     <img src="https://img.shields.io/badge/全部版本-Releases-24292f?style=for-the-badge&logo=github" alt="全部版本">
   </a>
 </p>
 
-**最新版本：v1.0.23**（2026-09-10） · 变更详情见 [CHANGELOG.md](CHANGELOG.md)
+**最新版本：v1.0.24**（2026-09-21） · 变更详情见 [CHANGELOG.md](CHANGELOG.md)
 
 ### 选择对应的安装包
 
@@ -277,6 +285,7 @@ src/
     regions.ts           AWS 区域列表与分组
     portalLocale.ts      内置浏览器地区：预设、归一化、Accept-Language
     subscription.ts      订阅档位归一
+    modelSchema.ts       从模型 schema 解析推理档位并拼请求字段
   main/
     index.ts             应用生命周期与窗口
     ipc.ts               IPC 注册与运行时设置下发
@@ -289,6 +298,7 @@ src/
     ── Kiro 接口与本体
     kiroApi.ts           Token 刷新、用户信息、用量与积分
     kiroApiKey.ts        账号维度的 API Key 申请与列表（控制面）
+    kiroSubscription.ts  订阅：可开通档位与 Stripe 账单 / 结算链接（门户 CSRF 双提交）
     kiroAuth.ts          IDE 凭证文件读写与 profileArn 决策
     kiroChat.ts          测活：模型列表与流式对话
     kiroEndpoints.ts     端点、区域映射与客户端 UA（服务端按版本号准入）
@@ -339,7 +349,7 @@ src/
 
 ## 🔖 更新日志
 
-各版本变更记录见 [CHANGELOG.md](CHANGELOG.md)，当前版本 v1.0.23，最后更新于 2026-09-10。
+各版本变更记录见 [CHANGELOG.md](CHANGELOG.md)，当前版本 v1.0.24，最后更新于 2026-09-21。
 
 ---
 

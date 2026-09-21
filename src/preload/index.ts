@@ -50,6 +50,15 @@ const api = {
   /** 用该账号凭证在私密窗口打开 Kiro 官网后台 */
   openAccountPortal: (account: unknown) => invoke('accounts:open-portal', account),
 
+  /** 查订阅入口：已订阅返回账单管理链接，未订阅返回可开通档位 */
+  getSubscriptionEntry: (account: unknown) => invoke('accounts:subscription-entry', account),
+  /** 为指定档位生成 Stripe 结算链接 */
+  createSubscriptionCheckout: (account: unknown, subscriptionType: string) =>
+    invoke('accounts:subscription-checkout', account, subscriptionType),
+  /** 用内置浏览器打开链接 */
+  openInAppBrowser: (url: string, title?: string) =>
+    invoke('app:open-in-app-browser', url, title),
+
   // Kiro API Key 管理 / 本地网关
   loadKeys: () => invoke('keys:load'),
   addKey: (key: string, note?: string, region?: string) =>

@@ -9,6 +9,7 @@
  * filter 由父级传入并直接就地修改：面板本身不持有状态，关掉再打开条件仍在。
  */
 import { computed } from 'vue'
+import DateRangeFilter from '@/components/common/DateRangeFilter.vue'
 import { KEY_STATUS_META, SUBSCRIPTION_META } from '@/utils/format'
 import type { KeyFilter, KeyStatus, SubscriptionType } from '@shared/types'
 
@@ -84,6 +85,12 @@ const daysRemainingMax = computed<number | null>({
     filter.value.daysRemainingMax = v == null ? undefined : Math.max(0, v)
   }
 })
+
+/** 导入时间范围：控件给的是精确到秒的时间戳，这里只负责写回筛选条件 */
+function setCreated(from: number | undefined, to: number | undefined): void {
+  filter.value.createdFrom = from
+  filter.value.createdTo = to
+}
 </script>
 
 <template>
@@ -161,6 +168,13 @@ const daysRemainingMax = computed<number | null>({
           style="width: 88px"
         />
         <span class="muted">天</span>
+      </div>
+    </div>
+
+    <div class="filter-row">
+      <span class="filter-label">导入时间</span>
+      <div class="range grow">
+        <DateRangeFilter :from="filter.createdFrom" :to="filter.createdTo" @change="setCreated" />
       </div>
     </div>
 

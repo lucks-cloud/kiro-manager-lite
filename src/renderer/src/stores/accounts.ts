@@ -42,6 +42,12 @@ export interface AccountFilter {
   /** 用量占比上限（0-1） */
   usageMax?: number
   /**
+   * 导入时间（createdAt）范围，含两端，单位毫秒，精度到秒。
+   * 只选日期不碰时间时，界面会补成起点 00:00:00 / 终点 23:59:59。
+   */
+  createdFrom?: number
+  createdTo?: number
+  /**
    * 按分组筛选。空数组表示不限；特殊值 __none__ 代表「未分组」，
    * 这样「未分组」能和普通分组一样被勾选，不必再加一个布尔开关。
    */
@@ -270,6 +276,8 @@ export const useAccountsStore = defineStore('accounts', () => {
       daysRemainingMax,
       usageMin,
       usageMax,
+      createdFrom,
+      createdTo,
       groupIds
     } = filter.value
     const keyword = search.trim().toLowerCase()
@@ -299,6 +307,9 @@ export const useAccountsStore = defineStore('accounts', () => {
       const used = a.usage.percentUsed || 0
       if (usageMin != null && used < usageMin) return false
       if (usageMax != null && used > usageMax) return false
+      // 导入时间：两端都含，界面给过来的是精确到秒的时刻
+      if (createdFrom != null && a.createdAt < createdFrom) return false
+      if (createdTo != null && a.createdAt > createdTo) return false
       return true
     })
   })
@@ -321,6 +332,8 @@ export const useAccountsStore = defineStore('accounts', () => {
       daysRemainingMax: undefined,
       usageMin: undefined,
       usageMax: undefined,
+      createdFrom: undefined,
+      createdTo: undefined,
       ...patch
     }
   }

@@ -6,7 +6,6 @@
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import {
-  CheckCircleFilled,
   CloseCircleFilled,
   SendOutlined,
   StopOutlined,
@@ -14,9 +13,11 @@ import {
 } from '@ant-design/icons-vue'
 import { useSettingsStore } from '@/stores/settings'
 import { useAccountsStore } from '@/stores/accounts'
+import ModelCascader from '@/components/common/ModelCascader.vue'
+import { withDefaultEffort, type CascaderModel } from '@/utils/models'
 import { displayEmail } from '@/utils/display'
-import { formatRate } from '@/utils/format'
 import { errorMessage } from '@shared/errors'
+import { buildModelRequestFields } from '@shared/modelSchema'
 import type { Account, ChatTestResult, KiroModelInfo } from '@shared/types'
 
 const props = defineProps<{ account: Account | null }>()
@@ -30,7 +31,6 @@ const DEFAULT_MESSAGE = '你的具体模型名称，以及具体时间，打印�
 const models = ref<KiroModelInfo[]>([])
 const modelsLoading = ref(false)
 const modelsError = ref('')
-const modelId = ref('')
 const input = ref(DEFAULT_MESSAGE)
 
 const running = ref(false)
@@ -45,15 +45,29 @@ const accountLabel = computed(() =>
   props.account ? displayEmail(props.account.email, settingsStore.settings.privacyMode) : ''
 )
 
-const modelOptions = computed(() =>
-  models.value.map((m) => {
-    const base =
-      m.modelName && m.modelName !== m.modelId ? `${m.modelName}（${m.modelId}）` : m.modelId
-    const rate = formatRate(m.rate)
-    // 倍率拼进 label，a-select 搜索时也能按倍率匹配
-    return { value: m.modelId, label: rate ? `${base} ${rate}` : base }
-  })
+/** 级联选择器要的形状：一级模型、二级推理档位（档位来自模型自己的 schema） */
+const cascaderModels = computed<CascaderModel[]>(() =>
+  models.value.map((m) => ({
+    id: m.modelId,
+    name: m.modelName,
+    rate: m.rate,
+    effort: m.effort
+  }))
 )
+
+/** [模型 id] 或 [模型 id, 档位]；只选模型表示用上游默认档位 */
+const selection = ref<string[]>([])
+const modelId = computed(() => selection.value[0] ?? '')
+const effortLevel = computed(() => selection.value[1])
+
+/**
+ * 按所选模型的 schema 拼出请求字段。
+ * 没选档位就不带这个字段 —— 上游对「本无该选项的模型」带上它会直接 400。
+ */
+const requestFields = computed(() => {
+  const model = models.value.find((m) => m.modelId === modelId.value)
+  return buildModelRequestFields(model?.effort, effortLevel.value)
+})
 
 /** 模型列表就绪之前只显示加载态，避免用户对着一份还没确认可用的表单操作 */
 const ready = computed(() => !modelsLoading.value && !modelsError.value && models.value.length > 0)
@@ -116,8 +130,16 @@ async function loadModels(): Promise<void> {
     if (res.success && res.data?.length) {
       models.value = res.data
       // 保持已选模型，否则落到第一个候选（官方列表首项是 auto）
-      if (!modelOptions.value.some((o) => o.value === modelId.value)) {
-        modelId.value = modelOptions.value[0]?.value ?? ''
+      const kept = models.value.find((m) => m.modelId === modelId.value)
+      if (!kept) {
+        const first = models.value[0]
+        // 首个候选同样要补上默认档位，保证「显示的」就是「发出去的」
+        selection.value = first
+          ? withDefaultEffort(cascaderModels.value, [first.modelId])
+          : []
+      } else if (effortLevel.value && !kept.effort?.options.includes(effortLevel.value)) {
+        // 重新拉回来的 schema 可能不再有这个档位，回落到新的默认档位
+        selection.value = withDefaultEffort(cascaderModels.value, [kept.modelId])
       }
     } else {
       modelsError.value = res.error || '官方没有返回任何可用模型'
@@ -137,7 +159,7 @@ watch(
     result.value = null
     error.value = ''
     input.value = DEFAULT_MESSAGE
-    modelId.value = ''
+    selection.value = []
     void loadModels()
   },
   { immediate: true }
@@ -167,7 +189,8 @@ async function start(): Promise<void> {
       profileArn: account.profileArn || account.credentials.profileArn,
       region: account.credentials.region,
       idp: account.idp,
-      authMethod: account.credentials.authMethod
+      authMethod: account.credentials.authMethod,
+      additionalModelRequestFields: requestFields.value
     })
     if (res.success && res.data) result.value = res.data
     else error.value = res.error || '测试失败'
@@ -191,18 +214,6 @@ const resultSummary = computed(() => {
   return parts.join(' · ')
 })
 
-/** 后端回报的模型：选 auto 时能看到真正被选中的那个，部分模型不回该字段 */
-const modelNote = computed(() => {
-  const r = result.value
-  if (!r) return ''
-  const requested = modelId.value || 'auto'
-  if (r.modelId) {
-    return r.modelId === requested
-      ? `请求模型 ${requested}，后端回报一致`
-      : `请求模型 ${requested}，后端实际使用 ${r.modelId}`
-  }
-  return `请求模型 ${requested}（该模型的响应流里不回报 modelId）`
-})
 
 function cancel(): void {
   if (!requestId.value) return
@@ -255,14 +266,14 @@ function close(): void {
 
     <template v-else>
       <a-form layout="vertical">
-        <a-form-item label="模型">
+        <!-- 标题带上模型数量：一眼看出这个账号拉到了几个主模型（不含二级档位） -->
+        <a-form-item :label="`模型（${models.length}个）`">
           <div class="model-row">
-            <a-select
-              v-model:value="modelId"
-              :options="modelOptions"
-              show-search
-              placeholder="选择模型"
-              style="flex: 1 1 auto"
+            <ModelCascader
+              :models="cascaderModels"
+              :value="selection"
+              :disabled="running"
+              @change="selection = $event"
             />
             <a-tooltip title="重新从 Kiro 官方拉取模型列表">
               <a-button :disabled="running" @click="loadModels">
@@ -288,13 +299,9 @@ function close(): void {
       <a-alert
         v-if="result"
         type="success"
-        show-icon
         style="margin-top: 12px"
         :message="resultSummary"
-        :description="modelNote"
-      >
-        <template #icon><CheckCircleFilled /></template>
-      </a-alert>
+      />
       <a-alert
         v-else-if="error"
         type="error"

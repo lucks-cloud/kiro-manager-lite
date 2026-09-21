@@ -80,6 +80,16 @@ const CHROME_UA =
   `Chrome/${CHROME_MAJOR}.0.0.0 Safari/537.36`
 
 /**
+ * 内置浏览器声明的 UA。
+ *
+ * 对外暴露是为了让主进程里「模拟网页行为」的接口（订阅那两个 CSRF 操作）用同一串：
+ * 它们取的 CSRF token 与后续网页里的会话属于同一身份，UA 两边不一致没有意义。
+ */
+export function inAppChromeUserAgent(): string {
+  return CHROME_UA
+}
+
+/**
  * 应用内网页使用的地区，由设置里的「浏览器地区」决定。
  * 主进程启动时读一次设置，之后随设置保存实时更新（无需重启即可生效）。
  */
@@ -1060,6 +1070,23 @@ export async function openAccountPortal(account: Account): Promise<{ url: string
   win.focus()
   console.info(`[KiroPortal] 已以 ${account.email} 的身份打开官网后台`)
   return { url: PORTAL_ORIGIN }
+}
+
+/**
+ * 用内置浏览器打开任意 http(s) 链接（Stripe 账单 / 结算页走这条）。
+ *
+ * 每次都新开一个窗口而不复用官网主窗口：支付流程被别的操作顶掉就得从头来，
+ * 而且用户往往需要一边看账号列表一边付款。
+ * 共用同一个私密分区，于是站点身份与「用该账号打开的官网」保持一致，
+ * 这些链接本身已把凭据编码在 URL 里，不再需要额外注入 cookie。
+ */
+export function openInAppUrl(url: string, title = 'Kiro'): { url: string } {
+  if (!/^https?:\/\//i.test(url)) throw new Error('只支持 http(s) 链接')
+  preparePortalSession()
+  const shellWindow = createBrowserShell(title)
+  shellWindow.load(url)
+  shellWindow.win.focus()
+  return { url }
 }
 
 /** 应用退出时收掉全部窗口（主窗口 + 弹窗），避免残留窗口挡住退出流程 */

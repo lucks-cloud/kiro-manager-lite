@@ -63,6 +63,8 @@ const emit = defineEmits<{
   'create-api-key': []
   /** 用该账号凭证打开官网后台 */
   portal: []
+  /** 点订阅标签：管理订阅或开通订阅 */
+  subscription: []
   /** 点用量区域查看积分变化日志 */
   usage: []
 }>()
@@ -297,9 +299,20 @@ function onCardClick(): void {
     </div>
 
     <div class="tag-row">
-      <a-tag :color="subscription.color" :bordered="false">
-        {{ subscriptionText }}
-      </a-tag>
+      <!--
+        订阅标签可点：已订阅进 Stripe 账单管理，未订阅弹出可开通档位。
+        点击事件挂在外层 span 而不是 a-tag 上：a-tag 一旦带 onClick 就会自动套上
+        Wave（antd 的点击涟漪），在卡片里表现为一个扩散到用量条上的浅色方框。
+      -->
+      <span
+        class="subscription-tag"
+        title="点击管理订阅 / 升级套餐"
+        @click.stop="emit('subscription')"
+      >
+        <a-tag :color="subscription.color" :bordered="false">
+          {{ subscriptionText }}
+        </a-tag>
+      </span>
       <a-tag :color="idp.color" :bordered="false">{{ idp.text }}</a-tag>
       <!-- 分组标签：没分组就不显示，避免每张卡都多一个空标签 -->
       <a-tag
@@ -549,6 +562,17 @@ function onCardClick(): void {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 订阅标签是个入口，给出可点的手感；其余标签保持纯展示 */
+.subscription-tag {
+  display: inline-flex;
+  cursor: pointer;
+  transition: filter 0.15s;
+}
+
+.subscription-tag:hover {
+  filter: brightness(0.94);
 }
 
 .usage-block {

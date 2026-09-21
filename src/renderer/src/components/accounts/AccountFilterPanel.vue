@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import DateRangeFilter from '@/components/common/DateRangeFilter.vue'
 import { useAccountsStore } from '@/stores/accounts'
 import { IDP_META, STATUS_META, SUBSCRIPTION_META } from '@/utils/format'
 import type { AccountStatus, IdpType, SubscriptionType } from '@shared/types'
@@ -77,6 +78,12 @@ function toggleStatus(value: AccountStatus): void {
 }
 function toggleIdp(value: IdpType): void {
   filter.value.idps = toggle(filter.value.idps, value)
+}
+
+/** 导入时间范围：控件给的是精确到秒的时间戳，这里只负责写回筛选条件 */
+function setCreated(from: number | undefined, to: number | undefined): void {
+  filter.value.createdFrom = from
+  filter.value.createdTo = to
 }
 
 function reset(): void {
@@ -174,6 +181,13 @@ function reset(): void {
           style="width: 88px"
         />
         <span class="muted">天</span>
+      </div>
+    </div>
+
+    <div class="filter-row">
+      <span class="filter-label">导入时间</span>
+      <div class="range grow">
+        <DateRangeFilter :from="filter.createdFrom" :to="filter.createdTo" @change="setCreated" />
       </div>
     </div>
 

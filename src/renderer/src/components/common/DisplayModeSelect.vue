@@ -12,7 +12,10 @@ import {
 } from '@ant-design/icons-vue'
 import type { AccountDisplayMode } from '@shared/types'
 
-const props = defineProps<{ value: AccountDisplayMode }>()
+const props = withDefaults(
+  defineProps<{ value: AccountDisplayMode; size?: 'small' | 'middle' }>(),
+  { size: 'small' }
+)
 const emit = defineEmits<{ change: [mode: AccountDisplayMode] }>()
 
 const options: { value: AccountDisplayMode; label: string; icon: Component }[] = [
@@ -30,7 +33,7 @@ function pick(mode: AccountDisplayMode): void {
 
 <template>
   <a-dropdown>
-    <a-button size="small">
+    <a-button :size="props.size">
       <template #icon><component :is="current.icon" /></template>
       {{ current.label }}
       <DownOutlined />

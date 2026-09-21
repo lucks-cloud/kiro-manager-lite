@@ -35,6 +35,7 @@ import AccountDetailDrawer from '@/components/accounts/AccountDetailDrawer.vue'
 import AccountTestModal from '@/components/accounts/AccountTestModal.vue'
 import CreateApiKeyModal from '@/components/accounts/CreateApiKeyModal.vue'
 import UsageHistoryModal from '@/components/accounts/UsageHistoryModal.vue'
+import SubscriptionModal from '@/components/accounts/SubscriptionModal.vue'
 import SwitchResultModal from '@/components/accounts/SwitchResultModal.vue'
 import { useAccountsStore } from '@/stores/accounts'
 import { useSettingsStore } from '@/stores/settings'
@@ -53,6 +54,12 @@ import type { Account, AccountDisplayMode, SwitchAccountResult } from '@shared/t
 
 const accountsStore = useAccountsStore()
 const settingsStore = useSettingsStore()
+
+/**
+ * 工具栏那一排的控件尺寸：大尺寸下用标准尺寸，默认尺寸下仍用 small。
+ * 写死 small 时，选了大尺寸后这排和上方的添加 / 导入 / 导出差两档，看着不像一个页面。
+ */
+const toolbarSize = computed(() => settingsStore.toolbarSize)
 
 const addOpen = ref(false)
 /** 导入拆成两个入口：拖拽文件、粘贴文本 */
@@ -147,7 +154,9 @@ const activeFilterCount = computed(() => {
     (f.usageMin != null ? 1 : 0) +
     (f.usageMax != null ? 1 : 0) +
     (f.daysRemainingMin != null ? 1 : 0) +
-    (f.daysRemainingMax != null ? 1 : 0)
+    (f.daysRemainingMax != null ? 1 : 0) +
+    // 导入时间是一个区间，两端一起设置 / 清空，只算一项
+    (f.createdFrom != null || f.createdTo != null ? 1 : 0)
   )
 })
 
@@ -361,6 +370,13 @@ async function openPortal(account: Account): Promise<void> {
     if (!res.success) message.error(res.error || '打开官网失败')
   })
 }
+
+/**
+ * 点订阅标签要看的账号。
+ * 查询与分流（开账单页 / 列档位 / 报错重试）都在弹窗里做，这里只负责挂弹窗，
+ * 于是「点了就有反应」，不用先在卡片上干等一个小转圈。
+ */
+const subscriptionTarget = ref<Account | null>(null)
 
 function copyToken(account: Account): void {
   const { accessToken, refreshToken, clientId, clientSecret } = account.credentials
@@ -584,7 +600,7 @@ function logoutIde(account: Account): void {
             <AccountFilterPanel v-if="filterOpen" />
           </template>
           <a-badge :count="activeFilterCount" :offset="[-4, 4]">
-            <a-button size="small" :type="activeFilterCount ? 'primary' : 'default'">
+            <a-button :size="toolbarSize" :type="activeFilterCount ? 'primary' : 'default'">
               <template #icon><FilterOutlined /></template>
               筛选
             </a-button>
@@ -615,7 +631,7 @@ function logoutIde(account: Account): void {
           </template>
           <a-badge :count="accountsStore.filter.groupIds.length" :offset="[-4, 4]">
             <a-button
-              size="small"
+              :size="toolbarSize"
               :type="accountsStore.filter.groupIds.length ? 'primary' : 'default'"
             >
               <template #icon><AppstoreOutlined /></template>
@@ -625,7 +641,7 @@ function logoutIde(account: Account): void {
         </a-popover>
 
         <a-dropdown>
-          <a-button size="small">
+          <a-button :size="toolbarSize">
             <template #icon><SortAscendingOutlined /></template>
             {{ sortLabel }}
             <DownOutlined />
@@ -647,7 +663,7 @@ function logoutIde(account: Account): void {
 
         <!-- 两种刷新收进同一个菜单：它们互斥，全局任务状态一次只容得下一条 -->
         <a-dropdown :disabled="busy">
-          <a-button size="small" :loading="refreshing">
+          <a-button :size="toolbarSize" :loading="refreshing">
             <template #icon><SyncOutlined /></template>
             {{ refreshButtonText }}
             <DownOutlined v-if="!refreshing" />
@@ -666,7 +682,7 @@ function logoutIde(account: Account): void {
           </template>
         </a-dropdown>
         <a-button
-          size="small"
+          :size="toolbarSize"
           :type="privacyMode ? 'primary' : 'default'"
           @click="togglePrivacy"
         >
@@ -678,11 +694,11 @@ function logoutIde(account: Account): void {
         </a-button>
 
         <!-- 展示形态：卡片 / 紧凑卡片 / 列表，选择会持久化 -->
-        <DisplayModeSelect :value="displayMode" @change="setDisplayMode" />
+        <DisplayModeSelect :value="displayMode" :size="toolbarSize" @change="setDisplayMode" />
 
         <!-- 批量操作与删除都作用于全部勾选项（不受当前搜索影响） -->
         <a-dropdown v-if="accountsStore.selectedIds.length">
-          <a-button size="small">
+          <a-button :size="toolbarSize">
             批量操作（{{ accountsStore.selectedIds.length }}个）
             <DownOutlined />
           </a-button>
@@ -702,7 +718,7 @@ function logoutIde(account: Account): void {
 
         <a-button
           v-if="accountsStore.selectedIds.length"
-          size="small"
+          :size="toolbarSize"
           danger
           @click="removeSelected"
         >
@@ -722,7 +738,7 @@ function logoutIde(account: Account): void {
         </a-checkbox>
         <template v-if="accountsStore.selectedIds.length">
           <span class="count-text">已选 {{ accountsStore.selectedIds.length }}</span>
-          <a-button type="link" size="small" @click="accountsStore.selectedIds = []">
+          <a-button type="link" :size="toolbarSize" @click="accountsStore.selectedIds = []">
             清空
           </a-button>
         </template>
@@ -767,6 +783,7 @@ function logoutIde(account: Account): void {
           @detail="detailTarget = item.account"
           @create-api-key="apiKeyTarget = item.account"
           @portal="openPortal(item.account)"
+          @subscription="subscriptionTarget = item.account"
           @edit="editTarget = item.account"
           @remove="removeOne(item.account)"
           @switch="switchTo(item.account)"
@@ -833,6 +850,11 @@ function logoutIde(account: Account): void {
       v-if="usageTarget"
       :account="usageTarget"
       @close="usageTarget = null"
+    />
+    <SubscriptionModal
+      v-if="subscriptionTarget"
+      :account="subscriptionTarget"
+      @close="subscriptionTarget = null"
     />
     <SwitchResultModal
       v-if="switchModalOpen && switchResult"

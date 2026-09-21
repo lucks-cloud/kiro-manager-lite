@@ -26,8 +26,10 @@ const UA_OS = (() => {
   return process.platform === 'darwin' ? 'macos' : 'linux'
 })()
 
+/** Kiro 网页门户站点根地址 */
+export const KIRO_PORTAL_ORIGIN = 'https://app.kiro.dev'
 /** Kiro 网页门户的 CBOR 接口 */
-export const KIRO_PORTAL_BASE = 'https://app.kiro.dev/service/KiroWebPortalService/operation'
+export const KIRO_PORTAL_BASE = `${KIRO_PORTAL_ORIGIN}/service/KiroWebPortalService/operation`
 /** Github / Google 社交登录与 token 刷新共用的 auth service */
 export const KIRO_AUTH_BASE = 'https://prod.us-east-1.auth.desktop.kiro.dev'
 /** Builder ID 的默认 SSO 入口，同时参与 clientIdHash 计算 */

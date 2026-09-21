@@ -23,6 +23,8 @@ import {
   normalizeRetryStatuses,
   retryStatusLabel
 } from '../shared/retryPolicy'
+import { parseModelEffort } from '../shared/modelSchema'
+import type { KeyModelInfo } from '../shared/types'
 import { clearRpmWindows, createUsageCollector, recordRequest, recordResponse } from './gatewayStats'
 
 const HEALTH_PATH = '/__kiro_key_health'
@@ -312,7 +314,7 @@ function apiGet(base: string, urlPath: string, key: string): Promise<ApiResponse
 
 export interface FetchedModels {
   defaultModel: string
-  models: { id: string; name?: string; rate?: number }[]
+  models: KeyModelInfo[]
 }
 export async function fetchModels(region: string, key: string): Promise<FetchedModels> {
   const res = await apiGet(managementBase(region), '/List-Available-Models?origin=AI_EDITOR&maxResults=200', key)
@@ -330,7 +332,9 @@ export async function fetchModels(region: string, key: string): Promise<FetchedM
     models: rawModels.map((m: Record<string, unknown>) => ({
       id: m.modelId as string,
       name: m.modelName as string,
-      rate: m.rateMultiplier as number
+      rate: m.rateMultiplier as number,
+      // 推理档位藏在这份 JSON Schema 里，路径与枚举按模型不同，见 shared/modelSchema
+      effort: parseModelEffort(m.additionalModelRequestFieldsSchema)
     }))
   }
 }

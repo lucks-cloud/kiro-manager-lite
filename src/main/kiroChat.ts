@@ -22,6 +22,7 @@ import {
 import { httpRequest, httpStream } from './net'
 import { pushUnique } from './utils'
 import { jsonOf, takeFrames } from './eventStream'
+import { buildModelRequestFields, parseModelEffort } from '../shared/modelSchema'
 import type { ChatTestInput, KiroModelInfo } from '../shared/types'
 
 /** 对话端点：主用 CodeWhisperer，失败回退 Amazon Q，两者请求体一致（固定 us-east-1） */
@@ -139,6 +140,8 @@ interface RawModel {
   description?: string
   /** 该模型消耗额度的倍率，上游 Model schema 里的 rateMultiplier */
   rateMultiplier?: number
+  /** 该模型额外可传的请求字段（JSON Schema），推理档位就藏在这里 */
+  additionalModelRequestFieldsSchema?: unknown
 }
 
 /** 用一个确定的 profileArn 把分页拉完 */
@@ -158,7 +161,8 @@ async function fetchModelsWithArn(
       modelId: m.modelId,
       modelName: m.modelName,
       description: m.description,
-      rate: m.rateMultiplier
+      rate: m.rateMultiplier,
+      effort: parseModelEffort(m.additionalModelRequestFieldsSchema)
     })
   }
 
@@ -287,6 +291,19 @@ function buildPayload(input: ChatTestInput, profileArn: string | undefined): Rec
       conversationId: randomUUID(),
       currentMessage: { userInputMessage }
     }
+  }
+  /*
+   * additionalModelRequestFields 放在请求体**根级**（与 conversationState 同层）。
+   * 实测出来的：放在 userInputMessage / userInputMessageContext / conversationState 里
+   * 一律 200 但被静默忽略；只有根级会校验内容 —— 给非法档位时才回
+   * 400 "Invalid additionalModelRequestFields: does not have a value in the enumeration [...]"。
+   * 字段名也按模型校验：Claude 系只认 output_config、GPT 系只认 reasoning，
+   * 而本来没有这一层的模型（如 claude-sonnet-4.5）带上就回
+   * 400 "additionalModelRequestFields is not supported for this model"。
+   * 所以档位只能来自该模型自己的 schema，不能跨模型套用。
+   */
+  if (input.additionalModelRequestFields) {
+    payload.additionalModelRequestFields = input.additionalModelRequestFields
   }
   if (profileArn) payload.profileArn = profileArn
   return payload
@@ -444,7 +461,11 @@ export async function streamKiroChat(
 export async function streamApiKeyChat(
   apiKey: string,
   region: string,
-  input: { modelId: string; message: string },
+  input: {
+    modelId: string
+    message: string
+    additionalModelRequestFields?: Record<string, unknown>
+  },
   callbacks: ChatStreamCallbacks,
   signal?: AbortSignal
 ): Promise<ChatStreamResult> {
@@ -454,7 +475,8 @@ export async function streamApiKeyChat(
     accessToken: '',
     modelId: input.modelId,
     message: input.message,
-    region
+    region,
+    additionalModelRequestFields: input.additionalModelRequestFields
   }
   const body = JSON.stringify(buildPayload(chatInput, undefined))
   const url = `https://runtime.${region}.kiro.dev/generateAssistantResponse`

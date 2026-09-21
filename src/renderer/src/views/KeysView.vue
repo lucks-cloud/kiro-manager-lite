@@ -75,6 +75,12 @@ import type {
 
 const store = useKeysStore()
 const settingsStore = useSettingsStore()
+
+/**
+ * 工具栏那一排的控件尺寸：大尺寸下用标准尺寸，默认尺寸下仍用 small。
+ * 写死 small 时，选了大尺寸后这排和上方的添加 / 导入 / 导出差两档，看着不像一个页面。
+ */
+const toolbarSize = computed(() => settingsStore.toolbarSize)
 const { data, status, activeKey, loading } = storeToRefs(store)
 const precision = computed(() => settingsStore.settings.usagePrecision)
 const privacyMode = computed(() => settingsStore.settings.privacyMode)
@@ -113,6 +119,11 @@ const filterOpen = ref(false)
 /** 筛选条件常驻本页：面板收起后条件仍然生效 */
 const filter = ref<KeyFilter>({ subscriptions: [], statuses: [], groupIds: [] })
 
+/** 空条件模板：重置时复用，避免漏掉某个新加的字段 */
+function emptyFilter(): KeyFilter {
+  return { subscriptions: [], statuses: [], groupIds: filter.value.groupIds }
+}
+
 /** 筛选面板里生效的条件数量，显示在筛选按钮的角标上 */
 const activeFilterCount = computed(() => {
   const f = filter.value
@@ -124,13 +135,15 @@ const activeFilterCount = computed(() => {
     (f.usageMin != null ? 1 : 0) +
     (f.usageMax != null ? 1 : 0) +
     (f.daysRemainingMin != null ? 1 : 0) +
-    (f.daysRemainingMax != null ? 1 : 0)
+    (f.daysRemainingMax != null ? 1 : 0) +
+    // 导入时间是一个区间，两端一起设置 / 清空，只算一项
+    (f.createdFrom != null || f.createdTo != null ? 1 : 0)
   )
 })
 
 /** 重置只清筛选面板自己的条件，分组筛选有独立按钮与「清除分组筛选」 */
 function resetFilter(): void {
-  filter.value = { subscriptions: [], statuses: [], groupIds: filter.value.groupIds }
+  filter.value = emptyFilter()
 }
 
 // ============ 分组 ============
@@ -333,7 +346,9 @@ const filteredKeys = computed(() => {
     usageMin,
     usageMax,
     daysRemainingMin,
-    daysRemainingMax
+    daysRemainingMax,
+    createdFrom,
+    createdTo
   } = filter.value
   const groupSet = groupIds.length ? new Set(groupIds) : null
   return [...data.value.keys]
@@ -363,6 +378,9 @@ const filteredKeys = computed(() => {
       if (daysRemainingMin != null && (days ?? Number.NEGATIVE_INFINITY) < daysRemainingMin) {
         return false
       }
+      // 导入时间：两端都含，界面给过来的是精确到秒的时刻
+      if (createdFrom != null && entry.createdAt < createdFrom) return false
+      if (createdTo != null && entry.createdAt > createdTo) return false
       return true
     })
     .sort((a, b) => {
@@ -1169,7 +1187,7 @@ onUnmounted(() => store.stopStatsPolling())
             />
           </template>
           <a-badge :count="activeFilterCount" :offset="[-4, 4]">
-            <a-button size="small" :type="activeFilterCount ? 'primary' : 'default'">
+            <a-button :size="toolbarSize" :type="activeFilterCount ? 'primary' : 'default'">
               <template #icon><FilterOutlined /></template>
               筛选
             </a-button>
@@ -1200,7 +1218,7 @@ onUnmounted(() => store.stopStatsPolling())
             />
           </template>
           <a-badge :count="filter.groupIds.length" :offset="[-4, 4]">
-            <a-button size="small" :type="filter.groupIds.length ? 'primary' : 'default'">
+            <a-button :size="toolbarSize" :type="filter.groupIds.length ? 'primary' : 'default'">
               <template #icon><AppstoreOutlined /></template>
               分组
             </a-button>
@@ -1208,7 +1226,7 @@ onUnmounted(() => store.stopStatsPolling())
         </a-popover>
 
         <a-dropdown>
-          <a-button size="small">
+          <a-button :size="toolbarSize">
             <template #icon><SortAscendingOutlined /></template>
             {{ sortLabel }} <DownOutlined />
           </a-button>
@@ -1221,12 +1239,12 @@ onUnmounted(() => store.stopStatsPolling())
           </template>
         </a-dropdown>
         <a-divider type="vertical" style="margin: 0 2px" />
-        <a-button size="small" :loading="syncing" @click="syncAll">
+        <a-button :size="toolbarSize" :loading="syncing" @click="syncAll">
           <template #icon><SyncOutlined /></template>
           {{ syncing ? `正在刷新${visibleSelectedCount ? visibleSelectedCount + '个API Key' : ''}用量/积分...` : `刷新用量/积分${batchScopeSuffix}` }}
         </a-button>
         <a-button
-          size="small"
+          :size="toolbarSize"
           :type="privacyMode ? 'primary' : 'default'"
           @click="togglePrivacy"
         >
@@ -1238,15 +1256,15 @@ onUnmounted(() => store.stopStatsPolling())
         </a-button>
 
         <!-- 展示形态：卡片 / 紧凑 / 列表，选择会持久化 -->
-        <DisplayModeSelect :value="displayMode" @change="setDisplayMode" />
+        <DisplayModeSelect :value="displayMode" :size="toolbarSize" @change="setDisplayMode" />
 
-        <a-button size="small" :disabled="!batchTargets.length" @click="batchTestOpen = true">
+        <a-button :size="toolbarSize" :disabled="!batchTargets.length" @click="batchTestOpen = true">
           <template #icon><ThunderboltOutlined /></template>
           批量测活{{ batchScopeSuffix }}
         </a-button>
         <!-- 批量操作作用于全部勾选项 -->
         <a-dropdown v-if="selectedIds.length">
-          <a-button size="small">
+          <a-button :size="toolbarSize">
             批量操作（{{ selectedIds.length }}个）
             <DownOutlined />
           </a-button>
@@ -1264,7 +1282,7 @@ onUnmounted(() => store.stopStatsPolling())
           </template>
         </a-dropdown>
         <!-- 删除作用于全部勾选项（不受当前搜索影响），条数与确认弹窗里的数字一致 -->
-        <a-button v-if="selectedIds.length" size="small" danger @click="removeSelected">
+        <a-button v-if="selectedIds.length" :size="toolbarSize" danger @click="removeSelected">
           <template #icon><DeleteOutlined /></template>
           删除（{{ selectedIds.length }}个）
         </a-button>
@@ -1277,7 +1295,7 @@ onUnmounted(() => store.stopStatsPolling())
         >全选</a-checkbox>
         <template v-if="selectedIds.length">
           <span class="count-text">已选 {{ selectedIds.length }}</span>
-          <a-button type="link" size="small" @click="selectedIds = []">清空</a-button>
+          <a-button type="link" :size="toolbarSize" @click="selectedIds = []">清空</a-button>
         </template>
       </div>
     </div>

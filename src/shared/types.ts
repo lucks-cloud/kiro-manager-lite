@@ -3,6 +3,7 @@
 // ============================================
 import { DEFAULT_REGION } from './regions'
 import { DEFAULT_PORTAL_LOCALE, type PortalLocale } from './portalLocale'
+import type { ModelEffort } from './modelSchema'
 
 export type IdpType = 'BuilderId' | 'Github' | 'Google' | 'Enterprise'
 
@@ -97,6 +98,35 @@ export interface AccountSubscription {
   /** 下次重置时间戳（ms） */
   expiresAt?: number
   daysRemaining?: number
+}
+
+/** 可开通的订阅档位（GetAvailableSubscriptionPlans 的一条） */
+export interface SubscriptionPlan {
+  /** 内部名，如 KIRO_PRO_PLUS，仅作为列表 key */
+  name: string
+  /** 下单时要回传的订阅类型，如 Q_DEVELOPER_STANDALONE_PRO_PLUS */
+  subscriptionType: string
+  /** 展示名，如 KIRO PRO+ */
+  title: string
+  amount: number
+  currency: string
+  /** 计费周期文案，如 per month */
+  billingInterval: string
+  featureHeader: string
+  features: string[]
+}
+
+/**
+ * 点订阅标签后一次问到的结果。
+ * 已订阅的账号能拿到 Stripe 账单管理链接；未订阅的账号拿不到（接口回 400），
+ * 于是退化成「列出可开通档位」——两种情况合并成一次 IPC，省掉一轮来回。
+ */
+export interface SubscriptionEntry {
+  /** Stripe 账单管理链接；未订阅时为空 */
+  manageUrl?: string
+  plans: SubscriptionPlan[]
+  /** 接口给的免责声明文案 */
+  disclaimer: string[]
 }
 
 /** 账号实体 */
@@ -427,12 +457,19 @@ export interface KiroModelInfo {
   description?: string
   /** 消耗额度倍率（上游 rateMultiplier）；auto 等模型可能不返回 */
   rate?: number
+  /**
+   * 推理档位选项，从上游的 additionalModelRequestFieldsSchema 解析而来。
+   * 只有部分模型有（Claude 系与 GPT 系），字段路径与枚举各不相同，详见 shared/modelSchema。
+   */
+  effort?: ModelEffort
 }
 
 export interface ApiKeyChatTestInput {
   keyId: string
   modelId: string
   message: string
+  /** 同 ChatTestInput.additionalModelRequestFields */
+  additionalModelRequestFields?: Record<string, unknown>
 }
 
 /** 账号测活：发起一次真实的流式对话 */
@@ -446,6 +483,11 @@ export interface ChatTestInput {
   idp?: string
   /** social / IdC：决定 profileArn 兜底策略 */
   authMethod?: AuthMethod
+  /**
+   * 模型的额外请求字段（推理档位等），由界面按该模型的 schema 拼好。
+   * 放在请求体根级；给了不支持的模型或非法值上游会 400，所以只在模型确实有这项时才传。
+   */
+  additionalModelRequestFields?: Record<string, unknown>
 }
 
 export interface ChatTestResult {
@@ -810,6 +852,12 @@ export interface KeyFilter {
   daysRemainingMin?: number
   /** 额度重置剩余天数上限（含） */
   daysRemainingMax?: number
+  /**
+   * 导入时间（createdAt）范围，含两端，单位毫秒，精度到秒。
+   * 只选日期不碰时间时，界面会补成起点 00:00:00 / 终点 23:59:59。
+   */
+  createdFrom?: number
+  createdTo?: number
 }
 
 /** Key 网关持久化数据 */
@@ -852,6 +900,8 @@ export interface KeyModelInfo {
   id: string
   name?: string
   rate?: number
+  /** 推理档位选项，来源同 KiroModelInfo.effort */
+  effort?: ModelEffort
 }
 
 /** 测试一个 API Key 的结果 */

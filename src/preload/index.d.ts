@@ -38,6 +38,7 @@ import type {
   LogQuery,
   LogQueryResult,
   ProactiveRenewalPayload,
+  SubscriptionEntry,
   SwitchAccountInput,
   SwitchAccountResult,
   TrayAction,
@@ -141,6 +142,15 @@ export interface Api {
   ) => Promise<IpcResult<DeleteApiKeyResult>>
   /** 用该账号凭证在私密窗口打开 Kiro 官网后台 */
   openAccountPortal: (account: Account) => Promise<IpcResult<{ url: string }>>
+  /** 查订阅入口：已订阅返回 Stripe 账单管理链接，未订阅返回可开通档位 */
+  getSubscriptionEntry: (account: Account) => Promise<IpcResult<SubscriptionEntry>>
+  /** 为指定档位生成 Stripe 结算链接 */
+  createSubscriptionCheckout: (
+    account: Account,
+    subscriptionType: string
+  ) => Promise<IpcResult<{ url: string }>>
+  /** 用内置浏览器打开链接 */
+  openInAppBrowser: (url: string, title?: string) => Promise<IpcResult<{ url: string }>>
 
   readLocalKiroCredentials: () => Promise<IpcResult<LocalKiroCredentials>>
   getActiveKiroToken: () => Promise<IpcResult<KiroActiveToken>>

@@ -12,7 +12,8 @@ import {
   verifyCredentials
 } from './accountService'
 import { createAccountApiKey, deleteAccountApiKey, listAccountApiKeys } from './kiroApiKey'
-import { openAccountPortal } from './kiroPortal'
+import { openAccountPortal, openInAppUrl } from './kiroPortal'
+import { createSubscriptionCheckout, getSubscriptionEntry } from './kiroSubscription'
 import { clearKiroSsoCache, readKiroAuthToken, readLocalKiroCredentials } from './kiroAuth'
 import { isKiroRunning, restartKiroIde } from './kiroProcess'
 import { listKiroModels, streamApiKeyChat, streamKiroChat } from './kiroChat'
@@ -203,6 +204,20 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     ok(await openAccountPortal(account))
   )
 
+  // ============ 订阅 ============
+  handle('accounts:subscription-entry', async (_e, account: Account) =>
+    ok(await getSubscriptionEntry(account))
+  )
+
+  handle('accounts:subscription-checkout', async (_e, account: Account, subscriptionType: string) =>
+    ok(await createSubscriptionCheckout(account, subscriptionType))
+  )
+
+  /** 用内置浏览器打开链接（Stripe 账单 / 结算页） */
+  handle('app:open-in-app-browser', (_e, url: string, title?: string) =>
+    ok(openInAppUrl(url, title || 'Kiro'))
+  )
+
   handle('accounts:list-api-keys', async (_e, account: Account) => {
     const result = await listAccountApiKeys(account)
     if (result.refreshed?.syncedToIde) {
@@ -370,7 +385,11 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
       const result = await streamApiKeyChat(
         entry.key,
         entry.region,
-        { modelId: input.modelId, message: input.message },
+        {
+          modelId: input.modelId,
+          message: input.message,
+          additionalModelRequestFields: input.additionalModelRequestFields
+        },
         {
           onDelta: (delta) => {
             if (!event.sender.isDestroyed()) {

@@ -15,6 +15,17 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }))
 
+  /**
+   * 列表页工具栏（筛选 / 分组 / 排序 / 刷新 / 批量操作那一排）的控件尺寸。
+   *
+   * 这一排原先写死 small：默认尺寸下正合适，但选了大尺寸后它和上方的
+   * 添加 / 导入 / 导出按钮差了两档，看着像另一个页面的东西。
+   * 所以大尺寸时给它标准尺寸（middle），默认尺寸时仍用 small。
+   */
+  const toolbarSize = computed<'small' | 'middle'>(() =>
+    settings.value.componentSize === 'large' ? 'middle' : 'small'
+  )
+
   /** 主题色同时写入 CSS 变量，供 antd 之外的自定义样式使用 */
   function applyTheme(): void {
     const root = document.documentElement
@@ -44,7 +55,7 @@ export const useSettingsStore = defineStore('settings', () => {
     if (res.success && res.data) settings.value = { ...DEFAULT_SETTINGS, ...res.data }
   }
 
-  return { settings, appInfo, themeConfig, load, update }
+  return { settings, appInfo, themeConfig, toolbarSize, load, update }
 })
 
 // setup 风格的 store 默认不参与 HMR，改完 store 后运行中的实例会缺少新增方法

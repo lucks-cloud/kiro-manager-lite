@@ -243,8 +243,9 @@ body {
    选择器一律限定在 .filter-panel 之内，避免 .chip 这类通用类名污染全局。
    ============================================================ */
 
+/* 540：导入时间那行是「日期 + 时分秒」两段，460 下两个输入框会被挤到换行 */
 .filter-panel {
-  width: 460px;
+  width: 540px;
   max-width: 70vw;
 }
 
@@ -305,6 +306,12 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+/* 时间范围这类控件铺满剩余宽度，不像数字输入框那样定宽 */
+.filter-panel .range.grow {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .filter-panel .filter-footer {

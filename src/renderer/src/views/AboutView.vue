@@ -52,13 +52,16 @@ function manualUpdate(): void {
 
 /** 关于页展示的功能清单，与 README 的功能特性保持一致 */
 const features = [
-  { name: '多账号管理', desc: '添加、编辑、删除多个 Kiro 账号，支持搜索、多维筛选与排序' },
-  { name: '三种添加方式', desc: '在线登录（Google / GitHub / Builder ID / Enterprise SSO）、OIDC 凭证、读取本地 Kiro 登录态' },
+  { name: '多账号管理', desc: '添加、编辑、删除多个 Kiro 账号，支持搜索、多维筛选（含导入时间范围）与排序' },
+  { name: '五种添加方式', desc: '在线登录（Google / GitHub / Builder ID / Enterprise SSO）、OIDC 凭证、读取本地 Kiro 登录态' },
+  { name: '自定义分组', desc: '账号与 API Key 共用一套分组：新建、改名、拖动排序、按分组筛选与批量归组' },
+  { name: '三种展示形态', desc: '卡片、卡片紧凑、列表可随时切换并各自记住选择，列表模式按卡片实际宽度自动重排' },
   { name: '一键切号', desc: '写入 IDE 凭证前强制刷新 Token，避免 IDE 被强制登出，可一键重启 IDE 生效' },
   { name: '自动刷新', desc: 'Token 与积分用量各自独立的开关与间隔，冷启动会补跑一轮' },
   { name: '主动续期', desc: '在 IDE 当前账号的 Token 即将过期前抢先刷新并写盘，保持登录态不掉线' },
-  { name: '账号测活', desc: '拉取真实可用模型并发起一次流式对话，验证账号是否可用' },
+  { name: '账号测活', desc: '拉取真实可用模型并发起一次流式对话，模型可搜索、二级可选推理档位' },
   { name: '积分与用量', desc: '订阅等级、积分明细、重置时间，并记录每次采样生成变化趋势' },
+  { name: '订阅管理', desc: '点订阅标签即用内置浏览器进 Stripe 账单页，未订阅则列出可开通档位并生成支付链接' },
   { name: 'API Key 管理', desc: '管理 ksk_ 开头的 Kiro API Key，同步订阅额度、测活、查看积分历史' },
   { name: '本地网关', desc: '把 Kiro IDE 的 AI 请求接管到本地代理并改用 API Key，运行期间可随时换 Key' },
   { name: '常用工具', desc: '一键放行 Kiro 的终端命令确认框，关闭时还原开启前的配置' },
@@ -141,8 +144,8 @@ function open(url: string): void {
       </template>
       <p class="intro-text">
         Kiro Manager Lite 是一个 Kiro IDE 的多账号与 API Key 管理工具。支持多账号快速切换、
-        Token 自动刷新与主动续期、积分用量跟踪、账号测活，以及 Kiro API Key 管理和本地网关接管，
-        帮你在多个账号与订阅之间省去反复登录退出的力气。
+        Token 自动刷新与主动续期、积分用量跟踪、账号测活与订阅开通，以及自定义分组、
+        Kiro API Key 管理和本地网关接管，帮你在多个账号与订阅之间省去反复登录退出的力气。
       </p>
       <p class="intro-text">
         本应用使用 Electron + Vue 3 + TypeScript 开发，支持 Windows、macOS 和 Linux 平台。

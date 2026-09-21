@@ -2,7 +2,6 @@
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import {
-  CheckCircleFilled,
   CloseCircleFilled,
   SendOutlined,
   StopOutlined,
@@ -10,8 +9,10 @@ import {
 } from '@ant-design/icons-vue'
 import { useKeysStore } from '@/stores/keys'
 import { useSettingsStore } from '@/stores/settings'
-import { formatRate } from '@/utils/format'
+import ModelCascader from '@/components/common/ModelCascader.vue'
+import { withDefaultEffort, type CascaderModel } from '@/utils/models'
 import { errorMessage } from '@shared/errors'
+import { buildModelRequestFields } from '@shared/modelSchema'
 import type { ChatTestResult, KeyEntry, KeyModelInfo } from '@shared/types'
 
 const props = defineProps<{ keyEntry: KeyEntry | null }>()
@@ -23,7 +24,6 @@ const DEFAULT_MESSAGE = '你的具体模型名称，以及具体时间，打印�
 const models = ref<KeyModelInfo[]>([])
 const modelsLoading = ref(false)
 const modelsError = ref('')
-const modelId = ref('')
 const input = ref(DEFAULT_MESSAGE)
 const running = ref(false)
 const output = ref('')
@@ -36,17 +36,22 @@ const label = computed(() => {
   const key = props.keyEntry?.key || ''
   return settingsStore.settings.privacyMode ? mask(key) : key
 })
-const modelOptions = computed(() =>
-  models.value.map((model) => {
-    const base = model.name && model.name !== model.id ? `${model.name}（${model.id}）` : model.id
-    const rate = formatRate(model.rate)
-    return {
-      value: model.id,
-      // 倍率拼进 label，a-select 搜索时也能按倍率匹配
-      label: rate ? `${base} ${rate}` : base
-    }
-  })
-)
+/** 级联选择器要的形状：一级模型、二级推理档位（档位来自模型自己的 schema） */
+const cascaderModels = computed<CascaderModel[]>(() => models.value)
+
+/** [模型 id] 或 [模型 id, 档位]；只选模型表示用上游默认档位 */
+const selection = ref<string[]>([])
+const modelId = computed(() => selection.value[0] ?? '')
+const effortLevel = computed(() => selection.value[1])
+
+/**
+ * 按所选模型的 schema 拼出请求字段。
+ * 没选档位就不带这个字段 —— 上游对「本无该选项的模型」带上它会直接 400。
+ */
+const requestFields = computed(() => {
+  const model = models.value.find((m) => m.id === modelId.value)
+  return buildModelRequestFields(model?.effort, effortLevel.value)
+})
 const ready = computed(() => !modelsLoading.value && !modelsError.value && models.value.length > 0)
 
 function mask(key: string): string {
@@ -73,8 +78,14 @@ async function loadModels(): Promise<void> {
     if (props.keyEntry?.id !== loadingId) return
     if (response.data?.length) {
       models.value = response.data
-      if (!modelOptions.value.some((option) => option.value === modelId.value)) {
-        modelId.value = modelOptions.value[0]?.value || ''
+      const kept = models.value.find((model) => model.id === modelId.value)
+      if (!kept) {
+        const first = models.value[0]
+        // 首个候选同样要补上默认档位，保证「显示的」就是「发出去的」
+        selection.value = first ? withDefaultEffort(cascaderModels.value, [first.id]) : []
+      } else if (effortLevel.value && !kept.effort?.options.includes(effortLevel.value)) {
+        // 重新拉回来的 schema 可能不再有这个档位，回落到新的默认档位
+        selection.value = withDefaultEffort(cascaderModels.value, [kept.id])
       }
     } else {
       modelsError.value = response.error || '官方没有返回任何可用模型'
@@ -94,7 +105,7 @@ watch(
     result.value = null
     error.value = ''
     input.value = DEFAULT_MESSAGE
-    modelId.value = ''
+    selection.value = []
     void loadModels()
   },
   { immediate: true }
@@ -117,6 +128,7 @@ async function start(): Promise<void> {
     const response = await window.api.keyChatTest(currentRequest, {
       keyId: target.id,
       modelId: modelId.value,
+      additionalModelRequestFields: requestFields.value,
       message: text
     })
     if (requestId.value !== currentRequest) return
@@ -158,15 +170,6 @@ const resultSummary = computed(() => {
   return parts.join(' · ')
 })
 
-const modelNote = computed(() => {
-  if (!result.value) return ''
-  if (result.value.modelId) {
-    return result.value.modelId === modelId.value
-      ? `请求模型 ${modelId.value}，后端回报一致`
-      : `请求模型 ${modelId.value}，后端实际使用 ${result.value.modelId}`
-  }
-  return `请求模型 ${modelId.value}（响应流未回报实际模型）`
-})
 </script>
 
 <template>
@@ -201,14 +204,14 @@ const modelNote = computed(() => {
 
     <template v-else>
       <a-form layout="vertical">
-        <a-form-item label="模型">
+        <!-- 标题带上模型数量：一眼看出这个 Key 拉到了几个主模型（不含二级档位） -->
+        <a-form-item :label="`模型（${models.length}个）`">
           <div class="model-row">
-            <a-select
-              v-model:value="modelId"
-              :options="modelOptions"
-              show-search
-              placeholder="选择模型"
-              style="flex: 1 1 auto"
+            <ModelCascader
+              :models="cascaderModels"
+              :value="selection"
+              :disabled="running"
+              @change="selection = $event"
             />
             <a-tooltip title="重新拉取模型列表">
               <a-button :disabled="running" @click="loadModels"><template #icon><SyncOutlined /></template></a-button>
@@ -227,14 +230,7 @@ const modelNote = computed(() => {
         <span v-if="running" class="cursor" />
       </div>
 
-      <a-alert
-        v-if="result"
-        type="success"
-        show-icon
-        style="margin-top: 12px"
-        :message="resultSummary"
-        :description="modelNote"
-      ><template #icon><CheckCircleFilled /></template></a-alert>
+      <a-alert v-if="result" type="success" style="margin-top: 12px" :message="resultSummary" />
       <a-alert
         v-else-if="error"
         type="error"

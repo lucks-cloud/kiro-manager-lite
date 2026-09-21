@@ -88,11 +88,23 @@ function buildInit(
   return init
 }
 
+/**
+ * 响应头的最小可用形态。
+ * 不直接暴露 undici 的 Headers 类型：主进程的 tsconfig 不含 DOM lib，
+ * 这里只声明用得到的两个方法，undici 的实现天然满足。
+ */
+export interface HttpHeaders {
+  get: (name: string) => string | null
+  /** 多条 set-cookie 必须分开取，get('set-cookie') 会拼成一串没法可靠切分 */
+  getSetCookie: () => string[]
+}
+
 export interface HttpResponse {
   ok: boolean
   status: number
   /** 跟随重定向后的最终地址，更新检查可据此解析最新 Release tag。 */
   url: string
+  headers: HttpHeaders
   text: () => Promise<string>
   json: <T = unknown>() => Promise<T>
   arrayBuffer: () => Promise<ArrayBuffer>
@@ -167,6 +179,7 @@ export async function httpRequest(
       ok: res.ok,
       status: res.status,
       url: res.url,
+      headers: res.headers,
       text: () => res.text(),
       json: <T>() => res.json() as Promise<T>,
       arrayBuffer: () => res.arrayBuffer()
