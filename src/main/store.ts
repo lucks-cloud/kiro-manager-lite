@@ -84,7 +84,8 @@ const VALID_SUBSCRIPTION_TYPES = new Set<string>([
   'Pro_Plus',
   'Pro_Max',
   'Power',
-  'Teams'
+  'Teams',
+  'Student'
 ] satisfies SubscriptionType[])
 
 /**

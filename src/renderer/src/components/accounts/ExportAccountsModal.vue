@@ -57,26 +57,31 @@ const scopeText = computed(
 )
 
 const formats = computed<{ value: ExportFormat; label: string; icon: Component; desc: string }[]>(() => [
-  { value: 'json', label: 'JSON', icon: FileOutlined, desc: '完整数据，可用于导入' },
-  { value: 'oidc', label: 'OIDC JSON', icon: CodeOutlined, desc: 'OIDC 精简 JSON，可粘贴到批量添加' },
+  { value: 'json', label: 'JSON', icon: FileOutlined, desc: '完整数据，可用于导入，完美适配Kiro Manager Lite。' },
+  {
+    value: 'oidc',
+    label: 'OIDC JSON（兼容性高）',
+    icon: CodeOutlined,
+    desc: '兼容各大主流 Kiro 账号管理器，也可粘贴到批量添加。'
+  },
   { value: 'kami', label: '卡密', icon: KeyOutlined, desc: '邮箱----密码----Token----ID----Secret' },
   {
     value: 'txt',
     label: 'TXT',
     icon: FileTextOutlined,
-    desc: includeCredentials.value ? '可导入格式：邮箱,Token,昵称,登录方式' : '纯文本摘要，每个账号一段'
+    desc: includeCredentials.value ? '可导入格式：邮箱,Token,昵称,登录方式' : '纯文本摘要，每个账号一段。'
   },
   {
     value: 'csv',
     label: 'CSV',
     icon: TableOutlined,
-    desc: includeCredentials.value ? '可导入格式，Excel 兼容' : 'Excel 兼容的用量摘要'
+    desc: includeCredentials.value ? '可导入格式，Excel 兼容' : 'Excel 兼容的用量摘要。'
   },
   {
     value: 'clipboard',
     label: '剪贴板',
     icon: SnippetsOutlined,
-    desc: includeCredentials.value ? '可导入格式：邮箱,Token' : '复制账号摘要到剪贴板'
+    desc: includeCredentials.value ? '可导入格式：邮箱,Token' : '复制账号摘要到剪贴板。'
   }
 ])
 
@@ -98,14 +103,27 @@ const showCopyButton = computed(() => format.value !== 'clipboard')
  */
 const canBundle = computed(() => targets.value.length > 1 && format.value !== 'clipboard')
 
+/** 记住上次选的格式；设置里没有或已不再支持（旧版本遗留）时回落到第一项 */
+function initialFormat(): ExportFormat {
+  const saved = settingsStore.settings.accountExportFormat
+  return formats.value.some((item) => item.value === saved) ? saved : formats.value[0].value
+}
+
+function pickFormat(value: ExportFormat): void {
+  if (value === format.value) return
+  format.value = value
+  void settingsStore.update({ accountExportFormat: value })
+}
+
 watch(
   () => props.open,
   (open) => {
     if (open) {
-      format.value = 'json'
+      format.value = initialFormat()
       includeCredentials.value = true
     }
-  }
+  },
+  { immediate: true }
 )
 
 function content(): string {
@@ -192,7 +210,7 @@ function submit(): void {
         :key="item.value"
         class="format-card"
         :class="{ selected: format === item.value }"
-        @click="format = item.value"
+        @click="pickFormat(item.value)"
       >
         <span class="format-head">
           <component :is="item.icon" />
@@ -286,9 +304,10 @@ function submit(): void {
   border-color: var(--kal-primary);
 }
 
+/* 选中态用很浅的主题色底，跟着 primaryColor 变，不再是灰块 */
 .format-card.selected {
   border-color: var(--kal-primary);
-  background: var(--kal-block-bg);
+  background: color-mix(in srgb, var(--kal-primary) 8%, transparent);
 }
 
 .format-head {

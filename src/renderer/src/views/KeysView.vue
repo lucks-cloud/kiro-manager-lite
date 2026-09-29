@@ -254,7 +254,8 @@ const keyStats = computed(() => {
     Pro_Plus: 0,
     Pro_Max: 0,
     Power: 0,
-    Teams: 0
+    Teams: 0,
+    Student: 0
   }
   const byStatus: Record<KeyStatus, number> = { normal: 0, error: 0, unchecked: 0 }
   for (const entry of data.value.keys) {

@@ -7,6 +7,7 @@ import {
   DeleteOutlined,
   EditOutlined,
   GlobalOutlined,
+  InfoCircleOutlined,
   KeyOutlined,
   LoginOutlined,
   LogoutOutlined,
@@ -304,15 +305,15 @@ function onCardClick(): void {
         点击事件挂在外层 span 而不是 a-tag 上：a-tag 一旦带 onClick 就会自动套上
         Wave（antd 的点击涟漪），在卡片里表现为一个扩散到用量条上的浅色方框。
       -->
-      <span
-        class="subscription-tag"
-        title="点击管理订阅 / 升级套餐"
-        @click.stop="emit('subscription')"
-      >
-        <a-tag :color="subscription.color" :bordered="false">
-          {{ subscriptionText }}
-        </a-tag>
-      </span>
+      <a-tooltip title="管理订阅状态">
+        <span class="subscription-tag" @click.stop="emit('subscription')">
+          <a-tag :color="subscription.color" :bordered="false">
+            {{ subscriptionText }}
+            <!-- 订阅名后面的信息图标：提示这个标签是可点的入口，纯展示的标签没有它 -->
+            <InfoCircleOutlined class="subscription-hint" />
+          </a-tag>
+        </span>
+      </a-tooltip>
       <a-tag :color="idp.color" :bordered="false">{{ idp.text }}</a-tag>
       <!-- 分组标签：没分组就不显示，避免每张卡都多一个空标签 -->
       <a-tag
@@ -569,6 +570,11 @@ function onCardClick(): void {
   display: inline-flex;
   cursor: pointer;
   transition: filter 0.15s;
+}
+
+.subscription-hint {
+  margin-left: 2px;
+  font-size: 12px;
 }
 
 .subscription-tag:hover {

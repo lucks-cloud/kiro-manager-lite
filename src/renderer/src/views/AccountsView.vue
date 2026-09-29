@@ -42,6 +42,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { displayEmail as maskedEmail } from '@/utils/display'
 import { accountGroupApi } from '@/utils/groupApi'
 import { toPlain } from '@/utils/ipc'
+import { buildExportContent } from '@/utils/transfer'
 import {
   bodyPopupContainer,
   confirmDanger,
@@ -378,18 +379,24 @@ async function openPortal(account: Account): Promise<void> {
  */
 const subscriptionTarget = ref<Account | null>(null)
 
+/**
+ * 复制凭证 JSON。
+ *
+ * 内容直接复用导出弹窗的 OIDC JSON 格式（buildExportContent 的 'oidc' 分支），
+ * 两处保持同一份字段定义：以后加字段只改 transfer.ts，不会出现「导出有、复制没有」。
+ * 结果是单元素数组，能原样粘进批量添加，也被各家管理器认。
+ */
 function copyToken(account: Account): void {
   const { accessToken, refreshToken, clientId, clientSecret } = account.credentials
   if (!accessToken && !refreshToken && !clientId && !clientSecret) {
     return void message.warning('该账号没有可复制的凭证')
   }
-  const payload = {
-    accessToken: accessToken || '',
-    refreshToken: refreshToken || '',
-    clientId: clientId || '',
-    clientSecret: clientSecret || ''
-  }
-  copyText(JSON.stringify(payload, null, 2), '凭证 JSON 已复制到剪贴板')
+  const content = buildExportContent('oidc', [account], {
+    includeCredentials: true,
+    appVersion: settingsStore.appInfo?.version ?? '1.0.0',
+    groups: accountsStore.groups
+  })
+  copyText(content, '凭证 JSON 已复制到剪贴板')
 }
 
 const switchResult = ref<SwitchAccountResult | null>(null)

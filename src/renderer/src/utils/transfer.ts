@@ -3,6 +3,7 @@ import { DEFAULT_REGION } from '@shared/regions'
 import type {
   Account,
   AccountExportData,
+  AccountExportFormat,
   AccountGroup,
   AccountImportItem,
   ExportBundle,
@@ -10,7 +11,8 @@ import type {
   KeyEntry
 } from '@shared/types'
 
-export type ExportFormat = 'json' | 'oidc' | 'kami' | 'csv' | 'txt' | 'clipboard'
+/** 与 AccountExportFormat 同一套取值，导出格式需要持久化所以类型定义放在 shared */
+export type ExportFormat = AccountExportFormat
 
 const VALID_IDPS: IdpType[] = ['BuilderId', 'Github', 'Google', 'Enterprise']
 
@@ -243,11 +245,14 @@ export function buildExportContent(
     }
 
     case 'oidc':
-      // 精简 JSON，可直接粘回批量导入框
+      // 精简 JSON，可直接粘回批量导入框；也是各家 Kiro 账号管理器都认的字段组合
       return JSON.stringify(
         accounts.map((a) => {
           const item: Record<string, string> = {
             email: a.email,
+            // accessToken 放在 refreshToken 前面：部分管理器只读第一个 token 字段，
+            // 带上它能让对方直接拿到可用的短期凭证，不必先做一次刷新
+            accessToken: a.credentials.accessToken || '',
             refreshToken: a.credentials.refreshToken || '',
             provider: a.idp || 'BuilderId'
           }

@@ -21,6 +21,8 @@ export function normalizeSubscriptionType(title: string): SubscriptionType {
   }
   if (t.includes('POWER')) return 'Power'
   if (t.includes('TEAMS')) return 'Teams'
+  // 学生号：教育邮箱认证后的档位，标题形如 KIRO STUDENT，不含 PRO，位置不敏感
+  if (t.includes('STUDENT')) return 'Student'
   if (t.includes('PRO')) return 'Pro'
   return 'Free'
 }

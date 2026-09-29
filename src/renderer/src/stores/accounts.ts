@@ -353,7 +353,8 @@ export const useAccountsStore = defineStore('accounts', () => {
       Pro_Plus: 0,
       Pro_Max: 0,
       Power: 0,
-      Teams: 0
+      Teams: 0,
+      Student: 0
     }
     const byIdp: Record<IdpType, number> = { BuilderId: 0, Github: 0, Google: 0, Enterprise: 0 }
     let expiringSoon = 0

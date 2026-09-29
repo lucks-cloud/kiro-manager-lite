@@ -11,7 +11,15 @@ export type IdpType = 'BuilderId' | 'Github' | 'Google' | 'Enterprise'
  * 订阅档位。不含 Enterprise —— 那是登录方式（见 IdpType），
  * 一个账号可以「订阅 Power + 用 Enterprise 登录」，两者是正交的。
  */
-export type SubscriptionType = 'Free' | 'Pro' | 'Pro_Plus' | 'Pro_Max' | 'Power' | 'Teams'
+export type SubscriptionType =
+  | 'Free'
+  | 'Pro'
+  | 'Pro_Plus'
+  | 'Pro_Max'
+  | 'Power'
+  | 'Teams'
+  /** 学生号：教育邮箱认证后拿到的档位，接口标题形如 KIRO STUDENT */
+  | 'Student'
 
 export type AccountStatus = 'active' | 'expired' | 'error' | 'banned' | 'unknown'
 
@@ -638,6 +646,12 @@ export interface UpdateCheckResult {
  */
 export type AccountDisplayMode = 'card' | 'compact' | 'list'
 
+/**
+ * 账号导出格式，取值与 renderer/utils/transfer 的 ExportFormat 一致。
+ * 放在 shared 里是为了把「上次选的格式」持久化进设置。
+ */
+export type AccountExportFormat = 'json' | 'oidc' | 'kami' | 'csv' | 'txt' | 'clipboard'
+
 export interface AppSettings {
   /** 主题色 */
   primaryColor: string
@@ -652,6 +666,11 @@ export interface AppSettings {
   accountDisplayMode: AccountDisplayMode
   /** API Key 列表的展示形态，与账号各记一份，两边可以不一样 */
   keyDisplayMode: AccountDisplayMode
+  /**
+   * 导出账号时上次选择的格式，下次打开导出弹窗默认选中它。
+   * 取值不在当前支持列表里（旧版本遗留）时回落到第一项。
+   */
+  accountExportFormat: AccountExportFormat
   /** 侧栏折叠 */
   sidebarCollapsed: boolean
   /** 隐私打码：列表与详情中隐藏邮箱、昵称等隐私信息 */
@@ -744,6 +763,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   componentSize: 'large',
   accountDisplayMode: 'card',
   keyDisplayMode: 'card',
+  accountExportFormat: 'json',
   sidebarCollapsed: false,
   privacyMode: false,
   usagePrecision: false,
