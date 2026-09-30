@@ -7,9 +7,10 @@ import {
   CopyOutlined,
   DeleteOutlined,
   DownOutlined,
-  FolderOpenOutlined,
+  ExclamationCircleFilled,
   GlobalOutlined,
   PlayCircleOutlined,
+  PoweroffOutlined,
   ReloadOutlined,
   RollbackOutlined,
   ThunderboltOutlined,
@@ -25,6 +26,7 @@ import { formatCheckedAt, formatCredits, formatLogTime, maskEmail } from '@/util
 import { withDefaultEffort, type CascaderModel } from '@/utils/models'
 import ModelCascader from '@/components/common/ModelCascader.vue'
 import ClientIcon from '@/components/proxy/ClientIcon.vue'
+import PathMenu from '@/components/common/PathMenu.vue'
 import ProxyKeysModal from '@/components/proxy/ProxyKeysModal.vue'
 import ProxyEndpointsModal from '@/components/proxy/ProxyEndpointsModal.vue'
 import { PAYLOAD_LIMIT_MAX_KB, PAYLOAD_LIMIT_MIN_KB } from '@shared/types'
@@ -272,7 +274,7 @@ async function changePool(next: Partial<ProxyConfig>): Promise<void> {
  */
 const clientMeta: Record<ProxyClientTarget, { name: string; site: string }> = {
   claudeCode: {
-    name: 'Claude Code',
+    name: 'Claude Code CLI',
     site: 'https://claude.com/product/claude-code'
   },
   codex: {
@@ -455,9 +457,24 @@ function onKeysChanged(): void {
   void loadKeyCount()
 }
 
-function toggleRun(next: boolean): void {
-  if (next) void store.start()
-  else void store.stop()
+/*
+ * 每次手动启动都要先确认一遍风险：页面顶部的风险提示可以收起，看过一次的人很容易忘，
+ * 而一旦启动，账号额度和客户端发来的数据就都走这条链路了。
+ * 应用启动时的「自动启动」在主进程里直接起，不经过这里，也就不弹这个框。
+ */
+const startConfirmOpen = ref(false)
+
+function requestStart(): void {
+  startConfirmOpen.value = true
+}
+
+async function confirmStart(): Promise<void> {
+  startConfirmOpen.value = false
+  await store.start()
+}
+
+function stopProxy(): void {
+  void store.stop()
 }
 
 // ============ 客户端接入 ============
@@ -534,6 +551,9 @@ const confirmLines = computed<string[]>(() => {
     if (prompt.target === 'codexApp') {
       lines.push('桌面版如果开着，会先让它退出，还原完可以在最后一步启回来。')
     }
+    if (prompt.target === 'cursor') {
+      lines.push('移除 Cursor++ 里的 Kiro provider 并关闭 BYOK 模式，Cursor 回到官方后端。CCursor 补丁保留，下次写入无需重装；要彻底卸载可在终端运行 npx @cometix/ccursor uninstall。')
+    }
     return lines
   }
 
@@ -548,7 +568,7 @@ const confirmLines = computed<string[]>(() => {
   // Cursor 首次写入会联网装 CCursor 并给 Cursor 的内核文件打补丁，这事得提前讲清楚
   if (prompt.target === 'cursor' && !cursorReady.value) {
     lines.push(
-      '首次写入会自动下载安装 CCursor（约 33MB，需要 Node.js 与网络），它会给 Cursor 的程序文件打补丁以支持自定义模型，点「还原」可连同补丁一起撤销。约需一两分钟。'
+      '首次写入会自动下载安装 CCursor（约 33MB，需要 Node.js 与网络），它会给 Cursor 的程序文件打补丁以支持自定义模型。「还原」只关闭 BYOK、不卸补丁，下次写入就不用再装。约需一两分钟。'
     )
   }
   if (prompt.target === 'claudeApp') {
@@ -732,6 +752,41 @@ const promptApp = computed(() => {
   if (!OPENABLE.includes(target)) return null
   return { verb: `${openVerb(target)} ${clientMeta[target].name}`, target }
 })
+
+/**
+ * 手动指定安装位置。选择框由主进程弹出并校验（选错了应用会直接报错、不保存），
+ * 这里只负责把刷新后的状态放回 store；用户点取消时 data 为 null，不提示。
+ */
+async function pickInstallPath(target: ProxyClientTarget): Promise<void> {
+  const res = await window.api.pickProxyClientPath(target)
+  if (!res.success) return void message.error(res.error || '设置失败')
+  if (!res.data) return
+  store.clients = res.data
+  message.success(`已设置 ${clientMeta[target].name} 的安装位置`)
+}
+
+const rechecking = ref(false)
+
+async function recheckInstall(): Promise<void> {
+  const target = clientDetail.value
+  if (!target) return
+  rechecking.value = true
+  try {
+    await store.loadClients(true)
+    const installed = store.clients.find((c) => c.target === target)?.installed
+    if (installed) message.success(`已检测到 ${clientMeta[target].name}`)
+    else message.warning(`仍未检测到 ${clientMeta[target].name}，装在其它位置可手动设置`)
+  } finally {
+    rechecking.value = false
+  }
+}
+
+async function clearInstallPath(target: ProxyClientTarget): Promise<void> {
+  const res = await window.api.clearProxyClientPath(target)
+  if (!res.success || !res.data) return void message.error(res.error || '操作失败')
+  store.clients = res.data
+  message.success('已恢复自动检测')
+}
 
 async function revealPath(target: ProxyClientTarget, index: number): Promise<void> {
   const res = await window.api.revealProxyClientFile(target, index)
@@ -928,11 +983,27 @@ onUnmounted(() => stop?.())
             流式与非流式、工具调用、图片、推理内容都已转换。
           </div>
         </div>
-        <a-switch
-          :checked="store.running"
-          :loading="store.busy === 'start' || store.busy === 'stop'"
-          @change="(v: any) => toggleRun(!!v)"
-        />
+        <!-- 按钮比开关更像一个「动作」：启动要先过风险确认，开关一拨就生效的观感不合适 -->
+        <!-- 不写 size，直接跟随全局控件尺寸（默认 / 大）；工具栏那套会再降一档，这里是主操作，不降 -->
+        <a-button
+          v-if="store.running"
+          type="primary"
+          danger
+          :loading="store.busy === 'stop'"
+          @click="stopProxy"
+        >
+          <template #icon><PoweroffOutlined /></template>
+          关闭反代
+        </a-button>
+        <a-button
+          v-else
+          type="primary"
+          :loading="store.busy === 'start'"
+          @click="requestStart"
+        >
+          <template #icon><PlayCircleOutlined /></template>
+          启动反代
+        </a-button>
       </div>
 
       <div class="addr-grid">
@@ -1494,8 +1565,45 @@ onUnmounted(() => stop?.())
           v-if="detailState.warning"
           :type="detailState.installed ? 'info' : 'warning'"
           show-icon
-          :message="detailState.warning"
-        />
+        >
+          <template #message>
+            {{ detailState.warning }}
+            <!-- 装在非默认位置时自动检测会漏，让用户自己指一次 -->
+            <template v-if="!detailState.installed">
+            如您已安装，请<a
+              class="pick-link"
+              role="button"
+              tabindex="0"
+              @click="pickInstallPath(detailState.target)"
+              @keydown.enter="pickInstallPath(detailState.target)"
+            >点击此处设置</a>
+            </template>
+          </template>
+        </a-alert>
+
+        <!-- 认的是哪一份：同一台机器上装了多份（或便携版）时，用户得能看出来、能改 -->
+        <div v-if="detailState.installPath" class="cd-sect">
+          <div class="cd-title">
+            安装位置
+            <a-tag v-if="detailState.customPath" :bordered="false" color="processing" class="mini-tag">
+              手动指定
+            </a-tag>
+          </div>
+          <div class="client-path">
+            <span class="mono">{{ detailState.installPath }}</span>
+            <a-button type="link" size="small" @click="pickInstallPath(detailState.target)">
+              {{ detailState.customPath ? '重新选择' : '更改' }}
+            </a-button>
+            <a-button
+              v-if="detailState.customPath"
+              type="link"
+              size="small"
+              @click="clearInstallPath(detailState.target)"
+            >
+              恢复自动检测
+            </a-button>
+          </div>
+        </div>
 
         <!-- Codex 走 profile，不带参数不会用到我们的配置，这行必须给出来 -->
         <div v-if="detailState.command" class="cd-sect">
@@ -1515,17 +1623,22 @@ onUnmounted(() => stop?.())
         <div v-if="detailState.paths.length" class="cd-sect">
           <div class="cd-title">配置文件</div>
           <div v-for="(path, index) in detailState.paths" :key="path" class="client-path">
-            <span class="mono">{{ path }}</span>
-            <a-button type="link" size="small" @click="copyText(path, '路径已复制')">复制</a-button>
-            <a-button type="link" size="small" @click="revealPath(detailState.target, index)">
-              <template #icon><FolderOpenOutlined /></template>
-              打开目录
-            </a-button>
+            <PathMenu :path="path" @reveal="revealPath(detailState.target, index)" />
           </div>
         </div>
 
         <!-- 要不要重启在写入成功那一步再说，这里只放操作 -->
         <div class="cd-actions">
+          <!-- 刚装完不用关弹窗再开：点一下重新查。已装的用不上，不显示 -->
+          <a-button
+            v-if="!detailState.installed"
+            class="cd-recheck"
+            :loading="rechecking"
+            @click="recheckInstall"
+          >
+            <template #icon><ReloadOutlined /></template>
+            重新检测
+          </a-button>
           <!-- 没装就禁掉：写下去只会给不存在的客户端造出配置文件 -->
           <a-tooltip :title="detailState.installed ? '' : detailState.warning">
             <a-button
@@ -1785,6 +1898,32 @@ onUnmounted(() => stop?.())
       />
     </a-modal>
 
+    <!-- 手动启动前的风险确认；应用启动时的自动启动不走这里 -->
+    <a-modal
+      v-model:open="startConfirmOpen"
+      centered
+      :width="480"
+      :mask-closable="true"
+    >
+      <template #title>
+        <span class="modal-title start-risk-title">
+          <ExclamationCircleFilled />
+          反代有风险，使用需谨慎
+        </span>
+      </template>
+      <ul class="start-risk-list">
+        <li>属于非官方用法，异常流量可能触发风控，账号有被限流甚至封禁的可能。</li>
+        <li>调用消耗的是你自己账号的积分，agent 自动多轮调用时消耗很快。</li>
+        <li>客户端发出的内容（源码、密钥等）会原样转发给上游，请保持 API Key 校验开启。</li>
+      </ul>
+      <template #footer>
+        <a-button @click="startConfirmOpen = false">取消</a-button>
+        <a-button type="primary" :loading="store.busy === 'start'" @click="confirmStart">
+          我已知晓，确认启用
+        </a-button>
+      </template>
+    </a-modal>
+
     <!-- 单条日志详情 -->
     <a-modal
       :open="!!logDetail"
@@ -1865,6 +2004,9 @@ onUnmounted(() => stop?.())
 .tool-card { border: 1px solid var(--kal-border); }
 .tool-row { display: flex; align-items: flex-start; gap: 16px; }
 .tool-main { flex: 1 1 auto; min-width: 0; }
+/* 启动前风险确认：标题用警示色，要点压成三条，不重复页面顶部那份细则 */
+.start-risk-title { color: var(--ant-color-error, #ff4d4f); }
+.start-risk-list { margin: 4px 0 0; padding-left: 18px; line-height: 1.8; font-size: 13px; }
 .tool-title { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; font-size: 16px; }
 .tool-desc { margin-top: 8px; font-size: 13px; }
 .tool-hint { margin-top: 10px; color: var(--kal-muted); font-size: 12px; line-height: 1.7; }
@@ -1994,6 +2136,28 @@ onUnmounted(() => stop?.())
 /* 下划线用浅色：跟着文字色会是纯黑，太抢眼；悬停时再变成主题色 */
 .copy-owner { color: inherit; border-bottom: 1px dashed var(--kal-muted); }
 .copy-owner:hover { color: var(--kal-primary); border-bottom-color: var(--kal-primary); }
+/*
+ * 未安装提示里的「点击此处设置」：在警告色的文字里要能认出是可点的。
+ * 没有 href 的 <a> 浏览器不给手型，得自己补；悬停时铺一层浅主题色底，确认是可点的。
+ */
+.pick-link {
+  margin: 0 2px;
+  padding: 0 2px;
+  border-radius: 3px;
+  color: var(--kal-primary);
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
+}
+.pick-link:hover,
+.pick-link:focus-visible {
+  color: var(--kal-primary);
+  background: color-mix(in srgb, var(--kal-primary) 12%, transparent);
+  outline: none;
+}
+.cd-title .mini-tag { margin-left: 6px; }
 
 .client-group + .client-group { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--kal-border); }
 .client-group-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
@@ -2128,6 +2292,8 @@ onUnmounted(() => stop?.())
   padding-top: 12px;
   border-top: 1px solid var(--kal-border);
 }
+/* 重新检测放最左边，和右侧的写入 / 还原 / 打开分开：它只是查一遍，不改任何东西 */
+.cd-actions .cd-recheck { margin-right: auto; }
 /* ===== 写入 / 还原弹窗：尺寸与「订阅管理」保持一致 ===== */
 .modal-title { display: inline-flex; align-items: center; gap: 8px; }
 

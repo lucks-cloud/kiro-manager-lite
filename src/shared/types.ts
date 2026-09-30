@@ -1003,6 +1003,10 @@ export interface ProxyClientState {
   appRunning?: boolean
   /** 本机是否装了这个客户端。没装时禁掉写入，免得给不存在的客户端造配置文件 */
   installed: boolean
+  /** 检测到的安装位置（macOS 图形应用是 .app，Windows 是 exe，命令行版是可执行文件） */
+  installPath?: string
+  /** 安装位置是用户手动指定的 */
+  customPath?: boolean
   /** 已写入本应用的配置 */
   applied: boolean
   /** 有写入前的原始备份，可以还原 */

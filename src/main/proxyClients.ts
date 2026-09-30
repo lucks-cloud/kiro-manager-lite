@@ -13,6 +13,7 @@ import * as fs from 'fs/promises'
 import * as os from 'os'
 import * as path from 'path'
 import { log } from './logger'
+import { findBinary, installLabel, locateCliSync, locateClient } from './proxyClientInstall'
 import {
   getProxyClientBackup,
   getProxyCodexTemplate,
@@ -37,6 +38,23 @@ const LEGACY_CODEX_NAMES = ['kml']
 
 function home(): string {
   return os.homedir()
+}
+
+/** 代为启动前先定位应用；手动指定过位置的按指定的来，别的地方也有一份时不会开错 */
+async function requireApp(target: ProxyClientTarget): Promise<string> {
+  const found = (await locateClient(target)).path
+  if (!found) throw new Error(`没有找到 ${installLabel(target)}`)
+  return found
+}
+
+/**
+ * 启动命令里怎么调用命令行工具。
+ * 手动指定了位置的用完整路径：它多半不在 PATH 里，只写命令名新终端会报 command not found。
+ * 带引号是因为路径里可能有空格；macOS 的 shell 与 Windows 的 cmd 都认双引号。
+ */
+function cliInvoke(target: ProxyClientTarget, name: string): string {
+  const located = locateCliSync(target)
+  return located.custom && located.path ? `"${located.path}"` : name
 }
 
 /** Claude Code 的配置文件；老版本用 claude.json */
@@ -218,6 +236,47 @@ function pickFamily(models: KiroModelInfo[], family: string, fallback: string): 
   return models.find((m) => m.modelId.startsWith(`claude-${family}`))?.modelId ?? fallback
 }
 
+/**
+ * 给 Claude Code 借用能力的型号（modelPicker 条目的 behavesAs）。
+ *
+ * Claude Code 按模型 ID 认能力：认得的才开 /effort 与思考，Kiro 的 ID 用点号（claude-opus-4.7），
+ * 和官方的短横（claude-opus-4-7）对不上，不借的话所有模型都没有档位滑块。
+ *  - Claude 系：点号换成短横就是它自己，档位集合与默认档位都和真模型一致；
+ *  - 其它有档位的（GPT 系）：按档位集合借一个同集合的 Claude 型号。借 opus-5 而不是 opus-4-7：
+ *    4-7 的默认档位是 xhigh，一上来就最贵；opus-5 默认 high，和上游 GPT 的默认一致；
+ *  - 没有档位的（GLM、Qwen…）不借，Claude Code 当成未知模型，不出滑块，这正是对的。
+ * 借来的只是能力与默认档位，请求里发的仍是条目自己的 model。
+ */
+function claudeBehavesAs(m: KiroModelInfo): string | undefined {
+  const options = m.effort?.options ?? []
+  if (!options.length) return undefined
+  if (m.modelId.startsWith('claude-')) return m.modelId.replace(/\./g, '-')
+  if (options.includes('xhigh')) return 'claude-opus-5'
+  return 'claude-opus-4-6'
+}
+
+/**
+ * 写进 Claude Code 的模型名。上下文到 1M 的加 [1m]：走网关时 Claude Code 核实不了 1M，
+ * 默认按 200K 算、过早压缩；带上后缀它按 1M 算，发请求前会自己去掉后缀，反代收到的还是原名。
+ */
+function claudeCodeModel(m: KiroModelInfo): string {
+  return modelInputTokens(m) >= 1_000_000 ? `${m.modelId}[1m]` : m.modelId
+}
+
+/** 固定档位（opus / sonnet / haiku 别名）的能力声明，Claude Code 认不出 Kiro 的 ID 时靠它开档位 */
+function claudeCapabilities(m: KiroModelInfo | undefined): string | undefined {
+  const options = m?.effort?.options ?? []
+  if (!options.length) return undefined
+  return [
+    'effort',
+    ...(options.includes('xhigh') ? ['xhigh_effort'] : []),
+    ...(options.includes('max') ? ['max_effort'] : []),
+    'thinking',
+    'adaptive_thinking',
+    'interleaved_thinking'
+  ].join(',')
+}
+
 async function applyClaudeCode(info: ProxyTargetInfo): Promise<void> {
   const file = claudeSettingsPath()
   const config = await readJsonObject(file)
@@ -226,18 +285,58 @@ async function applyClaudeCode(info: ProxyTargetInfo): Promise<void> {
       ? (config.env as Record<string, unknown>)
       : {}
 
+  // 还没刷新过模型列表时只有默认模型这一条，至少保证它能用
+  const models: KiroModelInfo[] = info.models.length ? info.models : [{ modelId: info.model }]
+  const byId = (id: string): KiroModelInfo => models.find((m) => m.modelId === id) ?? { modelId: id }
+  const main = byId(info.model)
+
   env.ANTHROPIC_BASE_URL = info.baseUrl
   /*
    * 只写 AUTH_TOKEN，不写 ANTHROPIC_API_KEY：
    * 两个都设置时 Claude Code 会提示凭证冲突，而 AUTH_TOKEN 才是自定义端点该用的那个。
    */
   env.ANTHROPIC_AUTH_TOKEN = info.apiKey
-  env.ANTHROPIC_MODEL = info.model
-  // Claude Code 里 /model 的三个快捷档位都指到反代支持的模型上
-  env.ANTHROPIC_DEFAULT_SONNET_MODEL = info.model
-  env.ANTHROPIC_DEFAULT_OPUS_MODEL = pickFamily(info.models, 'opus', 'claude-opus-4.5')
-  env.ANTHROPIC_DEFAULT_HAIKU_MODEL = pickFamily(info.models, 'haiku', 'claude-haiku-4.5')
+  // 和选择器里那一行写成同一个字符串（含 [1m]），启动后选择器才会把它标成当前模型
+  env.ANTHROPIC_MODEL = claudeCodeModel(main)
+
+  /*
+   * opus / sonnet / haiku 三个别名各指到对应系列里最新的那个：子代理、后台任务（haiku）
+   * 和 opusplan 都按别名取模型。名字与能力一并声明，否则别名那一行显示成裸 ID、没有档位。
+   */
+  const pins: [string, KiroModelInfo][] = [
+    ['OPUS', byId(pickFamily(models, 'opus', info.model))],
+    ['SONNET', byId(pickFamily(models, 'sonnet', info.model))],
+    ['HAIKU', byId(pickFamily(models, 'haiku', 'claude-haiku-4.5'))]
+  ]
+  for (const [family, m] of pins) {
+    const key = `ANTHROPIC_DEFAULT_${family}_MODEL`
+    env[key] = claudeCodeModel(m)
+    env[`${key}_NAME`] = kiroLabel(m)
+    const caps = claudeCapabilities(m)
+    if (caps) env[`${key}_SUPPORTED_CAPABILITIES`] = caps
+    else delete env[`${key}_SUPPORTED_CAPABILITIES`]
+  }
   config.env = env
+
+  /*
+   * /model 选择器列出账号能用的全部模型。只靠上面三个别名，选择器里就只有三行，
+   * 其余模型得手敲 /model <id> 才能用。modelPicker 需要 Claude Code v2.1.242+，
+   * 更老的版本不认这个键、原样忽略，不影响上面的环境变量生效。
+   * replaceBuiltInOptions：内置那几行（官方 Opus / Sonnet / Fable）经反代大多调不通，只留我们的。
+   */
+  config.modelPicker = {
+    replaceBuiltInOptions: true,
+    options: models.map((m) => {
+      const behavesAs = claudeBehavesAs(m)
+      const rate = typeof m.rate === 'number' ? ` · ${m.rate}x 积分` : ''
+      return {
+        model: claudeCodeModel(m),
+        label: kiroLabel(m),
+        description: m.modelId === 'auto' ? '由 Kiro 按任务自动选择模型' : `经 Kiro 本地反代${rate}`,
+        ...(behavesAs ? { behavesAs } : {})
+      }
+    })
+  }
 
   await writeFileAtomic(file, `${JSON.stringify(config, null, 2)}\n`)
 }
@@ -297,8 +396,6 @@ function dshInstalled(): boolean {
  * 桌面版会报 `llm-deepseek: no API key for provider route "deepseek-official"`。
  */
 const DSH_DESKTOP_PROFILE = 'desktop'
-
-const DEEPSEEK_APP_NAME = 'DeepSeek Harness.app'
 
 /** 桌面版是否装过（目录由它首次启动时创建） */
 function dshDesktopReady(): boolean {
@@ -399,10 +496,9 @@ function buildDshConfig(info: ProxyTargetInfo, profile: string, existing?: strin
     .filter((m) => m.modelId !== 'auto')
 
   const modelLines = models.flatMap((m) => {
-    const name = ('modelName' in m && m.modelName) || m.modelId
     const lines = [
       `          - id: ${yamlString(m.modelId)}`,
-      `            name: ${yamlString(`Kiro ${name}`)}`,
+      `            name: ${yamlString(kiroLabel(m))}`,
       /*
        * 逐个模型声明，否则全都套用 provider 级的 defaultContextWindow / defaultMaxTokens。
        * maxTokens 在 dsh 里有个副作用（官方字段注释写明）：显式配了它，
@@ -492,7 +588,7 @@ function buildDshConfig(info: ProxyTargetInfo, profile: string, existing?: strin
 }
 
 async function applyDeepseek(info: ProxyTargetInfo): Promise<void> {
-  // 安装检测统一在 applyProxyClient 里做（见 NOT_INSTALLED）
+  // 安装检测统一在 applyProxyClient 里做（见 detectInstall）
   // 我们自己的 profile，llm-pi-ai 与默认模型两行归我们，其余行保留
   await writeDshProfile(info, DSH_PROFILE)
 
@@ -526,7 +622,7 @@ async function writeDshProfile(info: ProxyTargetInfo, profile: string): Promise<
  *    另一行 patch 都留得住（对比 Codex 桌面版是整份当状态存档回写，必须先杀）。
  */
 async function applyDeepseekApp(info: ProxyTargetInfo): Promise<void> {
-  // 「装了没」「启动过没」两道检测统一在 applyProxyClient 里做（见 NOT_INSTALLED）
+  // 「装了没」「启动过没」两道检测统一在 applyProxyClient 里做（见 detectInstall）
   await writeDshProfile(info, DSH_DESKTOP_PROFILE)
 }
 
@@ -560,7 +656,7 @@ async function restartDeepseekApp(): Promise<void> {
   if (process.platform !== 'darwin') {
     throw new Error('代为重启目前只支持 macOS，请手动退出后重新打开 DeepSeek Harness')
   }
-  if (!findApp(DEEPSEEK_APP_NAME)) throw new Error(`没有找到 ${DEEPSEEK_APP_NAME}`)
+  const app = await requireApp('deepseekApp')
   if (await deepseekAppRunning()) {
     await run('osascript', ['-e', 'tell application "DeepSeek Harness" to quit']).catch(
       () => undefined
@@ -573,14 +669,15 @@ async function restartDeepseekApp(): Promise<void> {
       throw new Error('DeepSeek Harness 没能自动退出，请手动退出后再打开')
     }
   }
-  await run('open', ['-a', 'DeepSeek Harness'])
+  await run('open', [app])
   log('info', '[Proxy] 已重启 DeepSeek Harness 桌面版')
 }
 
 /** 启动命令：写过默认 profile 就不用带 --profile */
 async function dshCommand(): Promise<string> {
   const web = (await readTextIfExists(dshProfilePath('web'))) ?? ''
-  return web.includes(DSH_MARKER) ? 'dsh web' : `dsh web --profile ${DSH_PROFILE}`
+  const dsh = cliInvoke('deepseek', 'dsh')
+  return web.includes(DSH_MARKER) ? `${dsh} web` : `${dsh} web --profile ${DSH_PROFILE}`
 }
 
 // ============ Claude 桌面版（3P 模式） ============
@@ -626,6 +723,15 @@ function orderedModels(info: ProxyTargetInfo): KiroModelInfo[] {
     ...list.filter((m) => m.modelId === info.model),
     ...list.filter((m) => m.modelId !== info.model)
   ]
+}
+
+/**
+ * 各客户端模型选择器里的展示名，统一带 Kiro 前缀：客户端自带同名的官方模型（Claude、GPT），
+ * 不加前缀分不清哪个走反代。上游名字本身已经以 Kiro 开头（如 Kiro Auto）时不重复加。
+ */
+function kiroLabel(m: { modelId: string; modelName?: string }): string {
+  const name = (m.modelName || kiroDisplayName(m.modelId)).trim()
+  return /^kiro\b/i.test(name) ? name : `Kiro ${name}`
 }
 
 /** 没拉到输入类型（旧缓存）时按支持图片算：Kiro 的对话模型现在都收图 */
@@ -714,7 +820,7 @@ function workbuddyModels(info: ProxyTargetInfo): Record<string, unknown>[] {
     return {
       id: m.modelId,
       // 加前缀：WorkBuddy 自带同名的 Claude 模型，选择器里得分得清是哪一个
-      name: `Kiro ${m.modelName || m.modelId}`,
+      name: kiroLabel(m),
       vendor: WORKBUDDY_VENDOR,
       url: `${info.baseUrl}/v1/chat/completions`,
       apiKey: info.apiKey,
@@ -820,14 +926,14 @@ async function workbuddyRunning(): Promise<boolean> {
  */
 async function restartMacApp(
   label: string,
-  appName: string,
+  target: ProxyClientTarget,
   bundleId: string,
   running: () => Promise<boolean>
 ): Promise<void> {
   if (process.platform !== 'darwin') {
     throw new Error(`代为重启目前只支持 macOS，请手动退出 ${label} 后重新打开`)
   }
-  if (!findApp(appName)) throw new Error(`没有找到 ${appName}`)
+  const app = await requireApp(target)
   if (await running()) {
     await run('osascript', ['-e', `tell application id "${bundleId}" to quit`]).catch(() => undefined)
     for (let i = 0; i < 24; i++) {
@@ -836,7 +942,7 @@ async function restartMacApp(
     }
     if (await running()) throw new Error(`${label} 没能自动退出，请手动退出后再打开`)
   }
-  await run('open', ['-b', bundleId])
+  await run('open', [app])
   log('info', `[Proxy] 已重启 ${label}`)
 }
 
@@ -917,7 +1023,7 @@ function vscodeModels(info: ProxyTargetInfo): Record<string, unknown>[] {
     const inputTypes = 'inputTypes' in m ? m.inputTypes : undefined
     return {
       id: m.modelId,
-      name: `Kiro ${('modelName' in m && m.modelName) || m.modelId}`,
+      name: kiroLabel(m),
       url: `${info.baseUrl}/v1/chat/completions`,
       // 固定走 Chat Completions：反代这条路最成熟，Cursor、Cherry Studio 等都在用
       apiType: 'chat-completions',
@@ -1006,7 +1112,7 @@ async function restartVscode(): Promise<void> {
   if (process.platform !== 'darwin') {
     throw new Error('代为重启目前只支持 macOS，请手动退出 VS Code 后重新打开')
   }
-  if (!findApp('Visual Studio Code.app')) throw new Error('没有找到 Visual Studio Code.app')
+  const app = await requireApp('vscode')
   if (await vscodeRunning()) {
     await run('osascript', ['-e', `tell application id "${VSCODE_BUNDLE_ID}" to quit`]).catch(() => undefined)
     for (let i = 0; i < 24; i++) {
@@ -1017,7 +1123,7 @@ async function restartVscode(): Promise<void> {
       throw new Error('VS Code 没能自动退出（可能有未保存的文件在等你确认），请手动退出后再打开')
     }
   }
-  await run('open', ['-b', VSCODE_BUNDLE_ID])
+  await run('open', [app])
   log('info', '[Proxy] 已重启 VS Code')
 }
 
@@ -1105,7 +1211,7 @@ async function applyClaudeApp(info: ProxyTargetInfo): Promise<void> {
     const cap = claudeMaxEffort('effort' in m ? m.effort?.options : undefined)
     return {
       name: m.modelId,
-      labelOverride: `Kiro ${('modelName' in m && m.modelName) || m.modelId}`,
+      labelOverride: kiroLabel(m),
       /*
        * 桌面版没有「填上下文大小」这种字段（条目 schema 就 7 个字段，没有数值项），
        * 只有 supports1m 这个开关：打开后选择器多出一行 1M 上下文的变体，选它才按 1M 走。
@@ -1180,9 +1286,7 @@ export async function restartClaudeApp(): Promise<void> {
   if (process.platform !== 'darwin') {
     throw new Error('代为重启目前只支持 macOS，请手动完全退出后重新打开 Claude')
   }
-  if (!existsSync('/Applications/Claude.app') && !existsSync(path.join(home(), 'Applications', 'Claude.app'))) {
-    throw new Error('没有找到 Claude.app')
-  }
+  const app = await requireApp('claudeApp')
   if (await claudeAppRunning()) {
     await run('osascript', ['-e', 'tell application "Claude" to quit']).catch(() => undefined)
     for (let i = 0; i < 24; i++) {
@@ -1193,7 +1297,7 @@ export async function restartClaudeApp(): Promise<void> {
       throw new Error('Claude 没能自动退出，请手动退出后再打开')
     }
   }
-  await run('open', ['-a', 'Claude'])
+  await run('open', [app])
   log('info', '[Proxy] 已重启 Claude 桌面版')
 }
 
@@ -1214,72 +1318,54 @@ function ccursorProvidersPath(): string {
   return path.join(ccursorDir(), 'providers.json')
 }
 
-/** CCursor 是否已安装（有 routes.json 说明跑过 install） */
-export function ccursorInstalled(): boolean {
-  return existsSync(path.join(ccursorDir(), 'routes.json'))
+/**
+ * Cursor 的程序根目录（CCursor 叫它 appRoot，product.json 所在的那一层）。
+ * macOS 是 .app 里的 Contents/Resources/app，Windows 是 exe 旁边的 resources/app。
+ */
+function cursorAppRoot(installPath: string): string {
+  return process.platform === 'darwin'
+    ? path.join(installPath, 'Contents', 'Resources', 'app')
+    : path.join(path.dirname(installPath), 'resources', 'app')
+}
+
+/** CCursor 注入进 workbench 的标记，出自它自己的 status 检查（HOOK_SOURCE_MARKER） */
+const CCURSOR_HOOK_MARKER = '/* CURSOR-BYOK-HOOK-START */'
+
+/**
+ * Cursor 本体当前是否打着 CCursor 的补丁。
+ *
+ * 不能拿 ~/.ccursor/routes.json 判断：那是 CCursor 的配置，Cursor 自动更新会整份替换程序文件、
+ * 把补丁冲掉，配置却还在。踩过的坑就是这样：更新后界面照样显示「已指向本反代」，
+ * 一键写入也因为「已安装」跳过了重新打补丁，Cursor 里只剩官方模型。
+ * 这里按 CCursor 自己 status 命令的口径查：扩展目录在，且 workbench 头部有注入标记。
+ * 标记只会出现在文件开头（它只扫前 12 万字符），所以只读这一段，不把 38MB 的文件整个读进来。
+ */
+async function cursorPatched(installPath: string | null): Promise<boolean> {
+  if (!installPath) return false
+  const root = cursorAppRoot(installPath)
+  if (!existsSync(path.join(root, 'extensions', 'cursor2plus', 'package.json'))) return false
+  const workbench = path.join(root, 'out', 'vs', 'workbench', 'workbench.desktop.main.js')
+  let handle: fs.FileHandle | null = null
+  try {
+    handle = await fs.open(workbench, 'r')
+    const buffer = Buffer.alloc(120_000)
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0)
+    return buffer.subarray(0, bytesRead).toString('utf8').includes(CCURSOR_HOOK_MARKER)
+  } catch {
+    return false
+  } finally {
+    await handle?.close()
+  }
+}
+
+async function cursorInstallPath(): Promise<string | null> {
+  return (await locateClient('cursor')).path
 }
 
 /** 写入过程中的进度回调，用来把安装日志实时显示在界面上 */
 export type ProgressFn = (line: string) => void
 
-/**
- * 可能放着命令行工具的目录。
- *
- * GUI 应用继承到的 PATH 很短（macOS 上通常只有 /usr/bin:/bin:/usr/sbin:/sbin），
- * 用户用 Homebrew / nvm / FlyEnv / 官方安装脚本装的东西都不在里面，
- * 所以不能只靠 PATH，要主动去这些地方翻。
- */
-function binDirs(): string[] {
-  return [
-    ...(process.env.PATH || '').split(path.delimiter),
-    '/opt/homebrew/bin',
-    '/usr/local/bin',
-    path.join(home(), '.local', 'bin'),
-    path.join(home(), '.npm-global', 'bin'),
-    path.join(home(), '.bun', 'bin'),
-    path.join(home(), 'Library', 'FlyEnv', 'env', 'node', 'bin'),
-    // nvm 装的 node：版本目录不固定，挑存在的
-    ...nvmBinDirs()
-  ].filter(Boolean)
-}
-
-/** 找一个命令行工具的绝对路径；找不到返回 null */
-function findBinary(name: string): string | null {
-  // Windows 上 npm 装的是 .cmd，原生程序是 .exe，两种都试
-  const names = process.platform === 'win32' ? [`${name}.cmd`, `${name}.exe`, name] : [name]
-  for (const dir of binDirs()) {
-    for (const exe of names) {
-      const full = path.join(dir, exe)
-      if (existsSync(full)) return full
-    }
-  }
-  return null
-}
-
 const findNodeBin = (name: 'node' | 'npx'): string | null => findBinary(name)
-
-/** 在系统和用户两个「应用程序」目录里找 .app；找不到返回 null */
-function findApp(appName: string): string | null {
-  for (const dir of ['/Applications', path.join(home(), 'Applications')]) {
-    const full = path.join(dir, appName)
-    if (existsSync(full)) return full
-  }
-  return null
-}
-
-function nvmBinDirs(): string[] {
-  const root = path.join(home(), '.nvm', 'versions', 'node')
-  if (!existsSync(root)) return []
-  try {
-    return require('fs')
-      .readdirSync(root)
-      .map((v: string) => path.join(root, v, 'bin'))
-      .filter((d: string) => existsSync(d))
-      .reverse() // 版本号倒序，优先用新的
-  } catch {
-    return []
-  }
-}
 
 /**
  * 跑 CCursor 的安装 / 卸载命令，把输出逐行回调出去。
@@ -1287,7 +1373,12 @@ function nvmBinDirs(): string[] {
  * 用 npx 而不是把 CCursor 打进我们的安装包：它是 AGPL-3.0 且解包后 33MB，
  * 随包再分发会把 AGPL 传染到本项目，而且内置的版本很快就会落后于 Cursor 的更新。
  */
-function runCcursor(action: 'install' | 'uninstall', onProgress?: ProgressFn): Promise<void> {
+function runCcursor(
+  action: 'install' | 'uninstall',
+  onProgress?: ProgressFn,
+  /** Cursor 的 appRoot；装在非默认位置（手动指定）时 CCursor 自己找不到，要显式告诉它 */
+  appRoot?: string
+): Promise<void> {
   const npx = findNodeBin('npx')
   if (!npx) {
     return Promise.reject(
@@ -1305,7 +1396,8 @@ function runCcursor(action: 'install' | 'uninstall', onProgress?: ProgressFn): P
         ...process.env,
         PATH: `${nodeDir}${path.delimiter}${process.env.PATH ?? ''}`,
         // 装完不要交互提问
-        CI: '1'
+        CI: '1',
+        ...(appRoot ? { CCURSOR_CURSOR_ROOT: appRoot } : {})
       },
       windowsHide: true
     })
@@ -1380,7 +1472,7 @@ async function ensureCcursorCatalog(models: KiroModelInfo[]): Promise<void> {
 
       catalog[providerKey].models![ccId] = {
         id: ccId,
-        name: `Kiro ${m.modelName || m.modelId}`,
+        name: kiroLabel(m),
         limit: { context: modelInputTokens(m), output: modelOutputTokens(m) },
         reasoning: !!m.effort?.options?.length,
         tool_call: true,
@@ -1404,7 +1496,7 @@ function buildCcursorProviders(info: ProxyTargetInfo): Record<string, unknown> {
       id: kiroIdToCcursorId(m.modelId),
       apiModel: m.modelId, // 发给反代的真实名字，mapProxyModel 会处理
       // 统一加 Kiro 前缀：Cursor 的模型选择器里混着官方模型，一眼能分出哪些走反代
-      displayName: `Kiro ${m.modelName || m.modelId}`,
+      displayName: kiroLabel(m),
       thinking: !!(m.effort?.options?.length),
       thinkingLevel: m.effort?.default || 'medium',
       /*
@@ -1423,7 +1515,7 @@ function buildCcursorProviders(info: ProxyTargetInfo): Record<string, unknown> {
     $schemaVersion: 1,
     providers: [
       {
-        id: 'kiro-proxy',
+        id: CCURSOR_PROVIDER_ID,
         name: 'Kiro Manager Lite',
         /*
          * 必须是 openai-chat，不能写成 openai / openai-compatible。
@@ -1478,11 +1570,18 @@ async function disableCursorHttp2(): Promise<void> {
  * 用户只需要点一次「一键写入」，然后按弹窗提示重启 Cursor。
  */
 async function applyCursor(info: ProxyTargetInfo, onProgress?: ProgressFn): Promise<void> {
-  if (!ccursorInstalled()) {
-    onProgress?.('未检测到 CCursor，开始安装…')
-    await runCcursor('install', onProgress)
-    onProgress?.('CCursor 安装完成')
+  const installPath = await cursorInstallPath()
+  if (!(await cursorPatched(installPath))) {
+    onProgress?.('Cursor 上没有 CCursor 补丁（首次使用，或 Cursor 更新后被还原），开始安装…')
+    await runCcursor('install', onProgress, installPath ? cursorAppRoot(installPath) : undefined)
+    // install 退出码为 0 也不代表补丁真打上了（比如 Cursor 版本太新、锚点没找到），再按实际文件核对一遍
+    if (!(await cursorPatched(installPath))) {
+      throw new Error('CCursor 安装结束，但 Cursor 上仍检测不到补丁。可能是当前 Cursor 版本还不受支持，详见上面的日志')
+    }
+    onProgress?.('CCursor 补丁已就绪')
   }
+  // 还原时关掉的 BYOK 在这里重新打开；补丁还在就不用重装，几秒完成
+  await setCcursorByokMode(1)
   onProgress?.('写入模型目录与 provider 配置…')
   // 先确保目录里有我们的模型，再写 providers
   await ensureCcursorCatalog(info.models)
@@ -1496,9 +1595,87 @@ async function applyCursor(info: ProxyTargetInfo, onProgress?: ProgressFn): Prom
   onProgress?.('完成，请完全退出并重新打开 Cursor')
 }
 
-/** 卸载 CCursor：它会把打过补丁的 Cursor 文件还原回去 */
-export async function uninstallCcursor(onProgress?: ProgressFn): Promise<void> {
-  await runCcursor('uninstall', onProgress)
+/** 我们在 providers.json 里的 provider id，也是还原时认领的依据 */
+const CCURSOR_PROVIDER_ID = 'kiro-proxy'
+
+function ccursorRoutesPath(): string {
+  return path.join(ccursorDir(), 'routes.json')
+}
+
+/**
+ * 切换 CCursor 的 BYOK 模式（routes.json 的 byokMode）。
+ *
+ * 读自 CCursor 扩展源码：0 = 请求直通 Cursor 官方后端，1 = 用 providers.json 里的 provider。
+ * 扩展每 2 秒轮询一次这个文件，改完即时生效，不用重启 Cursor。
+ * redirect 列表是跟着模式走的（BYOK 下要多拦一批账号类接口），扩展读到空的 redirect 会按模式补默认值，
+ * 所以切模式时把它删掉交给扩展重算；照旧留着的话，关掉 BYOK 后它还会继续拦那批接口。
+ * 文件不存在（CCursor 没装过）就什么都不做。
+ */
+async function setCcursorByokMode(mode: 0 | 1): Promise<void> {
+  const file = ccursorRoutesPath()
+  const routes = await readJsonObject(file).catch(() => null)
+  if (!routes || !Object.keys(routes).length) return
+  if (routes.byokMode === mode) return
+  routes.byokMode = mode
+  delete routes.redirect
+  await writeFileAtomic(file, `${JSON.stringify(routes, null, 2)}\n`)
+  log('info', `[Proxy] CCursor BYOK 模式已${mode ? '开启' : '关闭'}`)
+}
+
+async function ccursorByokOn(): Promise<boolean> {
+  const routes = await readJsonObject(ccursorRoutesPath()).catch(() => null)
+  // 扩展的解析口径：0 / false / "off" 是关，其余都算开
+  const mode = routes?.byokMode
+  return !!routes && mode !== 0 && mode !== false && mode !== 'off'
+}
+
+/**
+ * 还原 Cursor：摘掉我们的 provider、关掉 BYOK、回滚 HTTP/2 开关，CCursor 补丁保留。
+ *
+ * 为什么不卸补丁：卸了下次写入又要联网拉 33MB、给 Cursor 重新打补丁，一两分钟；
+ * 关掉 BYOK 后补丁只是把请求原样直通官方后端，Cursor 用起来和没装一样。要彻底卸，
+ * 在终端跑 npx @cometix/ccursor uninstall（写入确认里有说明）。
+ *
+ * 为什么不像别的目标那样整份写回快照：
+ *  - providers.json 里可能还有用户自己在 Cursor++ 面板加的 provider；快照也可能早就不准了
+ *    （补丁被 Cursor 更新冲掉后重装、或者备份是在我们的 provider 已经在文件里时才补记的），
+ *    整份写回会把我们的 provider 原样写回去，表现就是「点了还原，卡片还是已接入」。所以按 id 摘；
+ *  - settings.json 是 Cursor 自己一直在写的文件，整份盖回会丢掉这期间用户改过的设置，只回滚我们动过的那一个键。
+ */
+async function restoreCursor(files: ProxyClientBackupFile[], onProgress?: ProgressFn): Promise<void> {
+  onProgress?.('移除 Cursor++ 里的 Kiro provider…')
+  const providersFile = ccursorProvidersPath()
+  const doc = await readJsonObject(providersFile).catch(() => null)
+  let others = 0
+  if (doc && Array.isArray(doc.providers)) {
+    const rest = (doc.providers as Record<string, unknown>[]).filter((p) => p?.id !== CCURSOR_PROVIDER_ID)
+    others = rest.length
+    await writeFileAtomic(providersFile, `${JSON.stringify({ ...doc, providers: rest }, null, 2)}\n`)
+  }
+
+  // 还有用户自己的 provider 就别关：关了他那些也一起用不了
+  if (!others) {
+    onProgress?.('关闭 CCursor 的 BYOK 模式，Cursor 回到官方后端…')
+    await setCcursorByokMode(0)
+  }
+
+  onProgress?.('恢复 Cursor 的 HTTP/2 设置…')
+  const settingsFile = cursorSettingsPath()
+  const settingsBackup = files.find((f) => f.path === settingsFile)
+  let original: Record<string, unknown> = {}
+  try {
+    original = settingsBackup?.existed ? (JSON.parse(settingsBackup.content) as Record<string, unknown>) : {}
+  } catch {
+    // 原文带注释解析不了：按「原本没有这个键」处理，删掉我们加的就是最稳的
+  }
+  const settings = await readJsonObject(settingsFile).catch(() => null)
+  const key = 'cursor.general.disableHttp2'
+  if (settings && key in settings) {
+    if (key in original) settings[key] = original[key]
+    else delete settings[key]
+    await writeFileAtomic(settingsFile, `${JSON.stringify(settings, null, 4)}\n`)
+  }
+  onProgress?.('完成，重启 Cursor 后 HTTP/2 设置生效')
 }
 
 /** Cursor 的 bundle id：它用 ToDesktop 打包，所以是这么一串看着像乱码的东西 */
@@ -1526,10 +1703,7 @@ export async function restartCursorApp(): Promise<void> {
   if (process.platform !== 'darwin') {
     throw new Error('代为重启目前只支持 macOS，请手动完全退出 Cursor 后重新打开')
   }
-  const installed = ['/Applications', path.join(home(), 'Applications')].some((dir) =>
-    existsSync(path.join(dir, 'Cursor.app'))
-  )
-  if (!installed) throw new Error('没有找到 Cursor.app，请确认它安装在「应用程序」里')
+  const app = await requireApp('cursor')
 
   if (await cursorRunning()) {
     // 用 AppleScript 正常退出，给它保存工作区的机会（有未保存文件时它会自己弹确认框）
@@ -1544,13 +1718,17 @@ export async function restartCursorApp(): Promise<void> {
       throw new Error('Cursor 没能自动退出（可能有未保存的文件在等你确认），请手动退出后再打开')
     }
   }
-  await run('open', ['-b', CURSOR_BUNDLE_ID])
+  await run('open', [app])
   log('info', '[Proxy] 已重启 Cursor')
 }
 
+/** provider 写了、Cursor 本体也打着补丁，才算真的指向本反代；缺补丁时 Cursor 根本不读 providers.json */
 async function cursorApplied(info: ProxyTargetInfo): Promise<boolean> {
   const content = (await readTextIfExists(ccursorProvidersPath())) ?? ''
-  return content.includes(info.baseUrl) && content.includes('kiro-proxy')
+  if (!content.includes(info.baseUrl) || !content.includes(CCURSOR_PROVIDER_ID)) return false
+  // BYOK 关着时 Cursor 走官方后端，provider 写着也不会被用到
+  if (!(await ccursorByokOn())) return false
+  return cursorPatched(await cursorInstallPath())
 }
 
 // ============ Codex CLI ============
@@ -1611,6 +1789,8 @@ function tomlString(value: string): string {
 /** 可能的 codex 可执行文件位置，按常见程度排列 */
 function codexBinaryCandidates(): string[] {
   const out: string[] = []
+  const located = locateCliSync('codex').path
+  if (located) out.push(located)
   for (const dir of (process.env.PATH || '').split(path.delimiter)) {
     if (dir) out.push(path.join(dir, process.platform === 'win32' ? 'codex.exe' : 'codex'))
   }
@@ -1780,7 +1960,7 @@ export function buildCodexCatalog(
     return {
       ...template,
       slug: id,
-      display_name: name,
+      display_name: kiroLabel(model),
       description:
         id === 'auto' ? '由 Kiro 按任务自动选择模型' : `经 Kiro Manager Lite 本地反代${rate}`,
       visibility: 'list',
@@ -2149,17 +2329,15 @@ async function codexApplied(info: ProxyTargetInfo): Promise<boolean> {
 
 /** 命令行版的启动命令 */
 function codexCommand(): string {
-  return `codex --profile ${CODEX_PROVIDER}`
+  return `${cliInvoke('codex', 'codex')} --profile ${CODEX_PROVIDER}`
 }
 
 /** Codex 桌面版（ChatGPT.app）的可执行文件；找不到返回 null */
-function codexAppBinary(): string | null {
+async function codexAppBinary(): Promise<string | null> {
   if (process.platform !== 'darwin') return null
-  for (const dir of ['/Applications', path.join(home(), 'Applications')]) {
-    const binary = path.join(dir, 'ChatGPT.app', 'Contents', 'MacOS', 'ChatGPT')
-    if (existsSync(binary)) return binary
-  }
-  return null
+  const app = (await locateClient('codexApp')).path
+  const binary = app ? path.join(app, 'Contents', 'MacOS', 'ChatGPT') : ''
+  return binary && existsSync(binary) ? binary : null
 }
 
 function run(command: string, args: string[], timeout = 15_000): Promise<string> {
@@ -2216,7 +2394,7 @@ async function quitCodexApp(): Promise<boolean> {
  * 让它有机会存盘。
  */
 export async function launchCodexApp(): Promise<void> {
-  const binary = codexAppBinary()
+  const binary = await codexAppBinary()
   if (!binary) {
     throw new Error(
       process.platform === 'darwin'
@@ -2335,9 +2513,14 @@ async function openInTerminal(command: string): Promise<void> {
     return
   }
   if (process.platform === 'win32') {
-    const child = spawn('cmd', ['/c', 'start', 'cmd', '/k', command], {
+    /*
+     * 原样拼参数：命令里可能带引号的完整路径，Node 默认的转义（\"）cmd 不认。
+     * start 的第一个带引号参数会被当成窗口标题，所以先给一个空标题 ""。
+     */
+    const child = spawn('cmd', ['/c', 'start', '""', 'cmd', '/k', command], {
       detached: true,
-      stdio: 'ignore'
+      stdio: 'ignore',
+      windowsVerbatimArguments: true
     })
     child.unref()
     return
@@ -2356,7 +2539,7 @@ export async function openProxyClient(target: ProxyClientTarget): Promise<void> 
   if (target === 'deepseekApp') return restartDeepseekApp()
   if (target === 'vscode') return restartVscode()
   if (target === 'workbuddy') {
-    return restartMacApp('WorkBuddy', WORKBUDDY_APP_NAME, WORKBUDDY_BUNDLE_ID, workbuddyRunning)
+    return restartMacApp('WorkBuddy', 'workbuddy', WORKBUDDY_BUNDLE_ID, workbuddyRunning)
   }
   if (target === 'claudeCode') return openInTerminal('claude')
   if (target === 'codex') return openInTerminal(codexCommand())
@@ -2374,76 +2557,46 @@ interface ClientInstall {
   installed: boolean
   /** 没装时告诉用户怎么装；已装时为 undefined */
   hint?: string
+  /** 检测到的位置，界面上展示，方便用户确认认的是哪一份 */
+  installPath?: string
+  customPath: boolean
 }
 
-const NOT_INSTALLED: Record<ProxyClientTarget, () => ClientInstall> = {
-  claudeCode: () => {
-    /*
-     * 官方安装器把 claude 放在 ~/.claude/local，npm 全局装的在 bin 目录里，
-     * 两种都要认。~/.claude 目录本身不能当依据：Claude 桌面版也会建它。
-     */
-    const local = path.join(home(), '.claude', 'local', 'claude')
-    const found = findBinary('claude') ?? (existsSync(local) ? local : null)
-    return found
-      ? { installed: true }
-      : { installed: false, hint: '没有找到 claude 命令。安装：npm i -g @anthropic-ai/claude-code' }
-  },
-  codex: () => {
-    const found = codexBinaryCandidates().find((file) => existsSync(file))
-    return found
-      ? { installed: true }
-      : { installed: false, hint: '没有找到 codex 命令。安装：npm i -g @openai/codex' }
-  },
-  claudeApp: () =>
-    findApp('Claude.app')
-      ? { installed: true }
-      : { installed: false, hint: '没有找到 Claude.app，请先安装 Claude 桌面版' },
-  codexApp: () =>
-    findApp('ChatGPT.app')
-      ? { installed: true }
-      : { installed: false, hint: '没有找到 ChatGPT.app（Codex 桌面版），请先安装' },
-  cursor: () =>
-    findApp('Cursor.app')
-      ? { installed: true }
-      : { installed: false, hint: '没有找到 Cursor.app，请先安装 Cursor' },
-  vscode: () =>
-    findApp('Visual Studio Code.app')
-      ? { installed: true }
-      : { installed: false, hint: '没有找到 Visual Studio Code.app，请先安装 VS Code' },
-  workbuddy: () =>
-    findApp(WORKBUDDY_APP_NAME)
-      ? { installed: true }
-      : { installed: false, hint: `没有找到 ${WORKBUDDY_APP_NAME}，请先安装 WorkBuddy` },
-  deepseek: () => {
-    /*
-     * 全局装了 dsh 最好；只用 npx 跑过也算（那时 ~/.dsh 已经建好）。
-     * 两个都没有就是真没用过。
-     */
-    if (findBinary('dsh') || dshInstalled()) return { installed: true }
-    return {
-      installed: false,
-      hint: '没有找到 dsh。安装：npm i -g @deepseek-ai/dsh，或先跑一次 npx @deepseek-ai/dsh web'
-    }
-  },
-  deepseekApp: () => {
-    if (!findApp(DEEPSEEK_APP_NAME)) {
-      return { installed: false, hint: `没有找到 ${DEEPSEEK_APP_NAME}，请先安装 DeepSeek Harness 桌面版` }
-    }
-    /*
-     * 装了但没启动过：profile 目录还不存在。
-     * 这时也不该写 —— 目录里缺 package.json，bundle 列表得由它首次启动时生成，
-     * 我们光放一个 patch 文件不会生效。
-     */
-    if (!dshDesktopReady()) {
-      return { installed: false, hint: '请先把 DeepSeek Harness 桌面版打开一次，让它生成 profile 目录' }
-    }
-    return { installed: true }
+/** 找不到时的安装指引；手动指定的位置失效（被卸载或挪走）也会走到这里 */
+const INSTALL_HINTS: Record<ProxyClientTarget, string> = {
+  claudeCode: '没有找到 claude 命令。安装：npm i -g @anthropic-ai/claude-code。',
+  codex: '没有找到 codex 命令。安装：npm i -g @openai/codex。',
+  claudeApp: '没有找到 Claude 桌面版，可点击上方链接快捷安装。',
+  codexApp: '没有找到 Codex 桌面版（ChatGPT），可点击上方链接快捷安装。',
+  cursor: '没有找到 Cursor，可点击上方链接快捷安装。',
+  vscode: '没有找到 VS Code，可点击上方链接快捷安装。',
+  workbuddy: '没有找到 WorkBuddy，可点击上方链接快捷安装。',
+  deepseek: '没有找到 dsh。安装：npm i -g @deepseek-ai/dsh，或先跑一次 npx @deepseek-ai/dsh web。',
+  deepseekApp: '没有找到 DeepSeek Harness 桌面版，可点击上方链接快捷安装。'
+}
+
+async function detectInstall(target: ProxyClientTarget): Promise<ClientInstall> {
+  const location = await locateClient(target)
+  const base = { installPath: location.path ?? undefined, customPath: location.custom }
+  /*
+   * dsh 只用 npx 跑过也算装过（那时 ~/.dsh 已经建好），不一定有全局命令。
+   */
+  if (target === 'deepseek' && !location.path && dshInstalled()) return { installed: true, ...base }
+  if (!location.path) return { installed: false, hint: INSTALL_HINTS[target], ...base }
+  /*
+   * DeepSeek 桌面版装了但没启动过：profile 目录还不存在。
+   * 这时也不该写 —— 目录里缺 package.json，bundle 列表得由它首次启动时生成，
+   * 我们光放一个 patch 文件不会生效。
+   */
+  if (target === 'deepseekApp' && !dshDesktopReady()) {
+    return { installed: false, hint: '请先把 DeepSeek Harness 桌面版打开一次，让它生成 profile 目录', ...base }
   }
+  return { installed: true, ...base }
 }
 
 /** 没装就抛错，错误文案直接是给用户看的安装指引 */
-function ensureClientInstalled(target: ProxyClientTarget): void {
-  const result = NOT_INSTALLED[target]()
+async function ensureClientInstalled(target: ProxyClientTarget): Promise<void> {
+  const result = await detectInstall(target)
   if (!result.installed) throw new Error(result.hint ?? `没有检测到 ${target} 的安装`)
 }
 
@@ -2457,7 +2610,7 @@ export async function applyProxyClient(
 ): Promise<ProxyClientState[]> {
   if (!info.apiKey.trim()) throw new Error('请先设置反代的 API Key，再写入客户端配置')
   // 排在最前面：没装的话后面每一步都是在给不存在的客户端造配置文件
-  ensureClientInstalled(target)
+  await ensureClientInstalled(target)
 
   /*
    * 桌面版必须在它没运行的时候改 config.toml。
@@ -2488,10 +2641,20 @@ export async function applyProxyClient(
 /** 还原成写入前的样子；原本不存在的文件会被删除 */
 export async function restoreProxyClient(
   target: ProxyClientTarget,
-  info: ProxyTargetInfo
+  info: ProxyTargetInfo,
+  /** Cursor 要跑 CCursor 的卸载，过程较慢，逐行回传给界面显示 */
+  onProgress?: ProgressFn
 ): Promise<ProxyClientState[]> {
   const backup = getProxyClientBackup(target)
   if (!backup) throw new Error('没有备份，无法还原')
+
+  // Cursor 的配置和补丁都要按条摘（原因见 restoreCursor），不走下面的整份写回
+  if (target === 'cursor') {
+    await restoreCursor(backup.files, onProgress)
+    setProxyClientBackup(target, null)
+    log('info', '[Proxy] 已还原 cursor 写入前的配置')
+    return proxyClientStates(info)
+  }
 
   // 同样要先退出，否则还原完几秒后它又把 model_provider 写回来（原因见 quitCodexApp）
   if (target === 'codexApp') await quitCodexApp()
@@ -2564,7 +2727,7 @@ const APP_RUNNING_CHECKS: Partial<Record<ProxyClientTarget, () => Promise<boolea
 /** 需要用户自己敲的启动命令 */
 const CLIENT_COMMANDS: Partial<Record<ProxyClientTarget, () => Promise<string>>> = {
   // Claude Code 读的是全局 settings.json，不用带参数；列出来是为了和 Codex 一样能一键复制
-  claudeCode: async () => 'claude',
+  claudeCode: async () => cliInvoke('claudeCode', 'claude'),
   codex: async () => codexCommand(),
   deepseek: dshCommand
 }
@@ -2588,13 +2751,15 @@ export async function proxyClientStates(info: ProxyTargetInfo): Promise<ProxyCli
      * 所以没有 applied / hasBackup 状态，卡片只展示复制信息。
      */
     if (target === 'cursor') {
-      const cursorInstall = NOT_INSTALLED.cursor()
+      const cursorInstall = await detectInstall('cursor')
       const applied = await cursorApplied(info).catch(() => false)
       states.push({
         target: 'cursor',
         paths: displayFiles(target),
         appRunning: await cursorRunning().catch(() => false),
         installed: cursorInstall.installed,
+        installPath: cursorInstall.installPath,
+        customPath: cursorInstall.customPath,
         applied,
         hasBackup: getProxyClientBackup(target) !== null,
         command: undefined,
@@ -2604,13 +2769,15 @@ export async function proxyClientStates(info: ProxyTargetInfo): Promise<ProxyCli
          */
         warning:
           cursorInstall.hint ??
-          (ccursorInstalled()
+          ((await cursorPatched(cursorInstall.installPath ?? null))
             ? undefined
-            : '首次写入会自动下载安装 CCursor（约 33MB，需要 Node.js 与网络），耗时一两分钟')
+            : existsSync(ccursorProvidersPath())
+              ? 'Cursor 更新后 CCursor 补丁被还原了，Cursor 里只剩官方模型。点「一键写入」会重新打补丁（约一两分钟）'
+              : '首次写入会自动下载安装 CCursor（约 33MB，需要 Node.js 与网络），耗时一两分钟')
       })
       continue
     }
-    const install = NOT_INSTALLED[target]()
+    const install = await detectInstall(target)
     const applied = await APPLIED_CHECKS[target](info).catch(() => false)
     // 只有图形界面客户端才探测进程，命令行版由用户自己开终端，不显示「重启」
     const probe = APP_RUNNING_CHECKS[target]
@@ -2621,6 +2788,8 @@ export async function proxyClientStates(info: ProxyTargetInfo): Promise<ProxyCli
       paths: displayFiles(target),
       appRunning: probe ? await probe().catch(() => false) : undefined,
       installed: install.installed,
+      installPath: install.installPath,
+      customPath: install.customPath,
       applied,
       hasBackup: getProxyClientBackup(target) !== null,
       command: command ? await command().catch(() => undefined) : undefined,

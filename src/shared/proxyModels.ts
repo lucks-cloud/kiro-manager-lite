@@ -83,7 +83,11 @@ export function mapProxyModel(
   /** 从账号拉到的真实模型 id；为空时用兜底表判断 */
   knownIds: readonly string[] = FALLBACK_MODEL_IDS
 ): MappedModel {
-  const input = String(raw || '').trim()
+  /*
+   * 去掉 Claude Code 的 [1m] 上下文后缀：一键写入会给 1M 模型加上它（见 proxyClients 的 claudeCodeModel），
+   * 官方说发请求前会自己去掉，这里再兜一次，免得哪个版本原样发来、落到兜底模型上。
+   */
+  const input = String(raw || '').trim().replace(/\[1m\]$/i, '')
   const lower = input.toLowerCase()
   const thinking = lower.endsWith(THINKING_SUFFIX)
   const base = thinking ? lower.slice(0, -THINKING_SUFFIX.length) : lower

@@ -313,7 +313,8 @@ export interface Api {
   regenerateProxyDefaultKey: () => Promise<
     IpcResult<{ config: ProxyConfig; status: ProxyStatus }>
   >
-  getProxyClientStates: () => Promise<IpcResult<ProxyClientState[]>>
+  /** fresh 为 true 时跳过安装检测的缓存，重新查一遍 */
+  getProxyClientStates: (fresh?: boolean) => Promise<IpcResult<ProxyClientState[]>>
   applyProxyClient: (target: ProxyClientTarget) => Promise<IpcResult<ProxyClientState[]>>
   restoreProxyClient: (target: ProxyClientTarget) => Promise<IpcResult<ProxyClientState[]>>
   /** 在文件管理器里定位客户端配置文件 */
@@ -323,6 +324,10 @@ export interface Api {
   ) => Promise<IpcResult<void>>
   /** 代为打开 / 重启客户端（图形界面退出再拉起，命令行开新终端） */
   openProxyClient: (target: ProxyClientTarget) => Promise<IpcResult<void>>
+  /** 手动选择客户端安装位置；用户取消时 data 为 null */
+  pickProxyClientPath: (target: ProxyClientTarget) => Promise<IpcResult<ProxyClientState[] | null>>
+  /** 清掉手动指定的安装位置，回到自动检测 */
+  clearProxyClientPath: (target: ProxyClientTarget) => Promise<IpcResult<ProxyClientState[]>>
   /** 写入客户端配置时的进度回调（Cursor 首次要装 CCursor，过程较慢） */
   onProxyClientProgress: (
     handler: (payload: { target: ProxyClientTarget; line: string }) => void

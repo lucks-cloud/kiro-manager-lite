@@ -182,13 +182,15 @@ const api = {
   resetProxyKeyUsage: (id: string) => invoke('proxy:key-reset-usage', id),
   regenerateProxyDefaultKey: () => invoke('proxy:regenerate-default-key'),
   tryProxyEndpoint: (input: unknown) => invoke('proxy:try-endpoint', input),
-  getProxyClientStates: () => invoke('proxy:client-states'),
+  getProxyClientStates: (fresh?: boolean) => invoke('proxy:client-states', fresh),
   refreshProxyModels: () => invoke('proxy:refresh-models'),
   applyProxyClient: (target: string) => invoke('proxy:client-apply', target),
   restoreProxyClient: (target: string) => invoke('proxy:client-restore', target),
   revealProxyClientFile: (target: string, index: number) =>
     invoke('proxy:client-reveal', target, index),
   openProxyClient: (target: string) => invoke('proxy:client-open', target),
+  pickProxyClientPath: (target: string) => invoke('proxy:client-pick-path', target),
+  clearProxyClientPath: (target: string) => invoke('proxy:client-clear-path', target),
   /** 写入客户端配置时的进度（Cursor 首次要装 CCursor） */
   onProxyClientProgress: (cb: (payload: unknown) => void) =>
     subscribe('proxy:client-progress', cb),

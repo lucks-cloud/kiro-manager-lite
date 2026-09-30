@@ -4,12 +4,11 @@ import { message } from 'ant-design-vue'
 import {
   CheckCircleFilled,
   ExclamationCircleFilled,
-  FolderOpenOutlined,
   MinusCircleOutlined,
   ReloadOutlined,
   ThunderboltOutlined
 } from '@ant-design/icons-vue'
-import { copyText } from '@/utils/ui'
+import PathMenu from '@/components/common/PathMenu.vue'
 import { useSettingsStore } from '@/stores/settings'
 import MachineIdCard from '@/components/tools/MachineIdCard.vue'
 import NetworkCheckCard from '@/components/tools/NetworkCheckCard.vue'
@@ -220,14 +219,7 @@ onMounted(() => void refresh())
               <a-tag v-else color="default">未写入</a-tag>
             </div>
             <div class="target-path">
-              <span class="mono path-text">{{ item.path }}</span>
-              <a-button type="link" size="small" @click="copyText(item.path, '路径已复制')">
-                复制路径
-              </a-button>
-              <a-button type="link" size="small" @click="reveal(item)">
-                <template #icon><FolderOpenOutlined /></template>
-                打开所在目录
-              </a-button>
+              <PathMenu :path="item.path" @reveal="reveal(item)" />
             </div>
             <div v-if="item.note" class="target-note">{{ item.note }}</div>
           </div>

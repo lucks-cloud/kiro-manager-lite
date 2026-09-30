@@ -86,6 +86,7 @@ import {
   restoreProxyClient,
   syncCodexCatalogFile
 } from './proxyClients'
+import { clearCustomPath, pickDialogOptions, resetInstallCache, saveCustomPath } from './proxyClientInstall'
 import { FALLBACK_MODEL_IDS } from '../shared/proxyModels'
 import { clearLogs, exportLogs, getLogDir, queryLogs } from './logger'
 import { buildXlsx, buildZip } from './xlsxWriter'
@@ -742,7 +743,11 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     await syncCodexCatalogFile(cache.models, { model: cfg.defaultModel, effort: cfg.defaultEffort })
     return ok(cache)
   })
-  handle('proxy:client-states', async () => ok(await proxyClientStates(clientInfo())))
+  handle('proxy:client-states', async (_e, fresh?: boolean) => {
+    // 用户刚装完点「重新检测」：Windows 的注册表查询有 30 秒缓存，不清掉会还是旧结果
+    if (fresh) resetInstallCache()
+    return ok(await proxyClientStates(clientInfo()))
+  })
   handle('proxy:client-apply', async (e, target: ProxyClientTarget) =>
     // Cursor 首次写入要先装 CCursor，把过程逐行推给界面，别让用户干等
     ok(
@@ -751,13 +756,34 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
       })
     )
   )
-  handle('proxy:client-restore', async (_e, target: ProxyClientTarget) =>
-    ok(await restoreProxyClient(target, clientInfo()))
+  handle('proxy:client-restore', async (e, target: ProxyClientTarget) =>
+    // Cursor 还原要卸 CCursor 补丁，和写入一样把过程推给界面
+    ok(
+      await restoreProxyClient(target, clientInfo(), (line) => {
+        if (!e.sender.isDestroyed()) e.sender.send('proxy:client-progress', { target, line })
+      })
+    )
   )
   /** 代为打开 / 重启客户端：图形界面的退出再拉起，命令行的开一个新终端 */
   handle('proxy:client-open', async (_e, target: ProxyClientTarget) => {
     await openProxyClient(target)
     return ok()
+  })
+  /**
+   * 手动指定客户端安装位置：弹系统选择框、校验、存下，返回刷新后的状态。
+   * 对话框在主进程里开，渲染层传不进任意路径，选错的位置也不会被存下。
+   * 用户点了取消返回 null，界面什么都不提示。
+   */
+  handle('proxy:client-pick-path', async (_e, target: ProxyClientTarget) => {
+    const result = await dialog.showOpenDialog(getWindow()!, pickDialogOptions(target))
+    if (result.canceled || !result.filePaths[0]) return ok(null)
+    await saveCustomPath(target, result.filePaths[0])
+    return ok(await proxyClientStates(clientInfo()))
+  })
+  /** 清掉手动指定，回到自动检测 */
+  handle('proxy:client-clear-path', async (_e, target: ProxyClientTarget) => {
+    clearCustomPath(target)
+    return ok(await proxyClientStates(clientInfo()))
   })
   /** 在文件管理器里定位客户端配置；只接受目标与下标，路径由主进程解析 */
   handle('proxy:client-reveal', async (_e, target: ProxyClientTarget, index: number) => {

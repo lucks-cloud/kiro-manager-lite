@@ -94,8 +94,9 @@ export const useProxyStore = defineStore('proxy', () => {
     }
   }
 
-  async function loadClients(): Promise<void> {
-    const res = await window.api.getProxyClientStates()
+  /** fresh：跳过主进程的安装检测缓存，用户点「重新检测」时用 */
+  async function loadClients(fresh = false): Promise<void> {
+    const res = await window.api.getProxyClientStates(fresh)
     if (res.success && res.data) clients.value = res.data
   }
 
@@ -190,7 +191,10 @@ export const useProxyStore = defineStore('proxy', () => {
     busy.value = `apply:${target}`
     try {
       const res = await window.api.applyProxyClient(target)
-      if (!res.success || !res.data) return { error: res.error || '写入失败' }
+      if (!res.success || !res.data) {
+        await loadClients()
+        return { error: res.error || '写入失败' }
+      }
       clients.value = res.data
       return { state: res.data.find((item) => item.target === target) }
     } catch (error) {
@@ -206,7 +210,11 @@ export const useProxyStore = defineStore('proxy', () => {
     busy.value = `restore:${target}`
     try {
       const res = await window.api.restoreProxyClient(target)
-      if (!res.success || !res.data) return { error: res.error || '还原失败' }
+      if (!res.success || !res.data) {
+        // 失败也可能已经改了一部分（比如 Cursor 配置摘掉了、补丁没卸成），重新取一次状态，卡片别停在旧的
+        await loadClients()
+        return { error: res.error || '还原失败' }
+      }
       clients.value = res.data
       return { state: res.data.find((item) => item.target === target) }
     } catch (error) {

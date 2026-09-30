@@ -74,6 +74,8 @@ interface Schema {
   proxyCodexTemplate: Record<string, unknown> | null
   /** 各桌面 agent 被改写前的配置备份，按目标分别保存 */
   proxyClientBackups: Record<string, ProxyClientBackup>
+  /** 用户手动指定的客户端安装位置（.app / .exe / 命令行可执行文件），按目标保存 */
+  proxyClientPaths: Record<string, string>
   /** 自定义的反代 API Key（默认 Key 仍在 proxyConfig.apiKey） */
   proxyApiKeys: ProxyApiKey[]
   /** 按 Key 的用量，键是 Key 的 id */
@@ -100,6 +102,7 @@ const store = new Store<Schema>({
     proxyModels: null,
     proxyCodexTemplate: null,
     proxyClientBackups: {},
+    proxyClientPaths: {},
     proxyApiKeys: [],
     proxyKeyUsage: {},
     proxyPayloadDefault153600: false,
@@ -261,6 +264,19 @@ export function getProxyClientBackup(target: string): ProxyClientBackup | null {
   const all = read('proxyClientBackups') as Record<string, ProxyClientBackup> | undefined
   const entry = all?.[target]
   return entry && Array.isArray(entry.files) ? entry : null
+}
+
+export function getProxyClientPaths(): Record<string, string> {
+  const raw = read('proxyClientPaths') as Record<string, string> | undefined
+  return raw && typeof raw === 'object' ? raw : {}
+}
+
+/** 传 null 表示清掉手动指定，回到自动检测 */
+export function setProxyClientPath(target: string, value: string | null): void {
+  const all = { ...getProxyClientPaths() }
+  if (value) all[target] = value
+  else delete all[target]
+  write('proxyClientPaths', all)
 }
 
 export function setProxyClientBackup(target: string, backup: ProxyClientBackup | null): void {
