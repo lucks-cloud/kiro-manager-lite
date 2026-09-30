@@ -228,7 +228,7 @@ const gridLayout = computed(() => {
       // 用量块压成两行后比卡片模式矮不少，首帧的预估值跟着调低
       return { minColumnWidth: 320, estimatedHeight: 235 }
     case 'list':
-      // 用量块改成两行排布后一条约 70px，预估值跟着调高
+      // 用量块两行排布，一条约 70px，预估值按此取
       return { minColumnWidth: 100000, estimatedHeight: 76 }
     default:
       return { minColumnWidth: 320, estimatedHeight: 330 }

@@ -24,7 +24,7 @@ import { URL } from 'url'
 import type { KeyGatewayConflict } from '../shared/types'
 
 /** Kiro IDE 用户数据根目录（跨平台） */
-function kiroUserDataDir(): string {
+export function kiroUserDataDir(): string {
   const home = os.homedir()
   if (process.platform === 'darwin') {
     return path.join(home, 'Library', 'Application Support', 'Kiro')

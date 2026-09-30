@@ -20,7 +20,7 @@ const KIRO_AUTH_TOKEN_PATH = path.join(KIRO_SSO_CACHE_DIR, KIRO_AUTH_TOKEN_FILE)
  * Kiro IDE 源码里给 BuilderId 硬编码的占位符 ARN。
  *
  * 两个用途，别混：IDE 内部逻辑依赖 token 文件里存在该字段；
- * 而 runtime 接口（getUsageLimits / ListAvailableModels）现在也把 profileArn 当必填，
+ * 而 runtime 接口（getUsageLimits / ListAvailableModels）也把 profileArn 当必填，
  * BuilderId 账号必须原样带上它才回 200，不带就是
  * 403 "User is not authorized to make this call."。
  */
@@ -103,7 +103,7 @@ export function profileArnCandidates(input: {
  *
  * 仅供控制面（CreateApiKey / ListApiKeys）挑候选使用。
  *
- * 切勿用在用量接口上：getUsageLimits 已改成把 profileArn 当必填，
+ * 切勿用在用量接口上：getUsageLimits 把 profileArn 当必填，
  * BuilderId 恰恰要带这个占位符才回 200，剥掉就是
  * 403 "User is not authorized to make this call."。用量那边走 usageProfileArn。
  */

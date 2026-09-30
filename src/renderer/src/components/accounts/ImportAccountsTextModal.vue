@@ -91,7 +91,7 @@ async function submit(): Promise<void> {
   importing.value = true
   try {
     if (data.fullData) {
-      // 完整备份直接恢复，不再逐个联网校验
+      // 完整备份直接恢复，不逐个联网校验
       const res = accountsStore.importFullData(data.fullData)
       result.value = res
       message.success(`恢复完成：新增 ${res.success}，跳过 ${res.skipped}`)

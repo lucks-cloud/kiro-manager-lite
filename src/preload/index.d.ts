@@ -32,6 +32,21 @@ import type {
   OnlineLoginCredentials,
   RefreshTokenResult,
   RestartIdeResult,
+  IpInfo,
+  MachineIdActionResult,
+  MachineIdField,
+  MachineIdStatus,
+  ProxyAccountUsage,
+  ProxyApiKeyView,
+  ProxyClientState,
+  ProxyClientTarget,
+  ProxyConfig,
+  ProxyKeyUsage,
+  ProxyLogEntry,
+  ProxyModelCache,
+  ProxyStatus,
+  SiteTestId,
+  SiteTestResult,
   ShellAutoApproveStatus,
   ShellAutoApproveTarget,
   SocialCallbackPayload,
@@ -55,12 +70,6 @@ export interface KiroActiveToken {
   expiresAt: string
   authMethod?: string
   provider?: string
-}
-
-export interface ImportedFile {
-  content: string
-  format: string
-  path: string
 }
 
 export interface Api {
@@ -155,7 +164,6 @@ export interface Api {
   readLocalKiroCredentials: () => Promise<IpcResult<LocalKiroCredentials>>
   getActiveKiroToken: () => Promise<IpcResult<KiroActiveToken>>
   switchAccount: (input: SwitchAccountInput) => Promise<IpcResult<SwitchAccountResult>>
-  isKiroIdeRunning: () => Promise<IpcResult<{ running: boolean }>>
   restartKiroIde: () => Promise<IpcResult<RestartIdeResult>>
   logoutKiro: () => Promise<IpcResult<{ deleted: number }>>
 
@@ -219,7 +227,6 @@ export interface Api {
     bundle: ExportBundle,
     filename: string
   ) => Promise<IpcResult<{ saved: boolean; path?: string; count?: number }>>
-  importFromFile: () => Promise<IpcResult<ImportedFile | null>>
   writeClipboard: (text: string) => void
 
   getSettings: () => Promise<IpcResult<AppSettings>>
@@ -233,6 +240,95 @@ export interface Api {
   revealShellApproveTarget: (
     kind: ShellAutoApproveTarget['kind']
   ) => Promise<IpcResult<void>>
+  getMachineIdStatus: () => Promise<IpcResult<MachineIdStatus>>
+  /** 生成新机器码；IDE 运行中会先关闭、写完再拉起 */
+  resetMachineId: () => Promise<IpcResult<MachineIdActionResult>>
+  /** 把备份的原始机器码写回 */
+  restoreMachineId: () => Promise<IpcResult<MachineIdActionResult>>
+  revealMachineIdLocation: (field: MachineIdField) => Promise<IpcResult<void>>
+  /** 当前出口 IP，走应用代理设置 */
+  getIpInfo: () => Promise<IpcResult<IpInfo>>
+  /** 测试单个网站的连通性与延迟 */
+  testSite: (id: SiteTestId) => Promise<IpcResult<SiteTestResult>>
+
+  // ============ 本地反代 ============
+  getProxyState: () => Promise<
+    IpcResult<{
+      config: ProxyConfig
+      status: ProxyStatus
+      logs: ProxyLogEntry[]
+      usage: ProxyAccountUsage[]
+      /** 从账号拉回的模型列表；还没拉过时为 null */
+      models: ProxyModelCache | null
+    }>
+  >
+  /** 用反代当前选中的账号重新拉模型列表 */
+  refreshProxyModels: () => Promise<IpcResult<ProxyModelCache>>
+  saveProxyConfig: (
+    patch: Partial<ProxyConfig>
+  ) => Promise<IpcResult<{ config: ProxyConfig; status: ProxyStatus }>>
+  startProxy: () => Promise<IpcResult<ProxyStatus>>
+  stopProxy: () => Promise<IpcResult<ProxyStatus>>
+  clearProxyLogs: () => Promise<IpcResult<void>>
+  /** 清空统计与按账号的用量累计 */
+  resetProxyStats: () => Promise<IpcResult<ProxyStatus>>
+  /** 反代的全部 API Key（含默认 Key），带总计 */
+  listProxyKeys: () => Promise<IpcResult<ProxyApiKeyView[]>>
+  createProxyKey: (input: {
+    name?: string
+    creditLimit?: number
+  }) => Promise<IpcResult<ProxyApiKeyView>>
+  updateProxyKey: (
+    id: string,
+    patch: { name?: string; creditLimit?: number; enabled?: boolean }
+  ) => Promise<IpcResult<ProxyApiKeyView[]>>
+  deleteProxyKey: (id: string) => Promise<IpcResult<ProxyApiKeyView[]>>
+  /** 某个 Key 的完整用量：总计、按模型、按天、最近明细 */
+  getProxyKeyUsage: (id: string) => Promise<IpcResult<ProxyKeyUsage>>
+  resetProxyKeyUsage: (id: string) => Promise<IpcResult<ProxyApiKeyView[]>>
+  /** 对本机反代发一次真实请求（API 端点弹窗的模拟请求） */
+  tryProxyEndpoint: (input: {
+    method: 'GET' | 'POST'
+    path: string
+    body?: string
+  }) => Promise<
+    IpcResult<{
+      status: number
+      statusText: string
+      durationMs: number
+      contentType: string
+      /** 显示用：JSON 已在主进程格式化，可能被截断 */
+      body: string
+      /** 原始完整响应，复制用 */
+      raw: string
+      formatted: boolean
+      truncated: boolean
+    }>
+  >
+  /** 把某个自定义 Key 设为默认，原默认 Key 转为自定义 Key */
+  setDefaultProxyKey: (
+    id: string
+  ) => Promise<IpcResult<{ keys: ProxyApiKeyView[]; config: ProxyConfig; status: ProxyStatus }>>
+  /** 重新生成默认 Key（写进客户端的那一个） */
+  regenerateProxyDefaultKey: () => Promise<
+    IpcResult<{ config: ProxyConfig; status: ProxyStatus }>
+  >
+  getProxyClientStates: () => Promise<IpcResult<ProxyClientState[]>>
+  applyProxyClient: (target: ProxyClientTarget) => Promise<IpcResult<ProxyClientState[]>>
+  restoreProxyClient: (target: ProxyClientTarget) => Promise<IpcResult<ProxyClientState[]>>
+  /** 在文件管理器里定位客户端配置文件 */
+  revealProxyClientFile: (
+    target: ProxyClientTarget,
+    index: number
+  ) => Promise<IpcResult<void>>
+  /** 代为打开 / 重启客户端（图形界面退出再拉起，命令行开新终端） */
+  openProxyClient: (target: ProxyClientTarget) => Promise<IpcResult<void>>
+  /** 写入客户端配置时的进度回调（Cursor 首次要装 CCursor，过程较慢） */
+  onProxyClientProgress: (
+    handler: (payload: { target: ProxyClientTarget; line: string }) => void
+  ) => () => void
+  onProxyStatus: (handler: (status: ProxyStatus) => void) => () => void
+  onProxyLog: (handler: (entry: ProxyLogEntry | null) => void) => () => void
   openExternal: (url: string, privateMode?: boolean) => Promise<IpcResult<BrowserOpenInfo>>
   showPath: (target: 'store' | 'backup' | 'logs') => Promise<IpcResult>
 

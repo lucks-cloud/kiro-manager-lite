@@ -11,7 +11,7 @@ const filter = computed(() => accountsStore.filter)
 
 /**
  * chip 列表：选项来自元数据表，数量直接复用 store 里已经算好的 stats，
- * 不再为筛选面板单独遍历一遍账号。
+ * 不为筛选面板单独遍历一遍账号。
  */
 function buildChips<K extends string>(
   meta: Record<K, { text: string }>,

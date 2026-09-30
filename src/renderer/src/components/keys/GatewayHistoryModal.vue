@@ -485,7 +485,7 @@ function reset(): void {
 .tip-time { margin-bottom: 2px; opacity: 0.8; }
 /*
  * 表格吃掉剩余高度。整条 flex 链都要 min-height: 0，
- * 否则表体按内容高度撑开，分页会被顶到弹窗外面（之前就是这个症状）。
+ * 否则表体按内容高度撑开，分页会被顶到弹窗外面。
  */
 .table-wrap { flex: 1 1 0; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
 .table-wrap :deep(.ant-table-wrapper) { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; }

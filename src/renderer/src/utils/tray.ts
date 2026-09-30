@@ -48,7 +48,22 @@ export function useTrayBridge(): void {
     }
   })
 
-  watch(snapshot, (value) => void window.api.syncTray(value), { immediate: true, deep: true })
+  /*
+   * 账号列表任何一处变化（批量刷新时每个号一次）都会让 snapshot 重算出一个新对象，
+   * 但托盘菜单只关心这几项摘要。内容没变就不发 IPC，免得主进程反复重建菜单。
+   * snapshot 每次都是新的扁平对象，不需要 deep。
+   */
+  let lastSent = ''
+  watch(
+    snapshot,
+    (value) => {
+      const text = JSON.stringify(value)
+      if (text === lastSent) return
+      lastSent = text
+      void window.api.syncTray(value)
+    },
+    { immediate: true }
+  )
 
   async function refreshActive(): Promise<void> {
     const active = accountsStore.activeAccount

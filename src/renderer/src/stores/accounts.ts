@@ -1,7 +1,6 @@
 import { acceptHMRUpdate, defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, ref, shallowRef } from 'vue'
 import { message } from 'ant-design-vue'
-import { v4 as uuidv4 } from 'uuid'
 import {
   DEFAULT_SETTINGS,
   type Account,
@@ -89,7 +88,12 @@ const DEFAULT_EXPIRES_IN = 3600
 export const useAccountsStore = defineStore('accounts', () => {
   const settingsStore = useSettingsStore()
 
-  const accounts = ref<Account[]>([])
+  /*
+   * shallowRef：账号可能有上千个，深层响应式要给每个账号的每层字段都建代理。
+   * 这里的所有写法都是整组替换（map / slice 后赋值），从不就地改某个账号的字段，
+   * 所以只追踪 .value 就够了。新增写法时也要保持「替换而不是就地修改」。
+   */
+  const accounts = shallowRef<Account[]>([])
   /** 分组定义，始终按 order 升序维护，界面直接按数组顺序渲染 */
   const groups = ref<AccountGroup[]>([])
   const activeAccountId = ref<string | null>(null)
@@ -184,7 +188,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     if (existing) return existing
 
     const group: AccountGroup = {
-      id: uuidv4(),
+      id: crypto.randomUUID(),
       name: label,
       // 追加到末尾
       order: groups.value.length ? Math.max(...groups.value.map((g) => g.order)) + 1 : 0
@@ -261,7 +265,8 @@ export const useAccountsStore = defineStore('accounts', () => {
     })
     if (changed) {
       accounts.value = next
-      persist()
+      // 立即落盘：反代按分组选号时直接读主进程的数据，防抖 600ms 会让新成员晚一拍才生效
+      persist(true)
     }
     return changed
   }
@@ -410,7 +415,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     const idp = (input.provider || 'BuilderId') as IdpType
     const profileArn = snapshot.profileArn || input.profileArn
     return {
-      id: uuidv4(),
+      id: crypto.randomUUID(),
       email: snapshot.email,
       password: input.password,
       nickname: input.nickname,
@@ -657,7 +662,7 @@ export const useAccountsStore = defineStore('accounts', () => {
         continue
       }
       // 备份 id 在本机没被占用就沿用，能让同一份备份反复恢复时保持稳定
-      const id = usedIds.has(raw.id) ? uuidv4() : raw.id
+      const id = usedIds.has(raw.id) ? crypto.randomUUID() : raw.id
       const group: AccountGroup = { id, name, order: order++ }
       usedIds.add(id)
       byName.set(name, group)
@@ -716,7 +721,7 @@ export const useAccountsStore = defineStore('accounts', () => {
       created.push({
         ...restRaw,
         ...(mappedGroupId ? { groupId: mappedGroupId } : {}),
-        id: raw.id || uuidv4(),
+        id: raw.id || crypto.randomUUID(),
         idp,
         isActive: false,
         usage: raw.usage ?? emptyUsage(),
@@ -1001,15 +1006,15 @@ export const useAccountsStore = defineStore('accounts', () => {
 
   // 调度方式：只记「下一轮的绝对到期时间」，再用一个秒级 tick 检查是否越过。
   //
-  // 之前是给每条任务开一个 setInterval(间隔分钟数)，实测不按时执行，原因有两个：
+  // 不要给每条任务开一个 setInterval(间隔分钟数)，实测不按时执行，原因有两个：
   // 1) 窗口最小化到托盘后页面转入后台，Chromium 会节流甚至冻结长间隔定时器，
   //    回调迟迟不来，界面上的倒计时也就一直停在 0 秒；
   // 2) 系统睡眠、进程被挂起期间错过的轮次，setInterval 不会补跑，直接丢掉。
-  // 换成到期时间 + 秒级 tick 后，无论被节流或挂起多久，恢复后的第一个 tick 就会补上。
+  // 用到期时间 + 秒级 tick，无论被节流或挂起多久，恢复后的第一个 tick 就会补上。
   const AUTO_TICK_MS = 1_000
 
   let tickTimer: ReturnType<typeof setInterval> | null = null
-  /** 自动任务自己的串行锁，两轮同时到期时排队跑，不再互相丢轮 */
+  /** 自动任务自己的串行锁，两轮同时到期时排队跑，避免互相丢轮 */
   let autoRunning = false
 
   /** 下一轮密钥 / 用量刷新的时间戳，未启用时为 null，供界面展示 */

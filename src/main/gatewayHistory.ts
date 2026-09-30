@@ -48,8 +48,11 @@ export function flushGatewayHistory(): void {
     clearTimeout(flushTimer)
     flushTimer = null
   }
-  if (totalsCache) store.set('totals', totalsCache)
-  if (pointsCache) store.set('points', pointsCache)
+  // 合成一次写入：分开 set 会把整份文件同步重写两遍
+  const patch: Partial<Schema> = {}
+  if (totalsCache) patch.totals = totalsCache
+  if (pointsCache) patch.points = pointsCache
+  if (Object.keys(patch).length) store.set(patch)
 }
 
 function scheduleFlush(): void {
@@ -139,7 +142,9 @@ export function addPoint(
     }
   }
 
-  all[keyId] = list.length > MAX_POINTS_PER_KEY ? list.slice(-MAX_POINTS_PER_KEY) : list
+  // 就地删掉最旧的，到上限后不必每次都复制一份 5000 条的新数组
+  if (list.length > MAX_POINTS_PER_KEY) list.splice(0, list.length - MAX_POINTS_PER_KEY)
+  all[keyId] = list
   scheduleFlush()
 }
 

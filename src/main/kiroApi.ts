@@ -20,8 +20,7 @@ import type {
   AccountSubscription,
   AccountUsage,
   AuthMethod,
-  BonusUsage,
-  SubscriptionType
+  BonusUsage
 } from '../shared/types'
 
 // 用量接口类型：rest = 官方 GetUsageLimits，cbor = 网页门户 GetUserUsageAndLimits

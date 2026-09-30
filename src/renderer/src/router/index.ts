@@ -23,6 +23,12 @@ const router = createRouter({
       meta: { title: 'API Key 管理' }
     },
     {
+      path: '/proxy',
+      name: 'proxy',
+      component: () => import('@/views/ProxyView.vue'),
+      meta: { title: '本地反代' }
+    },
+    {
       path: '/tools',
       name: 'tools',
       component: () => import('@/views/ToolsView.vue'),

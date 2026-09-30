@@ -11,6 +11,8 @@ import {
 } from '@ant-design/icons-vue'
 import { copyText } from '@/utils/ui'
 import { useSettingsStore } from '@/stores/settings'
+import MachineIdCard from '@/components/tools/MachineIdCard.vue'
+import NetworkCheckCard from '@/components/tools/NetworkCheckCard.vue'
 import { RETRYABLE_STATUS_OPTIONS, normalizeRetryStatuses } from '@shared/retryPolicy'
 import type { ShellAutoApproveStatus, ShellAutoApproveTarget } from '@shared/types'
 
@@ -327,6 +329,10 @@ onMounted(() => void refresh())
       </div>
 
     </a-card>
+
+    <MachineIdCard />
+
+    <NetworkCheckCard />
 
     <a-modal
       :open="confirmOpen"

@@ -1,6 +1,6 @@
 // Kiro IDE 能力探测：判断当前安装的 Kiro 是否支持 API Key 网关接管
 //
-// 起因是一个「提示成功但实际无效」的缺陷：
+// 要防的是「提示成功但实际无效」：
 // 我们靠写 IDE settings.json 的 codewhisperer.config.krsEndpoints / cpsEndpoints
 // 把 AI 请求引到本地网关，写完之后回读同一个文件做校验。但回读只能证明「文件写对了」，
 // 不能证明「IDE 认这两个键」。于是在旧版 Kiro 上就会出现写入成功、弹窗报成功、
@@ -177,7 +177,7 @@ export async function detectKiroCapability(force = false): Promise<KiroCapabilit
   return result
 }
 
-/** 开启网关前的硬门槛：确认不支持就直接拦下，不再写出一份 IDE 根本不看的配置 */
+/** 开启网关前的硬门槛：确认不支持就直接拦下，避免写出一份 IDE 根本不看的配置 */
 export async function assertKeyGatewaySupported(): Promise<void> {
   const cap = await detectKiroCapability()
   if (cap.supportsKeyGateway) return

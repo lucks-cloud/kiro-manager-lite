@@ -175,7 +175,7 @@ async function submit(): Promise<void> {
       const parsed = entry.parsed as ParsedImport
       let single: BatchResult
       if (parsed.fullData) {
-        // 完整备份含用量与订阅快照，直接本地恢复，不再逐个联网校验。
+        // 完整备份含用量与订阅快照，直接本地恢复，不逐个联网校验。
         // 恢复是同步的，先让出一帧把进度文案渲染出来，否则连续多个备份会看起来卡住。
         await nextTick()
         single = accountsStore.importFullData(parsed.fullData)

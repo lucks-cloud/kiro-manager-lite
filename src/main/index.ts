@@ -30,6 +30,7 @@ import { flushGatewayHistory } from './gatewayHistory'
 import { initLogger, installConsoleBridge, log, shutdownLogger } from './logger'
 import { sendToRenderer } from './utils'
 import { initializeKeyService, shutdownKeyServiceSync } from './keyService'
+import { initProxyServer, shutdownProxySync } from './proxyServer'
 
 /*
  * 按设置里的地区指定 Chromium 区域。
@@ -207,7 +208,7 @@ app.whenReady().then(() => {
   installConsoleBridge()
 
   // 开发态的 Dock 图标默认是 Electron 的，手动换成应用图标。
-  // 打包后由 .app 里的 icns 提供，不再覆盖，避免二次缩放变糊。
+  // 打包后由 .app 里的 icns 提供，这里不覆盖，避免二次缩放变糊。
   if (process.platform === 'darwin' && !app.isPackaged) {
     const dockIcon = nativeImage.createFromPath(appIconPath('mac-icon'))
     if (!dockIcon.isEmpty()) app.dock?.setIcon(dockIcon)
@@ -224,6 +225,11 @@ app.whenReady().then(() => {
   registerIpc(() => mainWindow)
   // 恢复上次的 API Key 接管；状态变化主动推送给渲染进程。
   void initializeKeyService((status) => sendToRenderer(mainWindow, 'key-gateway:changed', status))
+  // 本地反代：状态与请求日志主动推给界面；配置里开了自动启动就直接起服务
+  initProxyServer(
+    (event, payload) => sendToRenderer(mainWindow, `proxy:${event}`, payload),
+    app.getVersion()
+  )
   // macOS 顶部菜单栏（中文菜单 + 页面导航），其他平台维持默认
   setupAppMenu({ focusWindow, getWindow: () => mainWindow })
   createWindow()
@@ -276,6 +282,7 @@ app.on('will-quit', () => {
   flushGatewayHistory()
   // 同步还原 Kiro IDE 端点后再退出，避免 IDE 指向已停止的本地网关。
   shutdownKeyServiceSync()
+  shutdownProxySync()
   // 内置浏览器是 BaseWindow，不受主窗口关闭影响，得显式收掉
   closePortalWindow()
   destroyTray()

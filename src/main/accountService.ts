@@ -114,7 +114,7 @@ interface UsageIdentity {
 /**
  * 用量接口的 profileArn 候选，按成功率排序。
  *
- * 背景：profileArn 现在是必填，不带会被拒（用量 403、模型列表 400 Invalid profileArn）。
+ * 背景：profileArn 是必填，不带会被拒（用量 403、模型列表 400 Invalid profileArn）。
  * 但「补一个」不能瞎补——**Enterprise 必须用它自己 profile 的真实 ARN**，
  * kiroAuth 里那个硬编码兜底 ARN 属于另一个组织，送出去会被判 403 "Invalid token"。
  * 所以 Enterprise 先问一次 ListAvailableProfiles，拿到真实 ARN 再谈兜底。
@@ -261,7 +261,7 @@ export async function verifyCredentials(input: VerifyCredentialsInput): Promise<
 
   const idp = resolveIdp(provider, authMethod)
   /*
-   * 用量接口现在必须带 profileArn，原先固定传 undefined 会让 Builder ID 验活直接 403。
+   * 用量接口必须带 profileArn，不带会让 Builder ID 验活直接 403。
    * 走候选回退而不是单个猜测：Enterprise 补错 ARN 会被判 403 "Invalid token"。
    * 生效的那个随快照返回，账号建好后就带着正确的 ARN，后续不必重新试。
    */
@@ -523,7 +523,7 @@ export function refreshAccountToken(account: Account): Promise<RefreshTokenResul
  *  3. 清理陈旧客户端注册文件：上一个账号留下的 {hash}.json 会让 IDE 用错
  *     clientId/secret 去刷新，失败后同样把用户登出。
  *  4. 写完再用同一个 accessToken 实测一次用量接口，把结论回传界面，
- *     不再是「写完就算成功」。
+ *     而不是「写完就算成功」。
  */
 export async function switchAccount(input: SwitchAccountInput): Promise<SwitchAccountResult> {
   const {
@@ -590,7 +590,7 @@ export async function switchAccount(input: SwitchAccountInput): Promise<SwitchAc
   for (const candidate of candidates) {
     try {
       /*
-       * 候选原样送，不再过 arnForApiCall：用量接口现在要求带 profileArn，
+       * 候选原样送，不要过 arnForApiCall：用量接口要求带 profileArn，
        * 把 BuilderId 占位符剥成 undefined 会让第一个候选必然 403，
        * 于是每次切号都报「profileArn 校验未通过」。
        */

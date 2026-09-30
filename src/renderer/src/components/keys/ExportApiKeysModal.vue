@@ -5,8 +5,7 @@ import {
   CopyOutlined,
   DownloadOutlined,
   GlobalOutlined,
-  KeyOutlined,
-  SnippetsOutlined
+  KeyOutlined
 } from '@ant-design/icons-vue'
 import { useKeysStore } from '@/stores/keys'
 import {

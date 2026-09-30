@@ -41,7 +41,7 @@ export default defineConfig({
     plugins: [
       vue(),
       // ant-design-vue 按需加载：只把模板里真正用到的 a-* 组件打进包，
-      // 替代 main.ts 里的全量 app.use(Antd)，显著减小 vendor-ant-design-vue 体积与首屏解析开销。
+      // 不在 main.ts 里全量 app.use(Antd)，以减小 vendor-ant-design-vue 体积与首屏解析开销。
       // importStyle: false —— 4.x 走 CSS-in-JS，样式在运行时生成，无需按组件引入样式文件。
       Components({
         dts: false,
@@ -109,9 +109,9 @@ export default defineConfig({
         }
       },
       /*
-       * ant-design-vue 单个包压缩后约 1.2MB，已经是 manualChunks 能拆到的最小粒度
-       * （再拆只能改成按需引入组件，会牵动全部页面的组件注册方式）。
-       * 阈值按它的实际体积放宽，避免每次构建都刷一条无从下手的警告。
+       * 组件已按需引入（见上方 Components 插件），vendor-ant-design-vue 仍有约 950KB，
+       * 而 manualChunks 按包拆分，单个包就是最小粒度，没法再往下拆。
+       * 阈值留出余量，避免每次构建都刷一条无从下手的警告。
        */
       chunkSizeWarningLimit: 1400
     }

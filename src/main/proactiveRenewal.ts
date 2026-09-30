@@ -100,8 +100,8 @@ async function runProactiveRenewal(accountId: string): Promise<void> {
 
   /*
    * 刷新一旦成功，服务端就已经轮换掉旧 refreshToken，所以无论有没有同步进 IDE，
-   * 新凭证都必须先落盘并下发给渲染进程。早先在「未同步 IDE」时直接 return，
-   * 新凭证被丢掉，内存与磁盘留着的旧值立刻作废，下一次刷新必然
+   * 新凭证都必须先落盘并下发给渲染进程。不能在「未同步 IDE」时直接 return：
+   * 那样新凭证会被丢掉，内存与磁盘留着的旧值已经作废，下一次刷新必然
    * invalid_grant / Bad credentials。
    *
    * isActive 一并据实修正：同步失败就说明它已不是 IDE 当前激活账号，

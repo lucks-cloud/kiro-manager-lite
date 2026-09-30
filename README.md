@@ -9,12 +9,12 @@
 </p>
 
 <p align="center">
-  多账号一键切换 · 自定义分组与三种展示形态 · 订阅开通与账单管理 · 账号 API Key 管理 · 本地网关与真实调用统计 · 自动刷新与流式测活 · 内置私密浏览器 · 托盘常驻
+  多账号一键切换 · 本地反代与客户端一键接入 · 自定义分组与三种展示形态 · 订阅开通与账单管理 · 账号 API Key 管理 · 本地网关与真实调用统计 · 本地反代 · 机器码重置与网络检测 · 自动刷新与流式测活 · 内置私密浏览器 · 托盘常驻
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.0.24-6c5ce7" alt="version">
-  <img src="https://img.shields.io/badge/updated-2026--09--21-2f9e44" alt="updated">
+  <img src="https://img.shields.io/badge/version-1.0.26-6c5ce7" alt="version">
+  <img src="https://img.shields.io/badge/updated-2026--09--30-2f9e44" alt="updated">
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="license">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="platform">
   <img src="https://img.shields.io/badge/Vue-3-42b883" alt="vue">
@@ -65,6 +65,42 @@
 - 首屏卡住会自动重试并把进度显示在标题位，次数用尽才给错误页，不再干等 30 秒白屏
 - 请求头伪装成普通 Chrome，并可在设置的「内置浏览器」里指定地区（内置 50 个常用地区，也支持自定义 BCP 47 标签）
 
+### 🔁 本地反代
+
+把账号池转成标准的大模型接口，Claude Code、Codex、Cursor、VS Code 等客户端直接当作自己的模型服务来用。
+
+**接口与协议**
+
+- 兼容 OpenAI（`/v1/chat/completions`、`/v1/responses`、`/v1/models`）、Anthropic（`/v1/messages`、`/v1/messages/count_tokens`）与 Gemini（`/v1beta/models/*:generateContent`），另有 `/health` 与 `/admin/*` 运维接口
+- 流式输出、工具调用、图片输入与推理档位完整转换；客户端点名的模型自动映射，带日期或短横的写法也认
+- 「API 端点」弹窗列出全部接口，可在线请求、查看格式化响应并复制原文或请求示例
+- 默认只监听 `127.0.0.1`，可改端口或开放给局域网；默认强制校验 API Key
+
+**账号调度**
+
+- 账号来源二选一：账号管理里的 OAuth 账号，或 API Key 管理里的 Kiro API Key（`ksk_`）
+- 使用策略：轮询全部、指定分组（显示成员数，分组成员变化实时生效）、指定账号（可多选），选中范围内按请求轮询
+- 自动重试可开关：同一个号按间隔重试 x 次，仍失败静默换下一个号继续；额度耗尽、被封、凭证失效的号直接跳过；已开始输出后绝不重发
+- 上游端点可选自动 / CodeWhisperer / Amazon Q；请求体超限时先截断最旧的长消息，再整条丢弃最旧历史
+
+**工具与模型**
+
+- 模型列表从当前选中的号实时拉取，带上下文与输出上限、推理档位与消耗倍率
+- 工具执行模式：由反代调用 Kiro 自带的联网搜索并把结果交回模型，不依赖任何第三方搜索服务
+- 可一键禁用工具调用，只做纯对话
+
+**Key 与统计**
+
+- 多个 `sk-` API Key：可命名、设积分额度，用完返回 429；每个 Key 有请求数、积分、Tokens、用量明细、按模型统计与每日折线图
+- 请求日志与统计持久化，按表格展示状态、协议、模型、账号、输入 / 输出 Tokens、耗时与积分，汇总消耗 Tokens 与消耗积分
+
+**一键接入客户端**
+
+- 命令行：Claude Code、Codex CLI、DeepSeek Harness Web，给出启动命令并可直接打开终端运行
+- 桌面应用：Claude 桌面版（3P）、Codex 桌面版、DeepSeek Harness 桌面版、Cursor（CCursor）、VS Code（Copilot 自定义端点）、WorkBuddy
+- 写入前检测是否安装并完整备份。共用的配置文件只改我们那一部分，还原也只摘掉这部分，你自己的设置原样保留
+- 模型、上下文上限与推理档位按账号实时写入；检测到系统代理拦截回环地址时提前提示
+
 ### 🔑 API Key 管理
 
 - 支持单个添加、批量导入、搜索、订阅 / 状态 / 用量 / 重置时间 / 导入时间范围筛选、排序、导出和批量删除
@@ -100,6 +136,8 @@
 
 ### 🧰 常用工具
 
+- **机器码重置与恢复**：一次性重置 Kiro IDE 分散在 `storage.json`、`machineid`、`state.vscdb` 与共享 `deviceid` 四处的设备标识（只改一处 IDE 会从别处读回）；首次重置前自动备份原始值，可一键恢复，每项都能复制或定位文件；写入前自动关闭正在运行的 IDE
+- **网络检测**：查看当前出口 IP 的国家、地区、运营商与时区，一键测试 GitHub、Google、YouTube、Kiro、Amazon 的连通性与延迟；走设置里的代理，看到的就是 Kiro 请求实际经过的出口
 - 「自动同意 AI 操作」可配置 Kiro 的命令、文件和网络操作权限，开启前明确展示安全风险并支持原样恢复
 - 「网关错误自动续接」集中配置重试状态码、次数与间隔
 - 工具状态、目标配置路径和不兼容原因均在页面内可视化展示
@@ -133,14 +171,14 @@
 
 <p align="center">
   <a href="https://github.com/lucks-cloud/kiro-manager-lite/releases/latest">
-    <img src="https://img.shields.io/badge/⬇%20下载最新版-v1.0.24-6c5ce7?style=for-the-badge" alt="下载最新版">
+    <img src="https://img.shields.io/badge/⬇%20下载最新版-v1.0.26-6c5ce7?style=for-the-badge" alt="下载最新版">
   </a>
   <a href="https://github.com/lucks-cloud/kiro-manager-lite/releases">
     <img src="https://img.shields.io/badge/全部版本-Releases-24292f?style=for-the-badge&logo=github" alt="全部版本">
   </a>
 </p>
 
-**最新版本：v1.0.24**（2026-09-21） · 变更详情见 [CHANGELOG.md](CHANGELOG.md)
+**最新版本：v1.0.26**（2026-09-30） · 变更详情见 [CHANGELOG.md](CHANGELOG.md)
 
 ### 选择对应的安装包
 
@@ -219,6 +257,10 @@ Windows 与 Linux 暂不提供 arm64 包：原生依赖 `cbor-extract` 没有对
 
 ![API Key 网关](docs/screenshots/apikey-gateway.png)
 
+### 本地反代
+
+![本地反代](docs/screenshots/proxy.png)
+
 ### 常用工具
 
 ![常用工具](docs/screenshots/tool.png)
@@ -286,6 +328,7 @@ src/
     portalLocale.ts      内置浏览器地区：预设、归一化、Accept-Language
     subscription.ts      订阅档位归一
     modelSchema.ts       从模型 schema 解析推理档位并拼请求字段
+    proxyModels.ts       反代的模型名映射与兜底模型表
   main/
     index.ts             应用生命周期与窗口
     ipc.ts               IPC 注册与运行时设置下发
@@ -301,7 +344,8 @@ src/
     kiroSubscription.ts  订阅：可开通档位与 Stripe 账单 / 结算链接（门户 CSRF 双提交）
     kiroAuth.ts          IDE 凭证文件读写与 profileArn 决策
     kiroChat.ts          测活：模型列表与流式对话
-    kiroEndpoints.ts     端点、区域映射与客户端 UA（服务端按版本号准入）
+    kiroEndpoints.ts     端点、区域映射、Kiro 版本号与客户端 UA 的唯一定义（服务端按版本号准入）
+    kiroMachineId.ts     机器码读取、重置、备份与恢复
     kiroSettings.ts      IDE settings.json 读写与端点接管
     kiroPermissions.ts   自动同意 AI 操作：两套机制读写与还原
     kiroCapability.ts    当前 IDE 版本是否支持自定义网关端点
@@ -314,8 +358,17 @@ src/
     gatewayHistory.ts    按分钟聚合的调用历史持久化
     eventStream.ts       AWS event-stream 帧解析
     localPorts.ts        端口占用探测与释放
+    ── 本地反代
+    proxyServer.ts       HTTP 服务、路由、鉴权、日志与统计
+    proxyConvert.ts      OpenAI / Anthropic / Gemini 与 Kiro 请求响应互转
+    proxyUpstream.ts     选号策略、重试换号与上游事件流解析
+    proxyClients.ts      各客户端的一键写入、检测、重启与外科式还原
+    proxyKeys.ts         反代 API Key 与按 Key 用量
+    proxyLogStore.ts     请求日志与统计持久化
+    kiroWebSearch.ts     Kiro MCP 联网搜索
     ── 基础设施
     net.ts               统一 fetch 与代理
+    networkCheck.ts      出口 IP 查询与网站连通性测试
     store.ts             加密持久化与滚动备份
     usageHistory.ts      积分历史（防抖落盘）
     logger.ts            内存环形缓冲、分片落盘、接管 console
@@ -327,9 +380,9 @@ src/
     index.ts             主窗口用
     portalBar.ts         内置浏览器工具条用，与主窗口完全隔离
   renderer/src/
-    stores/              Pinia：accounts / keys / settings / update
-    views/               Home / Accounts / Keys / Tools / Logs / Settings / About
-    components/          layout、accounts、keys、common
+    stores/              Pinia：accounts / keys / proxy / settings / update
+    views/               Home / Accounts / Keys / Proxy / Tools / Logs / Settings / About
+    components/          layout、accounts、keys、proxy、tools、common
     utils/               格式化、打码、导入导出、图表、托盘桥接
 ```
 
@@ -344,12 +397,15 @@ src/
 - Enterprise SSO 的回调服务器只监听 `127.0.0.1` 的随机端口，授权完成即关闭，state 与 PKCE 全程校验
 - 「前往官网」用的是不持久化的内存会话分区，退出即清；每次打开前先清空 cookie，不会串号，也不会写入你自己浏览器的登录态
 - 开启本地网关会改写 Kiro IDE 的端点配置，改前留备份、关闭时还原；「自动同意 AI 操作」同样会备份原值并可原样恢复
+- 本地反代默认只监听 `127.0.0.1` 并强制校验 API Key；开放到局域网且关闭校验时会醒目提示，因为那等于同网段任何设备都能用你的额度
+- 一键接入客户端会改写对方的配置文件，写入前完整备份，还原时只摘掉本应用写入的部分
+- 重置机器码前自动备份原始值，可随时恢复
 
 ---
 
 ## 🔖 更新日志
 
-各版本变更记录见 [CHANGELOG.md](CHANGELOG.md)，当前版本 v1.0.24，最后更新于 2026-09-21。
+各版本变更记录见 [CHANGELOG.md](CHANGELOG.md)，当前版本 v1.0.26，最后更新于 2026-09-30。
 
 ---
 
@@ -364,7 +420,8 @@ src/
 ## 🙏 致谢与许可
 
 账户管理相关的接口实现参考了开源项目 [Kiro-account-manager](https://github.com/chaogei/Kiro-account-manager)（AGPL-3.0），
-本项目在其基础上重写为 Vue 技术栈，并裁剪为纯账户管理，去掉了反向代理、注册机、机器码管理、MITM 代理等模块。
+本项目在其基础上重写为 Vue 技术栈，去掉了注册机、MITM 代理等模块；本地反代的接口字段对照它做了复刻，
+客户端接入与选号重试等部分为本项目重新实现，同时参考了 [Kiro-Go](https://github.com/Quorinex/Kiro-Go) 与 [kiro.rs](https://github.com/hank9999/kiro.rs)。
 
 - 作者：[lucks-cloud](https://github.com/lucks-cloud)
 - 许可：[AGPL-3.0](LICENSE)

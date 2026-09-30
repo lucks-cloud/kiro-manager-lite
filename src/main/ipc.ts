@@ -1,5 +1,5 @@
 import { BrowserWindow, dialog, ipcMain, shell, app, type IpcMainInvokeEvent } from 'electron'
-import { readFile, writeFile } from 'fs/promises'
+import { writeFile } from 'fs/promises'
 import { existsSync } from 'fs'
 import { dirname } from 'path'
 import {
@@ -15,7 +15,7 @@ import { createAccountApiKey, deleteAccountApiKey, listAccountApiKeys } from './
 import { openAccountPortal, openInAppUrl } from './kiroPortal'
 import { createSubscriptionCheckout, getSubscriptionEntry } from './kiroSubscription'
 import { clearKiroSsoCache, readKiroAuthToken, readLocalKiroCredentials } from './kiroAuth'
-import { isKiroRunning, restartKiroIde } from './kiroProcess'
+import { restartKiroIde } from './kiroProcess'
 import { listKiroModels, streamApiKeyChat, streamKiroChat } from './kiroChat'
 import {
   cancelLogin,
@@ -47,6 +47,46 @@ import {
   getShellAutoApproveStatus,
   shellApproveTargetPath
 } from './kiroPermissions'
+import {
+  getMachineIdStatus,
+  machineIdLocationFile,
+  resetMachineId,
+  restoreMachineId
+} from './kiroMachineId'
+import { getIpInfo, testSite } from './networkCheck'
+import {
+  applyProxyConfig,
+  clearProxyLogs,
+  clearProxyUsage,
+  proxyLogs,
+  proxyModels,
+  proxyStatus,
+  proxyUsage,
+  refreshProxyModels,
+  resetProxyStats,
+  startProxy,
+  stopProxy,
+  tryProxyEndpoint
+} from './proxyServer'
+import {
+  createProxyKey,
+  deleteProxyKey,
+  generateProxyKey,
+  listProxyKeys,
+  proxyKeyUsage,
+  resetProxyKeyUsage,
+  setDefaultProxyKey,
+  updateProxyKey
+} from './proxyKeys'
+import {
+  applyProxyClient,
+  displayFiles,
+  openProxyClient,
+  proxyClientStates,
+  restoreProxyClient,
+  syncCodexCatalogFile
+} from './proxyClients'
+import { FALLBACK_MODEL_IDS } from '../shared/proxyModels'
 import { clearLogs, exportLogs, getLogDir, queryLogs } from './logger'
 import { buildXlsx, buildZip } from './xlsxWriter'
 import {
@@ -76,8 +116,10 @@ import {
   deleteAccountData,
   getAccountData,
   getBackupDir,
+  getProxyConfig,
   getSettings,
   getStorePath,
+  saveProxyConfig,
   setAccountData,
   setSettings
 } from './store'
@@ -97,8 +139,13 @@ import type {
   ApiKeyChatTestInput,
   ChatTestInput,
   IpcResult,
+  KiroModelInfo,
   LogQuery,
+  MachineIdField,
+  ProxyClientTarget,
+  ProxyConfig,
   ShellAutoApproveTarget,
+  SiteTestId,
   SwitchAccountInput,
   TraySnapshot,
   VerifyCredentialsInput,
@@ -116,7 +163,7 @@ function fail(error: unknown): IpcResult<never> {
 
 /**
  * 注册 IPC 通道：统一把未捕获异常收敛成 { success: false, error }，
- * 各 handler 只负责返回结果，不再逐个写 try/catch。
+ * 各 handler 只负责返回结果，不必逐个写 try/catch。
  */
 function handle(
   channel: string,
@@ -292,8 +339,6 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     clearProactiveRenewal('logout ide')
     return ok({ deleted: await clearKiroSsoCache() })
   })
-
-  handle('kiro:ide-running', async () => ok({ running: await isKiroRunning() }))
 
   handle('kiro:restart-ide', async () => ok(await restartKiroIde()))
 
@@ -527,21 +572,6 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     return ok({ saved: true, path: result.filePath })
   })
 
-  handle('file:import', async () => {
-    const result = await dialog.showOpenDialog(getWindow()!, {
-      title: '导入账号数据',
-      properties: ['openFile'],
-      filters: [
-        { name: '支持的格式', extensions: ['json', 'txt', 'csv'] },
-        { name: '全部文件', extensions: ['*'] }
-      ]
-    })
-    if (result.canceled || result.filePaths.length === 0) return ok(null)
-    const filePath = result.filePaths[0]
-    const content = await readFile(filePath, 'utf-8')
-    return ok({ content, format: filePath.split('.').pop()?.toLowerCase() || 'json', path: filePath })
-  })
-
   // ============ 设置 ============
   handle('settings:get', () => {
     const settings = getSettings()
@@ -592,6 +622,150 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     // 文件还不存在时退一步打开它所在目录，至少让用户看到位置
     if (existsSync(target)) shell.showItemInFolder(target)
     else await shell.openPath(dirname(target))
+    return ok()
+  })
+
+  // ============ 常用工具：机器码 ============
+  handle('tools:machine-id-status', async () => ok(await getMachineIdStatus()))
+  handle('tools:machine-id-reset', async () => ok(await resetMachineId()))
+  handle('tools:machine-id-restore', async () => ok(await restoreMachineId()))
+  /** 同上：只接受字段名，路径由主进程解析 */
+  handle('tools:machine-id-reveal', async (_e, field: MachineIdField) => {
+    const target = machineIdLocationFile(field)
+    if (!target) return fail(new Error('该项存放在注册表中，没有对应的文件'))
+    if (existsSync(target)) shell.showItemInFolder(target)
+    else await shell.openPath(dirname(target))
+    return ok()
+  })
+
+  // ============ 常用工具：网络检测 ============
+  handle('tools:ip-info', async () => ok(await getIpInfo()))
+  handle('tools:site-test', async (_e, id: SiteTestId) => ok(await testSite(id)))
+
+  // ============ 本地反代 ============
+  handle('proxy:state', () =>
+    ok({
+      config: getProxyConfig(),
+      status: proxyStatus(),
+      logs: proxyLogs(),
+      usage: proxyUsage(),
+      models: proxyModels()
+    })
+  )
+  handle('proxy:save-config', async (_e, patch: Partial<ProxyConfig>) => {
+    const merged = saveProxyConfig(patch)
+    // 端口 / 监听范围变了要重启才生效，applyProxyConfig 自己判断
+    const status = await applyProxyConfig(merged)
+    return ok({ config: merged, status })
+  })
+  handle('proxy:start', async () => ok(await startProxy()))
+  handle('proxy:stop', () => ok(stopProxy()))
+  handle('proxy:clear-logs', () => {
+    clearProxyLogs()
+    return ok()
+  })
+  handle('proxy:reset-stats', () => {
+    resetProxyStats()
+    clearProxyUsage()
+    return ok(proxyStatus())
+  })
+
+  /** API 端点弹窗的模拟请求：由主进程对本机反代发真实请求 */
+  handle(
+    'proxy:try-endpoint',
+    async (_e, input: { method: 'GET' | 'POST'; path: string; body?: string }) =>
+      ok(await tryProxyEndpoint(input))
+  )
+
+  // ---- 多 API Key ----
+  handle('proxy:keys', () => ok(listProxyKeys()))
+  handle('proxy:key-create', (_e, input: { name?: string; creditLimit?: number }) =>
+    ok(createProxyKey(input ?? {}))
+  )
+  handle(
+    'proxy:key-update',
+    (_e, id: string, patch: { name?: string; creditLimit?: number; enabled?: boolean }) => {
+      updateProxyKey(id, patch ?? {})
+      return ok(listProxyKeys())
+    }
+  )
+  handle('proxy:key-delete', (_e, id: string) => {
+    deleteProxyKey(id)
+    return ok(listProxyKeys())
+  })
+  /** 设为默认：会改 proxyConfig.apiKey，要同步给正在运行的反代，并把新配置回给界面 */
+  handle('proxy:key-set-default', async (_e, id: string) => {
+    setDefaultProxyKey(id)
+    const config = getProxyConfig()
+    const status = await applyProxyConfig(config)
+    return ok({ keys: listProxyKeys(), config, status })
+  })
+  handle('proxy:key-usage', (_e, id: string) => ok(proxyKeyUsage(id)))
+  handle('proxy:key-reset-usage', (_e, id: string) => {
+    resetProxyKeyUsage(id)
+    return ok(listProxyKeys())
+  })
+  /**
+   * 重新生成默认 Key。
+   * 放主进程生成：随机源用 node 的 crypto，前缀规则也只在 proxyKeys 一处。
+   * 旧 Key 的用量挂在固定的 default id 上，换 Key 不清统计。
+   */
+  handle('proxy:regenerate-default-key', async () => {
+    const merged = saveProxyConfig({ apiKey: generateProxyKey() })
+    const status = await applyProxyConfig(merged)
+    return ok({ config: merged, status })
+  })
+
+  /** 写入 / 还原桌面 agent 配置；反代地址、Key、模型列表一律由主进程按当前配置算 */
+  const clientInfo = (): {
+    baseUrl: string
+    apiKey: string
+    model: string
+    effort: string
+    models: KiroModelInfo[]
+  } => {
+    const cfg = getProxyConfig()
+    return {
+      baseUrl: `http://127.0.0.1:${cfg.port}`,
+      apiKey: cfg.apiKey,
+      model: cfg.defaultModel,
+      effort: cfg.defaultEffort,
+      // 还没拉过模型时用兜底表，至少保证写得进去
+      models: proxyModels()?.models ?? FALLBACK_MODEL_IDS.map((modelId) => ({ modelId }))
+    }
+  }
+
+  /** 用当前选中的账号重新拉模型列表，并同步 Codex 目录文件 */
+  handle('proxy:refresh-models', async () => {
+    const cache = await refreshProxyModels()
+    const cfg = getProxyConfig()
+    await syncCodexCatalogFile(cache.models, { model: cfg.defaultModel, effort: cfg.defaultEffort })
+    return ok(cache)
+  })
+  handle('proxy:client-states', async () => ok(await proxyClientStates(clientInfo())))
+  handle('proxy:client-apply', async (e, target: ProxyClientTarget) =>
+    // Cursor 首次写入要先装 CCursor，把过程逐行推给界面，别让用户干等
+    ok(
+      await applyProxyClient(target, clientInfo(), (line) => {
+        if (!e.sender.isDestroyed()) e.sender.send('proxy:client-progress', { target, line })
+      })
+    )
+  )
+  handle('proxy:client-restore', async (_e, target: ProxyClientTarget) =>
+    ok(await restoreProxyClient(target, clientInfo()))
+  )
+  /** 代为打开 / 重启客户端：图形界面的退出再拉起，命令行的开一个新终端 */
+  handle('proxy:client-open', async (_e, target: ProxyClientTarget) => {
+    await openProxyClient(target)
+    return ok()
+  })
+  /** 在文件管理器里定位客户端配置；只接受目标与下标，路径由主进程解析 */
+  handle('proxy:client-reveal', async (_e, target: ProxyClientTarget, index: number) => {
+    // 与界面展示的列表同一份，下标才对得上
+    const file = displayFiles(target)[index]
+    if (!file) return fail(new Error('未知的配置文件'))
+    if (existsSync(file)) shell.showItemInFolder(file)
+    else await shell.openPath(dirname(file))
     return ok()
   })
 

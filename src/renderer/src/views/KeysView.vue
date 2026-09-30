@@ -352,7 +352,18 @@ const filteredKeys = computed(() => {
     createdTo
   } = filter.value
   const groupSet = groupIds.length ? new Set(groupIds) : null
-  return [...data.value.keys]
+  // 排序比较器每次比较都会读，先取出来，免得反复经过响应式 getter
+  const activeId = data.value.activeKeyId
+  const sort = sortKey.value
+  // 用量比例算一次记下来：比较器里每次比较要算两遍，n log n 次就是一笔不小的开销
+  const ratios = new Map<string, number>()
+  const ratioOf = (entry: KeyEntry): number => {
+    let value = ratios.get(entry.id)
+    if (value === undefined) ratios.set(entry.id, (value = usageRatio(entry)))
+    return value
+  }
+  // filter 本身就返回新数组，sort 不会动到 store 里的原数组
+  return data.value.keys
     .filter((entry) => {
       if (needle) {
         const hit =
@@ -369,7 +380,7 @@ const filteredKeys = computed(() => {
       if (statuses.length && !statuses.includes(keyStatusKey(entry))) return false
       // 范围条件一律用 != null 判断「是否已设置」：输入框清空后给的是 null，
       // 按 !== undefined 判断会把 null 当成已设置，比较时又转成 0，把列表筛成空
-      const used = usageRatio(entry)
+      const used = ratioOf(entry)
       if (usageMin != null && used < usageMin) return false
       if (usageMax != null && used > usageMax) return false
       const days = keyDaysRemaining(entry)
@@ -385,11 +396,11 @@ const filteredKeys = computed(() => {
       return true
     })
     .sort((a, b) => {
-      const active = Number(b.id === data.value.activeKeyId) - Number(a.id === data.value.activeKeyId)
+      const active = Number(b.id === activeId) - Number(a.id === activeId)
       if (active) return active
-      if (sortKey.value === 'usage') return usageRatio(b) - usageRatio(a)
-      if (sortKey.value === 'checked') return (b.lastCheckedAt || 0) - (a.lastCheckedAt || 0)
-      if (sortKey.value === 'note') return (a.note || '').localeCompare(b.note || '')
+      if (sort === 'usage') return ratioOf(b) - ratioOf(a)
+      if (sort === 'checked') return (b.lastCheckedAt || 0) - (a.lastCheckedAt || 0)
+      if (sort === 'note') return (a.note || '').localeCompare(b.note || '')
       return b.createdAt - a.createdAt
     })
 })
@@ -444,7 +455,7 @@ function toggleSelectVisible(checked: boolean): void {
 
 /**
  * API Key 是否遮蔽只由全局「隐私打码」决定，本页所有展示位置一律走这里。
- * 此前接管面板与删除确认另用一个无条件打码的实现，关掉开关也看不到完整 Key。
+ * 接管面板、删除确认等处不要另写无条件打码的实现，否则关掉开关也看不到完整 Key。
  */
 function displayKey(key: string): string {
   return maskedKey(key, privacyMode.value)
@@ -1813,7 +1824,7 @@ onUnmounted(() => store.stopStatsPolling())
  *
  * 块间距随之改由 row-gap 统一给：auto 外边距会把「上一块的 margin-bottom」之外的
  * 空间全吃掉，靠各块自带的 margin-top 撑不出最小间距，而 gap 不受 auto 影响。
- * 所以要把各块原来的 margin-top 清掉，否则会和 gap 叠加。
+ * 所以子块不要再设 margin-top，否则会和 gap 叠加。
  */
 .key-card:not(.mode-list) { display: flex; flex-direction: column; }
 .key-card:not(.mode-list) :deep(.ant-card-body) {
@@ -1896,8 +1907,6 @@ onUnmounted(() => store.stopStatsPolling())
 .key-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 18px; padding: 8px 0 0; border-top: 1px solid var(--kal-border); }
 .action-row { display: flex; flex: 0 0 auto; align-items: center; gap: 0; }
 .action-btn { width: 24px; min-width: 24px; height: 24px; padding: 0; }
-.switch-btn { width: auto; min-width: 0; padding-inline: 8px; gap: 4px; }
-.switch-btn.active { color: #52c41a; background: color-mix(in srgb, #52c41a 10%, transparent); }
 /* ============ 紧凑卡片 ============ */
 /*
  * 去掉网关统计那四个小格；用量块压成两行（柱状条与百分比同排，下面是总额 + 更新时间），
@@ -1986,9 +1995,6 @@ onUnmounted(() => store.stopStatsPolling())
 }
 
 .empty { margin: 70px 0; }
-.test-loading { display: grid; place-items: center; min-height: 220px; }
-.model-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 16px; max-height: 180px; overflow: auto; }
-.test-note { margin-top: 16px; }
 .port-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .port-row :deep(.ant-input-number) { width: 100%; }
 .restart-title { display: inline-flex; align-items: center; gap: 8px; }

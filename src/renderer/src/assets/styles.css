@@ -65,8 +65,8 @@ body {
 }
 
 /*
- * 底部按钮：折叠态改成固定 40px 宽的方形按钮并由 flex 居中，
- * 不再铺满整行，避免 antd 的左右内边距把图标推偏。
+ * 底部按钮：折叠态是固定 40px 宽的方形按钮并由 flex 居中，
+ * 不铺满整行，避免 antd 的左右内边距把图标推偏。
  */
 .app-sidebar.collapsed .sidebar-footer {
   align-items: center;
@@ -227,7 +227,7 @@ body {
  * 竖排表单标签与控件间距收紧。
  * ant 默认给 vertical 布局的 label 加了 8px（paddingXS）下内边距，
  * 叠加 form-item 自身的 margin-bottom 后，标题头与输入框之间空得过多。
- * 全局压到 2px，各弹窗 / 表单统一生效，不再逐处覆盖。
+ * 全局压到 2px，各弹窗 / 表单统一生效，无需逐处覆盖。
  */
 .ant-form-vertical .ant-form-item-label {
   padding-bottom: 2px;
@@ -322,4 +322,14 @@ body {
   padding-top: 8px;
   border-top: 1px solid var(--kal-border);
   font-size: 12px;
+}
+
+/*
+ * 全局提示永远压在所有弹窗之上。
+ * antd 的 message / notification 默认 z-index 约 1010，而叠加弹窗（如 Key 编辑弹窗 z-index 1100）
+ * 的遮罩会把它盖住，用户点保存报错却看不到提示。
+ */
+.ant-message,
+.ant-notification {
+  z-index: 2000 !important;
 }

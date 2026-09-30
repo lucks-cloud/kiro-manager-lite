@@ -5,6 +5,7 @@ import {
   HomeOutlined,
   TeamOutlined,
   KeyOutlined,
+  CloudServerOutlined,
   ToolOutlined,
   FileTextOutlined,
   SettingOutlined,
@@ -52,6 +53,7 @@ const items = computed(() => [
     label: keysStore.count ? `API Key 管理（${keysStore.count}个）` : 'API Key 管理',
     icon: KeyOutlined
   },
+  { key: 'proxy', label: '本地反代', icon: CloudServerOutlined },
   { key: 'tools', label: '常用工具', icon: ToolOutlined },
   { key: 'logs', label: '系统日志', icon: FileTextOutlined },
   { key: 'settings', label: '设置', icon: SettingOutlined },

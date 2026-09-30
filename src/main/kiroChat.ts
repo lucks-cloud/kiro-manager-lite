@@ -22,7 +22,7 @@ import {
 import { httpRequest, httpStream } from './net'
 import { pushUnique } from './utils'
 import { jsonOf, takeFrames } from './eventStream'
-import { buildModelRequestFields, parseModelEffort } from '../shared/modelSchema'
+import { parseModelEffort } from '../shared/modelSchema'
 import type { ChatTestInput, KiroModelInfo } from '../shared/types'
 
 /** 对话端点：主用 CodeWhisperer，失败回退 Amazon Q，两者请求体一致（固定 us-east-1） */
@@ -32,7 +32,7 @@ const CHAT_ENDPOINTS = [
 ]
 
 /** 账号身份信息：决定请求头与 profileArn 的取法 */
-interface AccountIdentity {
+export interface AccountIdentity {
   profileArn?: string
   region?: string
   idp?: string
@@ -47,7 +47,7 @@ interface AccountIdentity {
  * ListAvailableModels 与 generateAssistantResponse 都回 403
  * "User is not authorized to make this call."，去掉即通。
  */
-function authHeaders(accessToken: string): Record<string, string> {
+export function authHeaders(accessToken: string): Record<string, string> {
   return {
     'content-type': 'application/json',
     Authorization: `Bearer ${accessToken}`,
@@ -57,6 +57,23 @@ function authHeaders(accessToken: string): Record<string, string> {
     'amz-sdk-invocation-id': awsInvocationId(),
     ...AWS_SINGLE_ATTEMPT_HEADERS
   }
+}
+
+/**
+ * Kiro API Key（ksk_）的请求头：在 OAuth 那套之上声明 tokentype。
+ * 请求体里绝不能带 profileArn——那属于 OAuth 登录，会让 ksk_ 被 403。
+ */
+export function apiKeyHeaders(apiKey: string): Record<string, string> {
+  return {
+    ...authHeaders(apiKey),
+    tokentype: 'API_KEY',
+    'x-amzn-codewhisperer-optout': 'true'
+  }
+}
+
+/** API Key 的对话端点：固定走 runtime.{region}.kiro.dev，不是 CodeWhisperer / Amazon Q */
+export function apiKeyChatEndpoint(region: string): string {
+  return `https://runtime.${region}.kiro.dev/generateAssistantResponse`
 }
 
 /** 由 Kiro 自行挑模型：这种情况不能往请求里塞 modelId */
@@ -84,15 +101,15 @@ function tokenKey(accessToken: string): string {
  * 该账号可以依次尝试的 profileArn，按成功率排序。
  *
  * 实测结论（KiroIDE-0.12.155 / aws-sdk-js-1.0.34 的 UA，2026-08）：
- *   - profileArn 现在是**必填**：不带会回 400 "profileArn is required for this request."
- *     （旧 UA 时代不带也能通，那条结论已失效，别再照旧注释改回去）
+ *   - profileArn 是**必填**：不带会回 400 "profileArn is required for this request."
+ *     （这是当前 UA 下的实测结论，不要按「不带也能通」去掉 ARN）
  *   - Enterprise / IdC：ListAvailableProfiles 返回的真实 ARN 最可信
  *   - Builder ID：没有 profile 概念，必须用 IDE 那个硬编码占位符，实测 200
  *   - Github / Google：后端认固定的 social ARN
- * 末尾仍留一个「不带」的兜底，纯粹为了后端哪天改回去时不至于完全没路走；
+ * 末尾留一个「不带」的兜底，以防后端放宽必填要求时完全没路走；
  * 当前它只会换来 400，而 400 不是授权类错误，调用方会就此中断，不会浪费更多请求。
  */
-async function arnCandidatesFor(
+export async function arnCandidatesFor(
   accessToken: string,
   identity: AccountIdentity
 ): Promise<(string | undefined)[]> {
@@ -115,14 +132,14 @@ async function arnCandidatesFor(
       pushUnique(out, arns[0])
     }
     /*
-     * BuilderId 占位符必须作为候选：ListAvailableModels 已改成把 profileArn 当必填，
+     * BuilderId 占位符必须作为候选：ListAvailableModels 把 profileArn 当必填，
      * 而 BuilderId 没有 profile 概念，listAvailableProfiles 对它返回空，
-     * 于是没切过号的账号候选里只剩「不带」，请求必然 403。
+     * 缺了它，没切过号的账号候选里只剩「不带」，请求必然 403。
      */
     pushUnique(out, KIRO_BUILDER_ID_PLACEHOLDER_ARN)
   }
 
-  // 不带 profileArn 仍留作最后兜底：万一后端又改回按 token 自行解析
+  // 不带 profileArn 留作最后兜底：以防后端改为按 token 自行解析
   pushUnique(out, undefined)
   return out
 }
@@ -142,6 +159,84 @@ interface RawModel {
   rateMultiplier?: number
   /** 该模型额外可传的请求字段（JSON Schema），推理档位就藏在这里 */
   additionalModelRequestFieldsSchema?: unknown
+  /** 上下文与输出上限；各模型差别很大，客户端配置要按模型取 */
+  tokenLimits?: { maxInputTokens?: number; maxOutputTokens?: number }
+  supportedInputTypes?: string[]
+  rateUnit?: string
+  promptCaching?: { supportsPromptCaching?: boolean }
+}
+
+/**
+ * 拉一次原始响应（不做字段映射），只用于自检：
+ * 我们映射出的 KiroModelInfo 只是上游 Model schema 的一个子集，
+ * 排查「某个上限/能力从哪来」时需要看未经加工的那份。
+ */
+export async function listRawKiroModels(input: {
+  accessToken: string
+  profileArn?: string
+  region?: string
+  idp?: string
+}): Promise<unknown> {
+  const params = new URLSearchParams({ origin: 'AI_EDITOR', maxResults: '50' })
+  for (const arn of await arnCandidatesFor(input.accessToken, input)) {
+    if (arn) params.set('profileArn', arn)
+    else params.delete('profileArn')
+    const res = await httpRequest(`${qEndpoint(input.region)}/ListAvailableModels?${params}`, {
+      method: 'GET',
+      headers: { ...authHeaders(input.accessToken), accept: 'application/json' }
+    })
+    if (res.ok) return res.json()
+  }
+  throw new Error('所有 profileArn 候选都被拒')
+}
+
+/** 上游 Model schema → 我们用到的字段；OAuth 与 API Key 两条路返回的是同一份 schema */
+function toModelInfo(m: RawModel & { modelId: string }): KiroModelInfo {
+  return {
+    modelId: m.modelId,
+    modelName: m.modelName,
+    description: m.description,
+    rate: m.rateMultiplier,
+    effort: parseModelEffort(m.additionalModelRequestFieldsSchema),
+    maxInputTokens: m.tokenLimits?.maxInputTokens,
+    maxOutputTokens: m.tokenLimits?.maxOutputTokens,
+    // 下面三个只用来让 /v1/models 返回得完整，反代的转换逻辑不依赖它们
+    inputTypes: Array.isArray(m.supportedInputTypes) ? m.supportedInputTypes : undefined,
+    rateUnit: m.rateUnit,
+    promptCaching: m.promptCaching?.supportsPromptCaching
+  }
+}
+
+/** API Key 的模型列表原始响应（不做字段映射），自检用 */
+export async function listRawApiKeyModels(apiKey: string, region: string): Promise<unknown> {
+  const res = await httpRequest(
+    `https://management.${region}.kiro.dev/List-Available-Models?origin=AI_EDITOR&maxResults=200`,
+    { method: 'GET', headers: { ...apiKeyHeaders(apiKey), accept: 'application/json' } }
+  )
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    throw new Error(`HTTP ${res.status}: ${body.slice(0, 200)}`)
+  }
+  return res.json<unknown>()
+}
+
+/**
+ * 用 Kiro API Key 拉模型列表：走管理面 management.{region}.kiro.dev，
+ * 与 Key 网关、API Key 页用的是同一个接口，返回的字段和 ListAvailableModels 一致。
+ */
+export async function listApiKeyModels(apiKey: string, region: string): Promise<KiroModelInfo[]> {
+  const data = (await listRawApiKeyModels(apiKey, region)) as {
+    defaultModel?: RawModel
+    models?: RawModel[]
+  }
+  const seen = new Set<string>()
+  const out: KiroModelInfo[] = []
+  for (const m of [data.defaultModel, ...(data.models ?? [])]) {
+    if (!m?.modelId || seen.has(m.modelId)) continue
+    seen.add(m.modelId)
+    out.push(toModelInfo(m as RawModel & { modelId: string }))
+  }
+  return out
 }
 
 /** 用一个确定的 profileArn 把分页拉完 */
@@ -157,13 +252,7 @@ async function fetchModelsWithArn(
   const add = (m?: RawModel): void => {
     if (!m?.modelId || seen.has(m.modelId)) return
     seen.add(m.modelId)
-    models.push({
-      modelId: m.modelId,
-      modelName: m.modelName,
-      description: m.description,
-      rate: m.rateMultiplier,
-      effort: parseModelEffort(m.additionalModelRequestFieldsSchema)
-    })
+    models.push(toModelInfo(m as RawModel & { modelId: string }))
   }
 
   do {
@@ -479,17 +568,13 @@ export async function streamApiKeyChat(
     additionalModelRequestFields: input.additionalModelRequestFields
   }
   const body = JSON.stringify(buildPayload(chatInput, undefined))
-  const url = `https://runtime.${region}.kiro.dev/generateAssistantResponse`
+  const url = apiKeyChatEndpoint(region)
   const startedAt = Date.now()
 
   try {
     const res = await httpStream(url, {
       method: 'POST',
-      headers: {
-        ...authHeaders(apiKey),
-        tokentype: 'API_KEY',
-        'x-amzn-codewhisperer-optout': 'true'
-      },
+      headers: apiKeyHeaders(apiKey),
       body,
       signal
     })

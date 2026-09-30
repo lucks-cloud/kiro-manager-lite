@@ -747,7 +747,7 @@ function previewOf(list: Account[]): string {
   margin-bottom: 0;
 }
 
-/* 原来写死了默认紫，换主题色后对不上，改成跟随主题色 */
+/* 跟随主题色，切换主题时保持一致 */
 .warn-row:hover {
   background: color-mix(in srgb, var(--kal-primary) 12%, var(--kal-code-bg));
 }

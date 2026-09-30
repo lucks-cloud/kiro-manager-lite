@@ -260,7 +260,7 @@ function trigger(key: ActionKey): void {
 /**
  * 整卡点击 = 勾选 / 取消勾选。
  *
- * 卡片上原本只有那个 16px 的复选框能点，勾几十个账号很折磨。
+ * 只靠那个 16px 的复选框的话，勾几十个账号很折磨。
  * 有自己语义的区域（身份区开详情、用量块开积分变化、右下角动作按钮、复选框本身）
  * 各自 @click.stop 拦下事件，剩下的空白与标签、额度、报错行都落到这里。
  */
@@ -357,7 +357,7 @@ function onCardClick(): void {
           {{ formatCreditsPair(props.account.usage.current, props.account.usage.limit, precision) }}
         </span>
         <!--
-          紧凑与列表模式都把标题那行整行去掉了，更新时间挪到这里接在总额右侧；
+          紧凑与列表模式不显示标题那行，更新时间放在这里接在总额右侧；
           重置日期在额度明细和详情抽屉里都有，这里让位给更有时效性的更新时间。
         -->
         <span
@@ -1017,8 +1017,8 @@ function onCardClick(): void {
 /*
  * 柱状条比紧凑模式再矮一点，整条看着更扁。
  * 其余排布（两行、order、display: contents）都走上面和紧凑模式共用的那几条 ——
- * 之前列表模式是「百分比 56px + 柱状条 + 总额 100px」的一行三段定宽，
- * 数值一长就顶到隔壁，换成两行后宽度自适应，不会错位。
+ * 不用「百分比 + 柱状条 + 总额」一行三段定宽，数值一长就会顶到隔壁；
+ * 分成两行后宽度自适应，不会错位。
  */
 .account-card.mode-list .usage-bars {
   height: 10px;

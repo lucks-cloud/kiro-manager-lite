@@ -470,6 +470,19 @@ export interface KiroModelInfo {
    * 只有部分模型有（Claude 系与 GPT 系），字段路径与枚举各不相同，详见 shared/modelSchema。
    */
   effort?: ModelEffort
+  /**
+   * 上游 tokenLimits.maxInputTokens：该模型的上下文窗口。
+   * 各模型差别很大（实测 164K ~ 1M），写客户端配置时必须按模型取，不能统一写死。
+   */
+  maxInputTokens?: number
+  /** 上游 tokenLimits.maxOutputTokens：单次输出上限（64K / 128K 两档） */
+  maxOutputTokens?: number
+  /** 上游 supportedInputTypes，如 ['TEXT', 'IMAGE']；/v1/models 据此给出 modalities */
+  inputTypes?: string[]
+  /** 上游 rateUnit，目前都是 'Credit' */
+  rateUnit?: string
+  /** 上游 promptCaching.supportsPromptCaching */
+  promptCaching?: boolean
 }
 
 export interface ApiKeyChatTestInput {
@@ -618,6 +631,416 @@ export interface ShellAutoApproveStatus {
   /** 完全无法自动处理时的原因 */
   blockedReason?: string
   targets: ShellAutoApproveTarget[]
+}
+
+// ============ 机器码 ============
+
+/**
+ * Kiro IDE 用到的各处设备标识。
+ * 缺失（文件或键不存在）时字段为 undefined，恢复时据此删除而不是写空串。
+ */
+export interface MachineIdSnapshot {
+  /** storage.json 的 telemetry.machineId：64 位十六进制，请求 UA 里带的就是它 */
+  machineId?: string
+  /** storage.json 的 telemetry.devDeviceId：UUID，是共享 deviceid 的缓存 */
+  devDeviceId?: string
+  /** storage.json 的 telemetry.sqmId：仅 Windows 有值，其余平台通常是空串 */
+  sqmId?: string
+  /** <Kiro 数据目录>/machineid 文件：UUID */
+  machineIdFile?: string
+  /** state.vscdb 里的 storage.serviceMachineId：UUID，设置同步用 */
+  serviceMachineId?: string
+  /**
+   * Microsoft DeveloperTools 共享 deviceid：VS Code 系 IDE 启动时从这里读 devDeviceId。
+   * macOS / Linux 是一个文件，Windows 在注册表 HKCU\SOFTWARE\Microsoft\DeveloperTools。
+   */
+  sharedDeviceId?: string
+}
+
+export type MachineIdField = keyof MachineIdSnapshot
+
+/** 每个标识的存放位置，供界面展示 */
+export interface MachineIdLocation {
+  field: MachineIdField
+  label: string
+  /** 文件路径或注册表路径 */
+  path: string
+}
+
+export interface MachineIdBackup {
+  savedAt: number
+  ids: MachineIdSnapshot
+}
+
+export interface MachineIdStatus {
+  current: MachineIdSnapshot
+  /** 原始机器码备份；首次重置前自动生成，之后的重置不会覆盖它 */
+  backup: MachineIdBackup | null
+  locations: MachineIdLocation[]
+  /** 当前与备份完全一致，恢复没有意义 */
+  matchesBackup: boolean
+  /** 没检测到 Kiro 数据目录，说明本机没装过或没启动过 Kiro */
+  kiroMissing: boolean
+}
+
+/** 重置 / 恢复的结果 */
+export interface MachineIdActionResult {
+  status: MachineIdStatus
+  /** 操作前 IDE 在运行，已先关闭再写入 */
+  ideClosed: boolean
+  /** 写入后已重新拉起 IDE */
+  ideRestarted: boolean
+  /** 个别位置写入失败（例如 Windows 注册表无权限），其余已生效 */
+  warnings: string[]
+}
+
+// ============ 本地反代 ============
+
+/** 凭证来源：账号管理里的 OAuth 账号，或 API Key 管理里的 Kiro API Key（ksk_） */
+export type ProxyAccountSource = 'account' | 'apiKey'
+/**
+ * 使用策略，三种都在选出的范围里按请求轮询：
+ *  - roundRobin：全部可用的账号 / Key
+ *  - group：指定分组里的
+ *  - selected：指定的那几个（可多选）
+ */
+export type ProxyAccountMode = 'roundRobin' | 'group' | 'selected'
+/** 上游端点：auto 先 CodeWhisperer 失败再 Amazon Q */
+export type ProxyEndpoint = 'auto' | 'codewhisperer' | 'amazonq'
+/**
+ * 模型策略：client 用客户端请求的模型（按映射表转换）。
+ * force（一律用默认模型）界面上不提供，读取配置时会被归一成 client，
+ * 类型里保留只是为了能读懂旧版本存下的值。
+ */
+export type ProxyModelMode = 'client' | 'force'
+
+export interface ProxyConfig {
+  port: number
+  /** 只监听本机；打开后才监听 0.0.0.0，局域网可访问 */
+  allowLan: boolean
+  /** 客户端访问反代要带的密钥（Authorization: Bearer / x-api-key） */
+  apiKey: string
+  /** 默认 Key 在「API Key 管理」里显示的名称 */
+  defaultKeyName: string
+  /** 默认 Key 的积分额度，0 为不限；用完后返回 429，和自定义 Key 一样 */
+  defaultKeyCreditLimit: number
+  requireApiKey: boolean
+  accountSource: ProxyAccountSource
+  accountMode: ProxyAccountMode
+  /** 来源为账号时：group 策略选中的账号分组 */
+  groupIds: string[]
+  /** 来源为账号时：selected 策略选中的账号 */
+  accountIds: string[]
+  /** 来源为 API Key 时：group 策略选中的 Key 分组（与账号分组是两套，分开存，切换来源时互不覆盖） */
+  keyGroupIds: string[]
+  /** 来源为 API Key 时：selected 策略选中的 Key */
+  keyIds: string[]
+  defaultModel: string
+  /**
+   * 默认模型的推理档位（low / medium / high / xhigh / max，GPT 系另有 none）。
+   * 空串表示不带该字段、用上游默认档位。取值必须在该模型 schema 的枚举里，见 shared/modelSchema。
+   */
+  defaultEffort: string
+  modelMode: ProxyModelMode
+  endpoint: ProxyEndpoint
+  /**
+   * 工具执行模式：开 = 反代托管执行联网搜索（给模型挂 web_search，调用时由反代打 Kiro 的搜索、结果回灌）；
+   * 关 = 纯客户端执行，反代不注入、不代执行任何工具，客户端声明什么模型就只看到什么。
+   * 这是我们反代里唯一一个由反代自己执行的工具，所以开关落在它身上才有实际意义。
+   */
+  managedToolExecution: boolean
+  /** 禁用工具调用：去掉请求里全部工具定义（也不注入搜索），只剩纯对话 */
+  disableTools: boolean
+  /**
+   * 记录日志：关掉后请求照常处理、统计照常累计，但不进请求日志、不写逐条请求的应用日志。
+   * 失败告警仍然写：出了问题总得有地方能查。
+   */
+  logRequests: boolean
+  /** 流式日志：每个请求结束后往应用日志写一行流式事件摘要（文本块、推理块、工具调用各多少），排查用 */
+  logStreamEvents: boolean
+  /**
+   * 发往 Kiro 的请求体上限（KB）。超了先截断最旧的超长历史消息，还不够再从最旧的历史整条丢。
+   * 上游对体积有硬限制，超了直接 400。
+   */
+  payloadLimitKB: number
+  /**
+   * 自动重试总开关。关闭时请求失败直接报给客户端，不重发；
+   * 额度耗尽、被封、凭证失效这类「这个号本来就用不了」的仍会跳到下一个，那是选号不是重试。
+   */
+  retryEnabled: boolean
+  /**
+   * 每个账号（Key）上的重试次数：同一个号先重发这么多次，仍失败再静默换下一个号，
+   * 在新号上同样最多重发这么多次，直到池子里的号都试过。0 表示不在同一个号上重发、失败即换号。
+   */
+  maxRetries: number
+  /** 每次重发前的等待（ms） */
+  retryDelayMs: number
+  /** 应用启动时自动启动反代 */
+  autoStart: boolean
+}
+
+export const DEFAULT_PROXY_CONFIG: ProxyConfig = {
+  port: 8990,
+  allowLan: false,
+  apiKey: '',
+  defaultKeyName: '默认',
+  defaultKeyCreditLimit: 0,
+  requireApiKey: true,
+  accountSource: 'account',
+  accountMode: 'roundRobin',
+  groupIds: [],
+  accountIds: [],
+  keyGroupIds: [],
+  keyIds: [],
+  defaultModel: 'claude-sonnet-4.5',
+  defaultEffort: '',
+  modelMode: 'client',
+  endpoint: 'auto',
+  managedToolExecution: true,
+  disableTools: false,
+  logRequests: true,
+  logStreamEvents: false,
+  /*
+   * 150MB，和 Kiro-account-manager 代码里实际生效的默认值一致（它的界面默认值也是这个）。
+   * 这么大基本不会触发裁剪，大图片、长上下文原样发给上游；
+   * 真遇到上游因体积 400，再调小（900KB 是实测一直稳定的保守值）。
+   */
+  payloadLimitKB: 153_600,
+  retryEnabled: true,
+  maxRetries: 3,
+  retryDelayMs: 500,
+  autoStart: false
+}
+
+/** 载荷上限的可调范围（KB）：太小连系统提示都放不下，太大上游一样会拒 */
+export const PAYLOAD_LIMIT_MIN_KB = 256
+export const PAYLOAD_LIMIT_MAX_KB = 204_800
+
+export interface ProxyStatus {
+  running: boolean
+  port: number
+  /** 给客户端用的根地址，如 http://127.0.0.1:8990 */
+  baseUrl: string
+  startedAt?: number
+  error?: string
+  requests: number
+  succeeded: number
+  failed: number
+  credits: number
+  /** 成功请求的输入 / 输出 token 累计；界面上的「消耗 Tokens」是两者之和 */
+  inputTokens: number
+  outputTokens: number
+}
+
+export type ProxyProtocol = 'anthropic' | 'openai' | 'responses' | 'gemini'
+
+/** 一条请求日志；流式期间会多次推送同一 id 的更新 */
+/** 请求输入里出现的内容类型 */
+export type ProxyInputType = 'text' | 'image' | 'toolResult'
+
+/** 模型输出里出现的内容类型；webSearch 是反代代为执行的搜索 */
+export type ProxyOutputType = 'text' | 'thinking' | 'toolUse' | 'webSearch'
+
+export interface ProxyLogEntry {
+  id: number
+  at: number
+  protocol: ProxyProtocol
+  path: string
+  stream: boolean
+  /** 客户端请求的模型 */
+  model: string
+  /** 实际发给 Kiro 的模型 */
+  kiroModel: string
+  /** 实际使用的推理档位；没带该字段（用上游默认）时为空 */
+  effort?: string
+  accountId?: string
+  accountEmail?: string
+  /** 客户端用的是哪个反代 API Key（名称）；关掉校验且没带 Key 时为空 */
+  keyName?: string
+  /** 客户端带来的完整 Key 值：详情里要能认出、复制实际用的是哪串，名称可能被改过或重名 */
+  keyValue?: string
+  state: 'pending' | 'streaming' | 'success' | 'error'
+  httpStatus?: number
+  /** 总尝试次数（含首次） */
+  attempts: number
+  durationMs?: number
+  firstTokenMs?: number
+  inputTokens?: number
+  outputTokens?: number
+  /** 服务端 meteringEvent 给出的积分消耗 */
+  credits?: number
+  toolCalls?: number
+  /** 反代代为执行的联网搜索次数（Codex 的 web_search 是托管工具，由反代自己搜） */
+  webSearches?: number
+  /**
+   * 这一轮客户端发来的内容类型（取最后一条 user 消息）。
+   * 只记类型不记内容：源码、密钥这些不该因为一条日志落到本地磁盘上。
+   */
+  inputTypes: ProxyInputType[]
+  /** 模型这一轮产出的内容类型 */
+  outputTypes: ProxyOutputType[]
+  error?: string
+  /** 重试过程说明，如「账号 A 403，换账号 B」 */
+  retries: string[]
+}
+
+// ============ 反代的多 API Key ============
+
+/** 默认 Key 在列表与用量里用的固定 id；它的明文存在 ProxyConfig.apiKey */
+export const PROXY_DEFAULT_KEY_ID = 'default'
+
+/**
+ * 自定义的反代 API Key。
+ *
+ * 和 ProxyConfig.apiKey（默认 Key）的分工：默认 Key 是「一键写入」写进各客户端的那一个，
+ * 自定义 Key 用来分给别的工具 / 别人，各自限额、各自统计。
+ */
+export interface ProxyApiKey {
+  id: string
+  name: string
+  /** 明文。只存在本机加密的 electron-store 里，所以列表里可以随时查看与复制 */
+  key: string
+  /** 积分额度上限；0 表示不限 */
+  creditLimit: number
+  /** 停用后请求一律 401，但保留统计 */
+  enabled: boolean
+  createdAt: number
+  /** 默认 Key 为 true：不能删除、不设额度 */
+  isDefault?: boolean
+}
+
+/** 一组累计量 */
+export interface ProxyKeyStats {
+  requests: number
+  failed: number
+  credits: number
+  inputTokens: number
+  outputTokens: number
+}
+
+/** 一条用量明细 */
+export interface ProxyKeyUsageRecord {
+  at: number
+  model: string
+  protocol: ProxyProtocol
+  ok: boolean
+  credits: number
+  inputTokens: number
+  outputTokens: number
+  durationMs: number
+}
+
+/** 某个 Key 的完整用量 */
+export interface ProxyKeyUsage {
+  keyId: string
+  total: ProxyKeyStats
+  /** 按实际发给 Kiro 的模型汇总 */
+  byModel: Record<string, ProxyKeyStats>
+  /** 按本地日期（YYYY-MM-DD）汇总，画每日折线用 */
+  byDay: Record<string, ProxyKeyStats>
+  /** 最近的明细，新的在前，有上限 */
+  recent: ProxyKeyUsageRecord[]
+  lastUsedAt?: number
+}
+
+/** 列表里的一行：Key 本身 + 总计，不带明细，避免列表一刷就搬几千条记录过 IPC */
+export interface ProxyApiKeyView extends ProxyApiKey {
+  total: ProxyKeyStats
+  lastUsedAt?: number
+}
+
+/** 按账号累计的反代用量，持久化 */
+export interface ProxyAccountUsage {
+  accountId: string
+  email: string
+  requests: number
+  failed: number
+  credits: number
+  lastUsedAt: number
+  /** 以下三项可选：旧版本存下的用量没有它们，读的时候按 0 算 */
+  inputTokens?: number
+  outputTokens?: number
+  /** 所有请求的耗时之和，/admin/stats 用它算平均响应时间 */
+  totalResponseMs?: number
+}
+
+/**
+ * 从账号拉回来的模型列表缓存。
+ * 反代的 /v1/models、模型映射、Codex 模型目录、界面下拉都以它为准，不要写死。
+ */
+export interface ProxyModelCache {
+  models: KiroModelInfo[]
+  fetchedAt: number
+  /** 用哪个账号拉的；不同账号（订阅档位）能用的模型可能不同 */
+  accountId: string
+  accountEmail: string
+}
+
+/**
+ * 可一键接入的桌面 agent。
+ * codex 是命令行版（走独立 profile），codexApp 是桌面版（只认全局默认 provider）。
+ * cursor 不写入文件（它的配置在 UI 里手动填），只提供复制信息的卡片。
+ */
+export type ProxyClientTarget =
+  | 'claudeCode'
+  | 'claudeApp'
+  | 'codex'
+  | 'codexApp'
+  | 'cursor'
+  | 'vscode'
+  /** DeepSeek Harness 命令行版（dsh web），用我们自己的 profile */
+  | 'deepseek'
+  /** DeepSeek Harness 桌面版，读的是它固定的 desktop profile */
+  | 'deepseekApp'
+  /** 腾讯 WorkBuddy 桌面版，读 ~/.workbuddy/models.json 里的自定义模型 */
+  | 'workbuddy'
+
+export interface ProxyClientState {
+  target: ProxyClientTarget
+  /** 配置文件路径（多个时用换行连接） */
+  paths: string[]
+  /** 目标应用当前是否在运行：决定按钮显示「重启」还是「打开」 */
+  appRunning?: boolean
+  /** 本机是否装了这个客户端。没装时禁掉写入，免得给不存在的客户端造配置文件 */
+  installed: boolean
+  /** 已写入本应用的配置 */
+  applied: boolean
+  /** 有写入前的原始备份，可以还原 */
+  hasBackup: boolean
+  /** 写入后要用的启动命令，为空表示无需额外参数 */
+  command?: string
+  /** 检测到的隐患，例如全局配置被别的工具改过 */
+  warning?: string
+}
+
+// ============ 网络检测 ============
+
+/** 当前出口 IP 信息；请求走应用的代理设置，反映的是 Kiro 请求实际的出口 */
+export interface IpInfo {
+  ip: string
+  country?: string
+  countryCode?: string
+  region?: string
+  city?: string
+  /** 运营商 / 机房，如 AS13335 Cloudflare */
+  org?: string
+  timezone?: string
+  /** 数据来源，便于用户判断可信度 */
+  source: string
+}
+
+/** 网站连通性测试目标；具体地址由主进程决定，渲染层只传标识 */
+export type SiteTestId = 'github' | 'google' | 'youtube' | 'kiro' | 'amazon'
+
+export interface SiteTestResult {
+  id: SiteTestId
+  url: string
+  /** 收到任何 HTTP 响应都算连通（403 / 429 也说明网络是通的） */
+  ok: boolean
+  status?: number
+  /** 从发起请求到收到响应头的耗时 */
+  latencyMs?: number
+  error?: string
 }
 
 /** GitHub Release 检查更新结果 */

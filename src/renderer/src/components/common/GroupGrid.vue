@@ -32,7 +32,7 @@ const menuOpenId = ref('')
 /**
  * 全程用指针事件实现，不用 HTML5 的 draggable。
  *
- * 之前那版走的是「长按后把 :draggable 置 true」，行不通：Chromium 在 mousedown
+ * 「长按后把 :draggable 置 true」的做法行不通：Chromium 在 mousedown
  * 那一刻就决定了这次手势是不是拖拽，等 220ms 之后再改属性，dragstart 根本不触发。
  * 所以这里自己记录按下位置、超时进入拖拽态，位移全部交给 transform。
  *

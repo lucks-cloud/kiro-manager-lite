@@ -181,7 +181,7 @@ export const SUBSCRIPTION_META: Record<SubscriptionType, { text: string; color: 
   Pro: { text: 'Pro', color: 'blue' },
   Pro_Plus: { text: 'Pro+', color: 'purple' },
   Pro_Max: { text: 'Pro Max', color: 'magenta' },
-  // Enterprise 从订阅档位移除后 gold 空了出来，Power 沿用它，与 API Key 页原本的配色一致
+  // Power 用 gold，与 API Key 页的配色一致
   Power: { text: 'Power', color: 'gold' },
   Teams: { text: 'Teams', color: 'cyan' },
   // 学生号：接口标题是 KIRO STUDENT，这里与其余档位一样用英文原名

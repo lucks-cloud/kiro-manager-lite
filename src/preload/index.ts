@@ -104,7 +104,6 @@ const api = {
   readLocalKiroCredentials: () => invoke('kiro:read-local-credentials'),
   getActiveKiroToken: () => invoke('kiro:get-active-token'),
   switchAccount: (input: unknown) => invoke('kiro:switch', input),
-  isKiroIdeRunning: () => invoke('kiro:ide-running'),
   restartKiroIde: () => invoke('kiro:restart-ide'),
   logoutKiro: () => invoke('kiro:logout'),
 
@@ -142,7 +141,6 @@ const api = {
   /** 打包导出：多个文件装进一个 zip */
   exportToZip: (bundle: unknown, filename: string) =>
     invoke('file:export-zip', bundle, filename),
-  importFromFile: () => invoke('file:import'),
   writeClipboard: (text: string) => clipboard.writeText(text),
 
   // 设置 / 应用
@@ -157,6 +155,47 @@ const api = {
   disableShellAutoApprove: () => invoke('tools:shell-approve-disable'),
   revealShellApproveTarget: (kind: 'trustedCommands' | 'permissionsYaml') =>
     invoke('tools:shell-approve-reveal', kind),
+
+  // 常用工具：机器码
+  getMachineIdStatus: () => invoke('tools:machine-id-status'),
+  resetMachineId: () => invoke('tools:machine-id-reset'),
+  restoreMachineId: () => invoke('tools:machine-id-restore'),
+  revealMachineIdLocation: (field: string) => invoke('tools:machine-id-reveal', field),
+
+  // 常用工具：网络检测
+  getIpInfo: () => invoke('tools:ip-info'),
+  testSite: (id: string) => invoke('tools:site-test', id),
+
+  // 本地反代
+  getProxyState: () => invoke('proxy:state'),
+  saveProxyConfig: (patch: unknown) => invoke('proxy:save-config', patch),
+  startProxy: () => invoke('proxy:start'),
+  stopProxy: () => invoke('proxy:stop'),
+  clearProxyLogs: () => invoke('proxy:clear-logs'),
+  resetProxyStats: () => invoke('proxy:reset-stats'),
+  listProxyKeys: () => invoke('proxy:keys'),
+  createProxyKey: (input: unknown) => invoke('proxy:key-create', input),
+  updateProxyKey: (id: string, patch: unknown) => invoke('proxy:key-update', id, patch),
+  deleteProxyKey: (id: string) => invoke('proxy:key-delete', id),
+  setDefaultProxyKey: (id: string) => invoke('proxy:key-set-default', id),
+  getProxyKeyUsage: (id: string) => invoke('proxy:key-usage', id),
+  resetProxyKeyUsage: (id: string) => invoke('proxy:key-reset-usage', id),
+  regenerateProxyDefaultKey: () => invoke('proxy:regenerate-default-key'),
+  tryProxyEndpoint: (input: unknown) => invoke('proxy:try-endpoint', input),
+  getProxyClientStates: () => invoke('proxy:client-states'),
+  refreshProxyModels: () => invoke('proxy:refresh-models'),
+  applyProxyClient: (target: string) => invoke('proxy:client-apply', target),
+  restoreProxyClient: (target: string) => invoke('proxy:client-restore', target),
+  revealProxyClientFile: (target: string, index: number) =>
+    invoke('proxy:client-reveal', target, index),
+  openProxyClient: (target: string) => invoke('proxy:client-open', target),
+  /** 写入客户端配置时的进度（Cursor 首次要装 CCursor） */
+  onProxyClientProgress: (cb: (payload: unknown) => void) =>
+    subscribe('proxy:client-progress', cb),
+  /** 反代状态变化（启停、统计） */
+  onProxyStatus: (cb: (status: unknown) => void) => subscribe('proxy:status', cb),
+  /** 反代请求日志新增或更新；payload 为 null 表示日志已清空 */
+  onProxyLog: (cb: (entry: unknown) => void) => subscribe('proxy:log', cb),
 
   // 系统日志
   queryLogs: (query: unknown) => invoke('log:query', query),

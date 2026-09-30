@@ -19,7 +19,7 @@ const props = defineProps<{ keyEntry: KeyEntry | null }>()
 const emit = defineEmits<{ close: [] }>()
 const keysStore = useKeysStore()
 const settingsStore = useSettingsStore()
-const DEFAULT_MESSAGE = '你的具体模型名称，以及具体时间，打印出来！'
+const DEFAULT_MESSAGE = '你的具体模型名称，以及当前具体时间，打印出来！'
 
 const models = ref<KeyModelInfo[]>([])
 const modelsLoading = ref(false)

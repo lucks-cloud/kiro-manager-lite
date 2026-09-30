@@ -1,6 +1,5 @@
 import { acceptHMRUpdate, defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { v4 as uuidv4 } from 'uuid'
 import {
   DEFAULT_KEY_GATEWAY_DATA,
   type AccountGroup,
@@ -152,6 +151,8 @@ export const useKeysStore = defineStore('keys', () => {
     const nextStats = { ...gatewayStats.value }
     delete nextStats[id]
     gatewayStats.value = nextStats
+    // 本地改过，下次轮询不论内容如何都要以主进程为准
+    lastStatsText = ''
     return null
   }
 
@@ -204,7 +205,7 @@ export const useKeysStore = defineStore('keys', () => {
     const existing = groups.value.find((group) => group.name === label)
     if (existing) return { group: existing }
 
-    const group: AccountGroup = { id: uuidv4(), name: label, order: groups.value.length }
+    const group: AccountGroup = { id: crypto.randomUUID(), name: label, order: groups.value.length }
     const error = await commitGroups([...groups.value, group])
     return error ? { error } : { group }
   }
@@ -338,14 +339,24 @@ export const useKeysStore = defineStore('keys', () => {
    * 网关调用统计。仅在网关运行期间有意义，关闭后主进程会清空。
    * 用轮询而非推送：这些数字变化很快，界面上没必要逐条实时刷。
    */
+  let lastStatsText = ''
+
   async function refreshStats(): Promise<void> {
     const res = await window.api.getKeyGatewayStats()
-    if (res.success && res.data) gatewayStats.value = res.data
+    if (!res.success || !res.data) return
+    // 每 3 秒轮询一次，空闲时结果几乎总是一样；内容没变就不换对象，免得整页跟着重渲染
+    const text = JSON.stringify(res.data)
+    if (text === lastStatsText) return
+    lastStatsText = text
+    gatewayStats.value = res.data
   }
 
   async function resetStats(keyId?: string): Promise<void> {
     const res = await window.api.resetKeyGatewayStats(keyId)
-    if (res.success && res.data) gatewayStats.value = res.data
+    if (res.success && res.data) {
+      gatewayStats.value = res.data
+      lastStatsText = ''
+    }
   }
 
   function startStatsPolling(): void {

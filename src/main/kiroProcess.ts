@@ -13,6 +13,16 @@ import type { RestartIdeResult } from '../shared/types'
 /** 每轮等待 IDE 退出的间隔 */
 const QUIT_POLL_MS = 300
 
+/**
+ * Linux 上匹配 Kiro IDE 进程的命令行。
+ *
+ * 不能用裸的 `kiro`：本应用在 Linux 上的可执行文件叫 kiro-account-lite，
+ * `pgrep -f kiro` 会把自己算进去，`pkill -f kiro` 更会把自己一起杀掉。
+ * 这里要求 kiro 是一个完整的路径段（/usr/share/kiro/kiro、/opt/Kiro/kiro、AppImage 挂载点下的 kiro），
+ * 后面紧跟空格或行尾。故意区分大小写，避免命中「/opt/Kiro Manager Lite/...」这类安装目录。
+ */
+const LINUX_KIRO_PATTERN = '(^|/)kiro( |$)'
+
 /** execFile 的 promise 版：只关心 stdout，失败不抛 */
 function run(cmd: string, args: string[], timeout = 8000): Promise<{ ok: boolean; stdout: string }> {
   return new Promise((resolve) => {
@@ -32,7 +42,7 @@ export async function isKiroRunning(): Promise<boolean> {
     const res = await run('tasklist', ['/FI', 'IMAGENAME eq Kiro.exe', '/NH'])
     return res.stdout.toLowerCase().includes('kiro.exe')
   }
-  const res = await run('pgrep', ['-f', 'kiro'])
+  const res = await run('pgrep', ['-f', LINUX_KIRO_PATTERN])
   return res.stdout.trim().length > 0
 }
 
@@ -48,7 +58,7 @@ async function quitKiro(): Promise<boolean> {
   } else if (process.platform === 'win32') {
     await run('taskkill', ['/IM', 'Kiro.exe'])
   } else {
-    await run('pkill', ['-f', 'kiro'])
+    await run('pkill', ['-f', LINUX_KIRO_PATTERN])
   }
 
   // 给 IDE 一点时间保存状态；超时后强杀，否则新实例会被旧实例接管
@@ -56,7 +66,7 @@ async function quitKiro(): Promise<boolean> {
 
   if (process.platform === 'darwin') await run('pkill', ['-f', 'Kiro.app/Contents/MacOS/'])
   else if (process.platform === 'win32') await run('taskkill', ['/F', '/IM', 'Kiro.exe'])
-  else await run('pkill', ['-9', '-f', 'kiro'])
+  else await run('pkill', ['-9', '-f', LINUX_KIRO_PATTERN])
 
   return waitUntil(kiroStopped, 10, QUIT_POLL_MS)
 }
@@ -71,7 +81,15 @@ function findKiroExecutable(): string | undefined {
           path.join(process.env.LOCALAPPDATA || '', 'Programs', 'kiro', 'Kiro.exe'),
           path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Kiro', 'Kiro.exe')
         ]
-      : ['/usr/bin/kiro', '/usr/local/bin/kiro', '/opt/Kiro/kiro', '/snap/bin/kiro']
+      : [
+          '/usr/bin/kiro',
+          '/usr/local/bin/kiro',
+          // deb / rpm 包的实际安装位置，/usr/bin/kiro 只是指向它的软链，个别发行版不建软链
+          '/usr/share/kiro/kiro',
+          '/opt/Kiro/kiro',
+          '/opt/kiro/kiro',
+          '/snap/bin/kiro'
+        ]
   return candidates.find((p) => p && fs.existsSync(p))
 }
 

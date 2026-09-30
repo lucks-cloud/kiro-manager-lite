@@ -26,7 +26,7 @@ const emit = defineEmits<{ close: [] }>()
 const settingsStore = useSettingsStore()
 const accountsStore = useAccountsStore()
 
-const DEFAULT_MESSAGE = '你的具体模型名称，以及具体时间，打印出来！'
+const DEFAULT_MESSAGE = '你的具体模型名称，以及当前具体时间，打印出来！'
 
 const models = ref<KiroModelInfo[]>([])
 const modelsLoading = ref(false)
@@ -109,8 +109,8 @@ async function ensureAccessToken(accountId: string): Promise<string> {
 /**
  * 拉取模型列表。
  *
- * 拉不到就直接把异常抛到界面上，不再拿一份硬编码的常用模型顶上去：
- * 那份兜底列表并不代表该账号真的有这些模型的权限，测出来的结论会有误导。
+ * 拉不到就直接把异常抛到界面上，不拿硬编码的常用模型顶上去：
+ * 兜底列表并不代表该账号真的有这些模型的权限，测出来的结论会有误导。
  */
 async function loadModels(): Promise<void> {
   const account = props.account

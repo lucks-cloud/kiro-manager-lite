@@ -304,7 +304,7 @@ function submit(): void {
   border-color: var(--kal-primary);
 }
 
-/* 选中态用很浅的主题色底，跟着 primaryColor 变，不再是灰块 */
+/* 选中态用很浅的主题色底，跟着 primaryColor 变 */
 .format-card.selected {
   border-color: var(--kal-primary);
   background: color-mix(in srgb, var(--kal-primary) 8%, transparent);

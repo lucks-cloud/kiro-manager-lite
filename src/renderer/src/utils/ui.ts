@@ -45,6 +45,8 @@ export function confirmDanger(options: {
   onOk: () => void | Promise<unknown>
   okButtonProps?: { type?: 'primary'; danger?: boolean }
   zIndex?: number
+  /** 点蒙层是否关闭；Modal.confirm 默认不关，叠在可点蒙层关闭的弹窗上时要保持一致 */
+  maskClosable?: boolean
   /** 关闭动画结束后回调，确认 / 取消都会走到；用于复位调用方的「忙」标记 */
   afterClose?: () => void
 }): void {
@@ -67,6 +69,7 @@ export function confirmDelete(options: {
   afterClose?: () => void
   /** 从 popover（1030）或自定义层级的弹窗里发起时必须传，否则确认框会被盖住 */
   zIndex?: number
+  maskClosable?: boolean
 }): void {
   confirmDanger({
     ...options,

@@ -233,7 +233,7 @@ export function discardGatewayStats(keyId: string): void {
   clearGatewayHistory(keyId)
 }
 
-/** 清空统计与历史：用户手动重置时调用。关闭网关不再清空，累计值要长期保留 */
+/** 清空统计与历史：仅在用户手动重置时调用。关闭网关不清空，累计值要长期保留 */
 export function resetGatewayStats(keyId?: string): void {
   if (keyId) recentByKey.delete(keyId)
   else recentByKey.clear()

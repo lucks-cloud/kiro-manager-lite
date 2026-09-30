@@ -636,7 +636,7 @@ function clearAll(): void {
 
 /*
  * 控件与右侧说明文字默认按基线对齐，说明文字会偏下。
- * 改成 flex 居中，让两者垂直对齐。
+ * 用 flex 居中，让两者垂直对齐。
  */
 .field-inline :deep(.ant-form-item-control-input-content) {
   display: flex;

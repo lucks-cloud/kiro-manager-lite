@@ -1,7 +1,7 @@
 // 用指定账号的凭证打开 Kiro 官网后台（带工具条的内置浏览器）
 //
 // 为什么不用系统浏览器的无痕窗口：那条路（browser.ts 的 openUrl）没法把凭证塞进去，
-// 打开只会停在登录页。这里改用应用内的一次性会话分区，把账号 cookie 注入后再加载页面，
+// 打开只会停在登录页。这里用应用内的一次性会话分区，把账号 cookie 注入后再加载页面，
 // 于是「用该账号身份进入后台」和「不碰用户自己的浏览器身份」两件事同时成立。
 //
 // 窗口结构：
@@ -139,8 +139,8 @@ export function setInAppLocale(locale?: string): void {
  * 一个页面上百个子资源就是上百次阻塞式往返，主进程稍有别的活干就全排在后面——
  * 这正是「同一台机器 Chrome 不卡、内置浏览器卡」的根源，Chrome 没有这一跳。
  *
- * 原先这里挂过 onBeforeSendHeaders 改写 UA / sec-ch-ua 并清理 Electron 字样。
- * UA 改用 session.setUserAgent + app.userAgentFallback 达成同样效果；
+ * 因此不要用 onBeforeSendHeaders 改写 UA / sec-ch-ua：
+ * UA 靠 session.setUserAgent + app.userAgentFallback 就能去掉 Electron 字样；
  * sec-ch-ua 由 Chromium 按真实内核自动生成，本身与我们声明的主版本一致，
  * 手工改写属于锦上添花，远不值得给所有请求加一跳。
  */
@@ -456,9 +456,8 @@ function pipeStateToBar(bar: WebContentsView, content: WebContentsView): void {
 /**
  * 把导航留在应用内。
  *
- * 之前只放行 kiro.dev、其余交给系统浏览器，于是点到支付页、AWS 文档这类站外链接
- * 就跳出应用，而系统浏览器里没有这份会话，流程直接断掉。
- * 现在 http(s) 一律用应用内新窗口承载，并对新窗口递归挂上同样的规则。
+ * 系统浏览器里没有这份会话，支付页、AWS 文档这类站外链接一旦交给它，流程就直接断掉，
+ * 所以 http(s) 一律用应用内新窗口承载，并对新窗口递归挂上同样的规则。
  *
  * 弹窗保持 action: 'allow'（原生窗口、没有工具条）而不是自己另开一个带工具条的窗口——
  * 换成 deny + 手动开窗会断掉 window.opener，而「用 Google 登录」这类流程
@@ -903,7 +902,7 @@ function portalCookies(account: Account, profileArn: string): { name: string; va
  *
  * 优先用账号已存的值。仅当 Enterprise 账号一次都没存过 ARN 时，才现场问一次
  * ListAvailableProfiles 补齐——否则这类账号打开官网只会停在登录页（stale）。
- * 失败或非 Enterprise 一律返回空串，行为与之前一致，不引入回归。
+ * 失败或非 Enterprise 一律返回空串，即不注入 ProfileArn cookie。
  */
 async function resolvePortalArn(account: Account): Promise<string> {
   const stored = account.profileArn || account.credentials.profileArn

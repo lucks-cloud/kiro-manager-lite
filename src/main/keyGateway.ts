@@ -12,12 +12,9 @@ import * as http from 'http'
 import * as https from 'https'
 import * as zlib from 'zlib'
 import { PassThrough } from 'stream'
-import * as fs from 'fs'
-import * as path from 'path'
-import * as crypto from 'crypto'
 import { URL } from 'url'
-import { app } from 'electron'
 import { log } from './logger'
+import { kiroAmzUserAgent, kiroUserAgent } from './kiroEndpoints'
 import {
   QUOTA_EXHAUSTED_REASONS,
   normalizeRetryStatuses,
@@ -40,36 +37,11 @@ const HOP_BY_HOP = [
   'upgrade'
 ]
 
-// 对齐 Kiro IDE 的签名，上游只在 UA 带 KiroIDE 标记时才放行生成请求
-const KIRO_VERSION = '0.9.2'
-const KIRO_SYSTEM = 'darwin#24.6.0'
-const KIRO_NODE = '22.21.1'
-
-let _machineId = ''
-/** 稳定的 64 位机器标识（持久化到 userData，跨重启不变） */
-function machineId(): string {
-  if (_machineId) return _machineId
-  try {
-    const file = path.join(app.getPath('userData'), 'key-gateway-machine-id')
-    if (fs.existsSync(file)) {
-      _machineId = fs.readFileSync(file, 'utf-8').trim()
-    }
-    if (!_machineId) {
-      _machineId = crypto.randomBytes(32).toString('hex')
-      fs.writeFileSync(file, _machineId, 'utf-8')
-    }
-  } catch {
-    _machineId = crypto.randomBytes(32).toString('hex')
-  }
-  return _machineId
-}
-
-function kiroUserAgent(): string {
-  return `aws-sdk-js/1.0.34 ua/2.1 os/${KIRO_SYSTEM} lang/js md/nodejs#${KIRO_NODE} api/codewhispererstreaming#1.0.34 m/E KiroIDE-${KIRO_VERSION}-${machineId()}`
-}
-function kiroXAmzUserAgent(): string {
-  return `aws-sdk-js/1.0.34 KiroIDE-${KIRO_VERSION}-${machineId()}`
-}
+/*
+ * UA 对齐 Kiro IDE：上游只在 UA 带 KiroIDE 标记时才放行生成请求。
+ * 版本号与机器码统一从 kiroEndpoints 取，保证网关、反代、测活发出的 UA 一致，
+ * 升级版本号时也只需改一处。
+ */
 
 function runtimeBase(region: string): string {
   return `https://runtime.${region}.kiro.dev`
@@ -227,6 +199,8 @@ function scrubProfileArn(node: unknown): boolean {
 }
 function stripProfileArnFromBody(bodyBuf: Buffer): Buffer {
   if (!bodyBuf || !bodyBuf.length) return bodyBuf
+  // 对话请求体可能有几 MB，字面上都没有这个键就不必整份解析再遍历
+  if (bodyBuf.indexOf('profileArn') < 0) return bodyBuf
   let j: unknown
   try {
     j = JSON.parse(bodyBuf.toString('utf8'))
@@ -265,7 +239,7 @@ function injectAuthHeaders(
   if (!uaKey || !/KiroIDE/i.test(String(headers[uaKey] || ''))) {
     headers[uaKey || 'user-agent'] = kiroUserAgent()
   }
-  if (!has('x-amz-user-agent')) headers['x-amz-user-agent'] = kiroXAmzUserAgent()
+  if (!has('x-amz-user-agent')) headers['x-amz-user-agent'] = kiroAmzUserAgent()
   if (!has('x-amzn-codewhisperer-optout')) headers['x-amzn-codewhisperer-optout'] = 'true'
   return headers
 }
@@ -503,6 +477,19 @@ function forwardGeneric(
     const cleanPath = (req.url || '').split('?')[0]
     const chat = isChatPath(cleanPath)
 
+    /*
+     * IDE 中途取消（关掉对话、切走）时要把上游请求一起断掉：
+     * 否则上游流会一直读到 300 秒超时，排队中的重试也照样发出去，白占连接和额度。
+     * 用 writableEnded 区分：正常转发完 res 也会 close，那时不能再动上游。
+     */
+    let current: http.ClientRequest | null = null
+    let clientGone = false
+    res.on('close', () => {
+      if (res.writableEnded) return
+      clientGone = true
+      current?.destroy()
+    })
+
     /**
      * 发起一次上游请求。attempt 从 1 开始，仅在命中可重试的限流时递增。
      *
@@ -511,6 +498,7 @@ function forwardGeneric(
      * 对 IDE 来说这次请求只是"慢了几秒"，不会中断对话。
      */
     const attempt = (n: number): void => {
+      if (clientGone) return
       // 本次尝试的发起时间：统计按它归入分钟桶，保证请求与结果落在同一桶
       const startedAt = Date.now()
       log(
@@ -632,7 +620,10 @@ function forwardGeneric(
           })
         }
       )
+      current = upReq
       upReq.on('error', (e) => {
+        // 是我们因为 IDE 断开而主动销毁的，不算上游失败，也没人可回复了
+        if (clientGone) return
         log('error', `[KeyGateway] !! [${label}] upstream error: ${e.message}`)
         recordResponse(credential.id, 0, chat, startedAt)
         if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'application/json' })
