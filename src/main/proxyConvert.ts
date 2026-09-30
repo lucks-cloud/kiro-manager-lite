@@ -102,6 +102,22 @@ export interface NormalizedRequest {
    */
   webSearch?: { maxUses: number }
   /**
+   * Claude Code 的 WebSearch 子请求要搜的词。
+   *
+   * Claude Code 的 WebSearch 不是自己去搜：它另发一个只挂了 Anthropic 服务端工具
+   * （type: web_search_20250305）的请求，指望 API 在服务端搜完，按 server_tool_use +
+   * web_search_tool_result 两种块把结果带回来，它再按块计数、取结果。我们只回文本的话它就显示
+   * 「Did 0 searches」，主对话的模型以为没搜到，转头去用别的工具重试。
+   * 识别到这种请求就不问模型，直接用 Kiro 的 MCP 搜索，按官方格式回（见 proxyServer.handleServerSearch）。
+   */
+  serverSearchQuery?: string
+  /**
+   * 客户端按 Anthropic 服务端工具声明了搜索（Claude 桌面版的联网搜索就是这样）。
+   * 搜索循环据此把每次搜索按 server_tool_use + web_search_tool_result 回给客户端，
+   * 它才能显示「搜索了什么、引用了哪些来源」，而不是只看到一段没有出处的回答。
+   */
+  serverSearch?: boolean
+  /**
    * Responses API 的工具来源：发给 Kiro 的扁平名 → 客户端原本的样子。
    * namespace 工具（MCP 分组）在 Kiro 那边只能是一个扁平名，回给客户端时要拆回
    * { namespace, name }；custom 工具的参数是整段文本，要还原成 custom_tool_call。
@@ -218,9 +234,14 @@ export function normalizeAnthropicRequest(body: Record<string, unknown>): Normal
           case 'text':
             texts.push(str(block.text))
             break
+          /*
+           * 历史里的思考内容不带回去（官方 API 对往轮的 thinking 也是直接丢弃）。
+           * 早先按 <thinking>…</thinking> 文本塞进助手消息，Kiro 那边没有结构化思考块，
+           * 模型就把它当成自己说过的正文、照着这个格式往下写，
+           * Claude Code 里于是出现正文开头一段「<thinking>Now search…</thinking>」。
+           */
           case 'thinking':
-            // 历史里的思考内容按普通文本带回去，Kiro 不接受结构化 thinking 块
-            if (str(block.thinking)) texts.push(`<thinking>${str(block.thinking)}</thinking>`)
+          case 'redacted_thinking':
             break
           case 'image': {
             const image = anthropicImage(block)
@@ -234,6 +255,24 @@ export function normalizeAnthropicRequest(body: Record<string, unknown>): Normal
               input: asRecord(block.input) ?? {}
             })
             break
+          /*
+           * 历史里的服务端搜索块：Kiro 不认这两种块，压成文本带回去，
+           * 否则模型看不到之前搜过什么、搜到了什么
+           */
+          case 'server_tool_use': {
+            const query = str(asRecord(block.input)?.query)
+            if (query) texts.push(`[web_search] ${query}`)
+            break
+          }
+          case 'web_search_tool_result': {
+            const hits = Array.isArray(block.content) ? block.content : []
+            const lines = hits
+              .map((hit) => asRecord(hit))
+              .filter((hit): hit is Record<string, unknown> => !!hit && hit.type === 'web_search_result')
+              .map((hit) => `- ${str(hit.title)} ${str(hit.url)}`)
+            if (lines.length) texts.push(`Search results:\n${lines.join('\n')}`)
+            break
+          }
           case 'tool_result': {
             const { text, images } = toolResultText(block.content)
             message.toolResults.push({
@@ -256,16 +295,34 @@ export function normalizeAnthropicRequest(body: Record<string, unknown>): Normal
   }
 
   const tools: NormTool[] = []
+  let serverSearch = false
   for (const raw of Array.isArray(body.tools) ? body.tools : []) {
     const tool = asRecord(raw)
     const name = str(tool?.name)
     if (!tool || !name) continue
+    // Anthropic 的服务端搜索工具没有 input_schema，换成我们自己那份（带 query 参数），模型才知道怎么调
+    if (str(tool.type).startsWith('web_search_')) {
+      serverSearch = true
+      tools.push(webSearchToolSpec())
+      continue
+    }
     tools.push({
       name,
       description: str(tool.description),
       schema: asRecord(tool.input_schema) ?? {}
     })
   }
+
+  /*
+   * 只挂了服务端搜索、第一条消息是 Claude Code 固定句式的，就是 WebSearch 子请求（原因见 serverSearchQuery）。
+   * 句式对不上的（别的客户端正常对话里带了服务端搜索）不走捷径，照常交给模型，由搜索循环处理。
+   */
+  const SEARCH_PREFIX = 'Perform a web search for the query:'
+  const firstText = messages[0]?.text.trim() ?? ''
+  const serverSearchQuery =
+    serverSearch && tools.length === 1 && firstText.startsWith(SEARCH_PREFIX)
+      ? firstText.slice(SEARCH_PREFIX.length).trim() || undefined
+      : undefined
 
   const thinkingField = asRecord(body.thinking)
   const outputConfig = asRecord(body.output_config)
@@ -281,7 +338,9 @@ export function normalizeAnthropicRequest(body: Record<string, unknown>): Normal
     thinkingBudget:
       thinkingField?.type === 'enabled' && typeof thinkingField.budget_tokens === 'number'
         ? thinkingField.budget_tokens
-        : undefined
+        : undefined,
+    serverSearchQuery,
+    serverSearch
   }
 }
 
@@ -719,6 +778,21 @@ export interface StreamUsage {
   outputTokens: number
 }
 
+/** 一次服务端搜索，按 Anthropic 官方的结果格式 */
+export interface ServerSearchBlock {
+  /** srvtoolu_ 开头，和官方一致 */
+  id: string
+  query: string
+  results: {
+    type: 'web_search_result'
+    title: string
+    url: string
+    /** 官方是加密的页面内容，客户端原样回传、不解析；我们放摘要 */
+    encrypted_content: string
+    page_age: string | null
+  }[]
+}
+
 /** SSE 写入的公共部分 */
 abstract class SseWriter {
   protected started = false
@@ -837,12 +911,39 @@ export class AnthropicSseWriter extends SseWriter {
     this.writeEvent('content_block_stop', { type: 'content_block_stop', index: this.blockIndex })
   }
 
-  finish(stopReason: string, usage: StreamUsage): void {
+  /**
+   * 服务端搜索的两个块：server_tool_use（搜了什么）+ web_search_tool_result（搜到什么）。
+   * 格式照官方 API：server_tool_use 的 input 在 start 里一次给全，不走 input_json_delta；
+   * 结果块同理整块给出。Claude Code 靠这两个块给搜索计数、取结果。
+   */
+  serverSearch(block: ServerSearchBlock): void {
+    this.closeBlock()
+    this.blockIndex++
+    this.writeEvent('content_block_start', {
+      type: 'content_block_start',
+      index: this.blockIndex,
+      content_block: { type: 'server_tool_use', id: block.id, name: 'web_search', input: { query: block.query } }
+    })
+    this.writeEvent('content_block_stop', { type: 'content_block_stop', index: this.blockIndex })
+    this.blockIndex++
+    this.writeEvent('content_block_start', {
+      type: 'content_block_start',
+      index: this.blockIndex,
+      content_block: { type: 'web_search_tool_result', tool_use_id: block.id, content: block.results }
+    })
+    this.writeEvent('content_block_stop', { type: 'content_block_stop', index: this.blockIndex })
+  }
+
+  finish(stopReason: string, usage: StreamUsage & { webSearchRequests?: number }): void {
     this.closeBlock()
     this.writeEvent('message_delta', {
       type: 'message_delta',
       delta: { stop_reason: stopReason, stop_sequence: null },
-      usage: { input_tokens: usage.inputTokens, output_tokens: usage.outputTokens }
+      usage: {
+        input_tokens: usage.inputTokens,
+        output_tokens: usage.outputTokens,
+        ...(usage.webSearchRequests ? { server_tool_use: { web_search_requests: usage.webSearchRequests } } : {})
+      }
     })
     this.writeEvent('message_stop', { type: 'message_stop' })
   }
@@ -938,6 +1039,8 @@ export function openAiFinishReason(stopReason: string): string {
 // ============ 非流式响应 ============
 
 export interface CollectedResult {
+  /** 服务端搜索块（Anthropic），非流式时拼进 content；流式时已经边搜边发了 */
+  searchBlocks?: ServerSearchBlock[]
   text: string
   thinking: string
   toolCalls: StreamToolCall[]
@@ -948,6 +1051,10 @@ export interface CollectedResult {
 export function buildAnthropicResponse(model: string, result: CollectedResult): Record<string, unknown> {
   const content: Record<string, unknown>[] = []
   if (result.thinking) content.push({ type: 'thinking', thinking: result.thinking })
+  for (const block of result.searchBlocks ?? []) {
+    content.push({ type: 'server_tool_use', id: block.id, name: 'web_search', input: { query: block.query } })
+    content.push({ type: 'web_search_tool_result', tool_use_id: block.id, content: block.results })
+  }
   if (result.text) content.push({ type: 'text', text: result.text })
   for (const call of result.toolCalls) {
     content.push({ type: 'tool_use', id: call.toolUseId, name: call.name, input: call.input })
@@ -963,7 +1070,11 @@ export function buildAnthropicResponse(model: string, result: CollectedResult): 
     content,
     stop_reason: result.stopReason,
     stop_sequence: null,
-    usage: { input_tokens: result.usage.inputTokens, output_tokens: result.usage.outputTokens }
+    usage: {
+      input_tokens: result.usage.inputTokens,
+      output_tokens: result.usage.outputTokens,
+      ...(result.searchBlocks?.length ? { server_tool_use: { web_search_requests: result.searchBlocks.length } } : {})
+    }
   }
 }
 
@@ -1127,8 +1238,18 @@ export function normalizeResponsesRequest(body: Record<string, unknown>): Normal
       continue
     }
 
-    if (
-type === 'function_call' || type === 'custom_tool_call') {
+    // 往轮的托管搜索：Kiro 没有这种项，压成一句文本，模型才知道之前搜过什么
+    if (type === 'web_search_call') {
+      const query = str(asRecord(item.action)?.query)
+      if (query) {
+        const message = emptyMessage('assistant')
+        message.text = `[web_search] ${query}`
+        push(message)
+      }
+      continue
+    }
+
+    if (type === 'function_call' || type === 'custom_tool_call') {
       const message = emptyMessage('assistant')
       let input: Record<string, unknown> = {}
       if (type === 'custom_tool_call') {
@@ -1386,6 +1507,22 @@ export class ResponsesSseWriter extends SseWriter {
     }
     this.emit('response.output_item.done', { output_index: index, item: done })
     this.output.push(done)
+  }
+
+  /**
+   * 一次反代代为执行的搜索，按 OpenAI 托管工具的原生形状（web_search_call）告诉 Codex。
+   * Codex 据此在界面上显示「Searched: …」，否则用户看不出模型到底搜没搜。
+   * 只用 search 这一种 action，它是 Codex 反序列化里最早支持的那种。
+   */
+  webSearchCall(query: string): void {
+    this.closeReasoning()
+    this.closeMessage()
+    const index = this.outputIndex++
+    const id = `ws_${randomUUID().replace(/-/g, '')}`
+    const item = { type: 'web_search_call', id, status: 'completed', action: { type: 'search', query } }
+    this.emit('response.output_item.added', { output_index: index, item: { ...item, status: 'in_progress' } })
+    this.emit('response.output_item.done', { output_index: index, item })
+    this.output.push(item)
   }
 
   finish(_stopReason: string, usage: StreamUsage): void {

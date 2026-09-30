@@ -30,6 +30,7 @@ import {
   normalizeGeminiRequest,
   normalizeStopReason,
   webSearchToolSpec,
+  type ServerSearchBlock,
   MAX_WEB_SEARCH_ROUNDS,
   WEB_SEARCH_TOOL,
   type CollectedResult,
@@ -49,6 +50,7 @@ import {
   poolOptionsFrom
 } from './proxyUpstream'
 import { formatSearchResults, kiroWebSearch, type WebSearchResult } from './kiroWebSearch'
+import { randomUUID } from 'crypto'
 import { listRawApiKeyModels, listRawKiroModels } from './kiroChat'
 import { checkProxyKey, flushProxyKeyUsage, recordKeyUsage, type KeyCheck } from './proxyKeys'
 import {
@@ -839,8 +841,134 @@ interface StreamEventCounts {
   searchCalls: number
 }
 
+/** 搜索结果换成 Anthropic 的 web_search_result；官方的 page_age 形如「September 25, 2026」 */
+function toServerSearchBlock(query: string, results: WebSearchResult[]): ServerSearchBlock {
+  return {
+    id: `srvtoolu_${randomUUID().replace(/-/g, '')}`,
+    query,
+    results: results.map((r) => ({
+      type: 'web_search_result' as const,
+      title: r.title,
+      url: r.url,
+      encrypted_content: r.snippet ?? '',
+      page_age: r.publishedDate
+        ? new Date(r.publishedDate).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+        : null
+    }))
+  }
+}
+
+/**
+ * Claude Code 的 WebSearch 子请求：不问模型，直接搜，按官方服务端工具的格式回。
+ *
+ * 为什么不交给模型：这个请求只有一个目的——执行这次搜索。让模型再决定一遍「要不要搜、搜什么」
+ * 既多花一次积分、多等几秒，还可能改写搜索词或干脆不搜。官方 API 的回复本身也就是
+ * 「一句要搜什么 → server_tool_use → web_search_tool_result → 结果摘要」，这里照着拼。
+ * 摘要是给 Claude Code 主对话里的模型看的，结果块是给它计数和列来源用的，两样都要。
+ * 这里只消耗 Kiro 的 MCP 搜索，不走对话接口，所以不计积分。
+ */
+async function handleServerSearch(ctx: HandleContext, query: string): Promise<void> {
+  const { request, res } = ctx
+  const startedAtMs = Date.now()
+  const replyModel = request.model || config.defaultModel
+  const entry = newLog({
+    protocol: 'anthropic',
+    path: ctx.path,
+    stream: request.stream,
+    model: request.model || '(未指定)',
+    kiroModel: 'web_search',
+    keyName: ctx.keyName,
+    keyValue: ctx.keyValue,
+    inputTypes: ['text'],
+    state: 'pending'
+  })
+  stats.requests++
+  pushStatus()
+
+  let block: ServerSearchBlock
+  let summary: string
+  try {
+    const results = await searchWithPool(query)
+    block = toServerSearchBlock(query, results)
+    summary = formatSearchResults(query, results)
+  } catch (error) {
+    // 搜失败也按正常回复给：结果块为空、摘要里写明原因，主对话的模型能看到并自己决定怎么办
+    log('warn', `[WebSearch] "${query}" 失败：${errorMessage(error)}`)
+    block = toServerSearchBlock(query, [])
+    summary = `Web search failed: ${errorMessage(error)}`
+  }
+  const lead = `I'll search for "${query}".`
+  const usage = {
+    inputTokens: estimateTokens(query),
+    outputTokens: estimateTokens(lead + summary),
+    webSearchRequests: 1
+  }
+
+  if (request.stream) {
+    const writer = new AnthropicSseWriter(res, replyModel)
+    startSse(res)
+    writer.start(usage.inputTokens)
+    writer.text(lead)
+    writer.serverSearch(block)
+    writer.text(summary)
+    writer.finish('end_turn', usage)
+    res.end()
+  } else {
+    sendJson(res, 200, {
+      id: `msg_${randomUUID().replace(/-/g, '')}`,
+      type: 'message',
+      role: 'assistant',
+      model: replyModel,
+      content: [
+        { type: 'text', text: lead },
+        { type: 'server_tool_use', id: block.id, name: 'web_search', input: { query } },
+        { type: 'web_search_tool_result', tool_use_id: block.id, content: block.results },
+        { type: 'text', text: summary }
+      ],
+      stop_reason: 'end_turn',
+      stop_sequence: null,
+      usage: {
+        input_tokens: usage.inputTokens,
+        output_tokens: usage.outputTokens,
+        server_tool_use: { web_search_requests: 1 }
+      }
+    })
+  }
+
+  if (ctx.keyId) {
+    recordKeyUsage(ctx.keyId, {
+      at: Date.now(),
+      model: 'web_search',
+      protocol: 'anthropic',
+      ok: true,
+      credits: 0,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      durationMs: Date.now() - startedAtMs
+    })
+  }
+  stats.succeeded++
+  entry.state = 'success'
+  entry.httpStatus = 200
+  entry.attempts = 1
+  entry.webSearches = 1
+  entry.credits = 0
+  entry.inputTokens = usage.inputTokens
+  entry.outputTokens = usage.outputTokens
+  entry.outputTypes = ['webSearch', 'text']
+  entry.durationMs = Date.now() - startedAtMs
+  touchLog(entry, true)
+  pushStatus()
+  if (config.logRequests) {
+    log('info', `[WebSearch] Claude Code 搜索「${query}」→ ${block.results.length} 条，${entry.durationMs}ms`)
+  }
+}
+
 async function handleChat(ctx: HandleContext): Promise<void> {
   const { request, res, protocol } = ctx
+  if (protocol === 'anthropic' && request.serverSearchQuery && !config.disableTools) {
+    return handleServerSearch(ctx, request.serverSearchQuery)
+  }
   const known = cachedModelIds()
   const mapped = mapProxyModel(
     config.modelMode === 'force' ? config.defaultModel : request.model,
@@ -883,7 +1011,16 @@ async function handleChat(ctx: HandleContext): Promise<void> {
     request.tools = []
     request.webSearch = undefined
   } else if (config.managedToolExecution) {
-    if (!request.tools.some((tool) => tool.name === WEB_SEARCH_TOOL)) {
+    /*
+     * 客户端自己带了搜索工具（Claude Code 的 WebSearch）就不注入：它的 WebSearch 走上面的子请求，
+     * 已经能真搜。再多挂一个 web_search，模型面前就有两个搜索工具，
+     * 实测会先用 WebSearch、再换 web_search 把同样的词搜一遍，白花一轮。
+     */
+    // 名字以 websearch / web_search 结尾的都算（VS Code 扩展的工具名形如 xxx_webSearch）
+    const clientSearch = request.tools.some(
+      (tool) => tool.name !== WEB_SEARCH_TOOL && /(^|[_\-.])web_?search$/i.test(tool.name)
+    )
+    if (!clientSearch && !request.tools.some((tool) => tool.name === WEB_SEARCH_TOOL)) {
       request.tools.push(webSearchToolSpec())
     }
     request.webSearch = { maxUses: MAX_WEB_SEARCH_ROUNDS }
@@ -1076,6 +1213,23 @@ async function handleChat(ctx: HandleContext): Promise<void> {
           const results = await searchWithPool(query)
           searchesDone++
           text = formatSearchResults(query, results)
+          /*
+           * 客户端能认出原生搜索项的，把这次搜索按它的格式补上（其余客户端照旧只看到最终回答）：
+           *  - Anthropic 且声明了服务端搜索（Claude 桌面版）：server_tool_use + web_search_tool_result，显示来源
+           *  - Responses（Codex）：web_search_call，显示「Searched: …」
+           */
+          if (protocol === 'anthropic' && request.serverSearch) {
+            const block = toServerSearchBlock(query, results)
+            if (writer instanceof AnthropicSseWriter) {
+              ensureStreamStarted()
+              writer.serverSearch(block)
+            } else {
+              ;(collected.searchBlocks ??= []).push(block)
+            }
+          } else if (writer instanceof ResponsesSseWriter) {
+            ensureStreamStarted()
+            writer.webSearchCall(query)
+          }
         } catch (error) {
           // 搜失败就把失败原因作为工具结果交回模型，让它自己决定怎么办，
           // 而不是整个请求报错——用户要的是回答，不是一个 502
@@ -1174,7 +1328,11 @@ async function handleChat(ctx: HandleContext): Promise<void> {
 
     if (writer) {
       ensureStreamStarted()
-      writer.finish(collected.stopReason, collected.usage)
+      if (writer instanceof AnthropicSseWriter && request.serverSearch) {
+        writer.finish(collected.stopReason, { ...collected.usage, webSearchRequests: searchesDone })
+      } else {
+        writer.finish(collected.stopReason, collected.usage)
+      }
       res.end()
     } else {
       sendJson(

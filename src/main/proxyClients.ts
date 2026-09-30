@@ -676,7 +676,11 @@ async function restartDeepseekApp(): Promise<void> {
 /** 启动命令：写过默认 profile 就不用带 --profile */
 async function dshCommand(): Promise<string> {
   const web = (await readTextIfExists(dshProfilePath('web'))) ?? ''
-  const dsh = cliInvoke('deepseek', 'dsh')
+  /*
+   * 只用 npx 跑过、没全局装 dsh 的也算装过（见 detectInstall），这时终端里没有 dsh 命令，
+   * 照样用 npx 起，否则「打开终端运行」一打开就是 command not found。
+   */
+  const dsh = locateCliSync('deepseek').path ? cliInvoke('deepseek', 'dsh') : 'npx -y @deepseek-ai/dsh'
   return web.includes(DSH_MARKER) ? `${dsh} web` : `${dsh} web --profile ${DSH_PROFILE}`
 }
 
@@ -1368,6 +1372,26 @@ export type ProgressFn = (line: string) => void
 const findNodeBin = (name: 'node' | 'npx'): string | null => findBinary(name)
 
 /**
+ * 把「可执行文件 + 参数」换成 Windows 上能直接 spawn 的形式。
+ *
+ * 踩过的坑（Win11 用户报「写入失败 spawn EINVAL」）：Node 18.20.2 / 20.12.2 起修了 CVE-2024-27980，
+ * 不带 shell 直接 spawn / execFile 一个 .cmd / .bat 会立刻抛 EINVAL。npm 装的 npx、codex、claude
+ * 在 Windows 上都是 .cmd，Electron 自带的 Node 也在这个版本之后，所以只要碰到它们就必挂。
+ * 解法是交给 cmd.exe 去跑：/d 不读 AutoRun，/s 配合外层引号原样保留命令行；
+ * 参数逐个加引号并原样拼接（windowsVerbatimArguments），不走 Node 那套 \" 转义——cmd 不认那个。
+ * 这里的参数都是我们自己拼的固定值，不含用户输入，不存在命令注入的问题。
+ */
+function winSpawnable(file: string, args: string[]): { file: string; args: string[]; verbatim: boolean } {
+  if (process.platform !== 'win32' || !/\.(cmd|bat)$/i.test(file)) return { file, args, verbatim: false }
+  const quote = (value: string): string => `"${value.replace(/"/g, '""')}"`
+  return {
+    file: process.env.ComSpec || 'cmd.exe',
+    args: ['/d', '/s', '/c', `"${[file, ...args].map(quote).join(' ')}"`],
+    verbatim: true
+  }
+}
+
+/**
  * 跑 CCursor 的安装 / 卸载命令，把输出逐行回调出去。
  *
  * 用 npx 而不是把 CCursor 打进我们的安装包：它是 AGPL-3.0 且解包后 33MB，
@@ -1391,7 +1415,9 @@ function runCcursor(
   const nodeDir = path.dirname(findNodeBin('node') ?? npx)
 
   return new Promise((resolve, reject) => {
-    const child = spawn(npx, ['-y', '@cometix/ccursor@latest', action], {
+    const cmd = winSpawnable(npx, ['-y', '@cometix/ccursor@latest', action])
+    const child = spawn(cmd.file, cmd.args, {
+      windowsVerbatimArguments: cmd.verbatim,
       env: {
         ...process.env,
         PATH: `${nodeDir}${path.delimiter}${process.env.PATH ?? ''}`,
@@ -1807,11 +1833,17 @@ function codexBinaryCandidates(): string[] {
 
 function runCodex(binary: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    // execFile 不经过 shell，参数原样传入
+    // execFile 不经过 shell，参数原样传入；Windows 上的 codex.cmd 要经 cmd.exe（原因见 winSpawnable）
+    const cmd = winSpawnable(binary, args)
     execFile(
-      binary,
-      args,
-      { timeout: 20_000, maxBuffer: 32 * 1024 * 1024, windowsHide: true },
+      cmd.file,
+      cmd.args,
+      {
+        timeout: 20_000,
+        maxBuffer: 32 * 1024 * 1024,
+        windowsHide: true,
+        windowsVerbatimArguments: cmd.verbatim
+      },
       (error, stdout, stderr) => {
         if (error) reject(new Error(String(stderr || error.message).slice(0, 300)))
         else resolve(String(stdout))
@@ -2541,8 +2573,10 @@ export async function openProxyClient(target: ProxyClientTarget): Promise<void> 
   if (target === 'workbuddy') {
     return restartMacApp('WorkBuddy', 'workbuddy', WORKBUDDY_BUNDLE_ID, workbuddyRunning)
   }
-  if (target === 'claudeCode') return openInTerminal('claude')
+  // 和卡片上展示的启动命令同一份：手动指定了位置的会带完整路径
+  if (target === 'claudeCode') return openInTerminal(cliInvoke('claudeCode', 'claude'))
   if (target === 'codex') return openInTerminal(codexCommand())
+  if (target === 'deepseek') return openInTerminal(await dshCommand())
   throw new Error('这个客户端不支持代为启动')
 }
 

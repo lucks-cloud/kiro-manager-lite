@@ -283,7 +283,7 @@ const clientMeta: Record<ProxyClientTarget, { name: string; site: string }> = {
   },
   codexApp: {
     name: 'Codex 桌面版',
-    site: 'https://developers.openai.com/codex'
+    site: 'https://openai.com/codex'
   },
   claudeApp: {
     name: 'Claude 桌面版',
@@ -333,7 +333,7 @@ const RESTART_HINTS: Record<ProxyClientTarget, string> = {
   cursor: '配置只在启动时读取，需要完全退出后重新打开。',
   claudeApp: '3P 配置只在启动时读取，需要完全退出后重新打开。',
   vscode: '在 Chat 的模型选择器里选带 Kiro 前缀的模型即可；没出现就重启一下 VS Code。',
-  deepseek: '用下面这条命令启动 dsh 即可生效。',
+  deepseek: '退出正在运行的 dsh web 后用下面这条命令重新启动即可生效，或直接点下方按钮打开终端运行。',
   deepseekApp: '桌面版会自动热重载这份配置，一般无需重启；没生效再用下面的按钮重启。',
   workbuddy: 'WorkBuddy 会自动重新加载，在模型选择器里选带 Kiro 前缀的模型即可；没出现就重启一下。'
 }
@@ -706,10 +706,11 @@ async function openClient(target: ProxyClientTarget): Promise<void> {
   }
 }
 
-/** 能由本应用代为启动的客户端；dsh 命令行只写配置 */
+/** 能由本应用代为启动的客户端：图形界面的退出再拉起，命令行的开新终端跑启动命令 */
 const OPENABLE: ProxyClientTarget[] = [
   'vscode',
   'claudeCode',
+  'deepseek',
   'codex',
   'claudeApp',
   'codexApp',
@@ -724,7 +725,7 @@ const OPENABLE: ProxyClientTarget[] = [
  * 命令行客户端没有常驻进程，一律是「打开终端」。
  */
 function openVerb(target: ProxyClientTarget): string {
-  if (target === 'claudeCode' || target === 'codex') return '打开终端运行'
+  if (target === 'claudeCode' || target === 'codex' || target === 'deepseek') return '打开终端运行'
   const state = store.clients.find((c) => c.target === target)
   return state?.appRunning ? '重启' : '打开'
 }
@@ -1795,6 +1796,8 @@ onUnmounted(() => stop?.())
               <div class="result-extra">
                 <!-- 命令行版靠 --profile 生效，这条命令必须给出来 -->
                 <div v-if="clientPrompt.action === 'apply' && clientPrompt.command" class="restart-cmd">
+                  <!-- 标签只是说明，复制按钮只复制命令本身 -->
+                  <span class="cmd-label">终端执行：</span>
                   <span class="mono">{{ clientPrompt.command }}</span>
                   <a-button
                     type="text"
@@ -1813,18 +1816,23 @@ onUnmounted(() => stop?.())
                   :message="clientPrompt.warning"
                 />
 
-                <a-space>
-                  <template v-if="promptApp">
-                    <a-button :disabled="launching" @click="clientPrompt = null">稍后自己来</a-button>
-                    <a-button
-                      type="primary"
-                      :loading="launching"
-                      @click="openClient(promptApp.target)"
-                    >
-                      <template #icon><PlayCircleOutlined /></template>
-                      立即{{ promptApp.verb }}
-                    </a-button>
-                  </template>
+                <!--
+                  按钮直接作 a-space 的子节点，别再包一层 <template v-if>：
+                  a-space 按子节点逐个加间距，包起来的两个按钮会被当成一个节点，中间一点空隙都没有。
+                -->
+                <a-space :size="12" class="result-actions">
+                  <a-button v-if="promptApp" :disabled="launching" @click="clientPrompt = null">
+                    稍后自己来
+                  </a-button>
+                  <a-button
+                    v-if="promptApp"
+                    type="primary"
+                    :loading="launching"
+                    @click="openClient(promptApp.target)"
+                  >
+                    <template #icon><PlayCircleOutlined /></template>
+                    立即{{ promptApp.verb }}
+                  </a-button>
                   <a-button v-else type="primary" @click="clientPrompt = null">我知道了</a-button>
                 </a-space>
               </div>
@@ -2368,6 +2376,10 @@ onUnmounted(() => stop?.())
 }
 .result-extra .restart-cmd { margin: 0; }
 .result-extra :deep(.ant-alert) { max-width: 620px; text-align: left; }
+/* 命令前的说明文字：用正文字体和次要色，和等宽的命令本身区分开 */
+.restart-cmd .cmd-label { flex: 0 0 auto; color: var(--kal-muted); }
+/* 结果页底部按钮和上面的重启说明 / 启动命令拉开距离，一眼看出这是最后一步的操作 */
+.result-actions { margin-top: 28px; }
 
 .client-path {
   display: flex;

@@ -3,6 +3,32 @@
 本文件记录 Kiro Manager Lite 的版本变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.0.28] - 2026-10-01
+
+本版本修复 Windows 上 Cursor 一键写入必定失败（`spawn EINVAL`），补齐各客户端的联网搜索：
+Claude Code CLI 的 WebSearch 能真正搜到结果，Claude 桌面版与 Codex 能显示搜索过程；
+DeepSeek Harness Web 也支持一键打开终端运行。
+
+### 新增
+
+- DeepSeek Harness Web 支持「打开终端运行」，写入完成后可直接「立即打开终端运行」；
+  只用 npx 跑过、没全局安装 dsh 的，启动命令自动改用 `npx -y @deepseek-ai/dsh`
+- Claude 桌面版的联网搜索按官方服务端工具格式返回搜索块与结果块，界面能显示搜了什么、引用了哪些来源
+- Codex 的联网搜索补上 `web_search_call` 输出项，界面显示「Searched: …」；往轮的搜索记录也会带回给模型
+
+### 优化
+
+- 客户端自带搜索工具时（如 Claude Code 的 WebSearch、VS Code 扩展的 `*_webSearch`）不再额外注入 `web_search`，避免同一个词搜两遍
+- 写入完成页的启动命令前加上「终端执行：」说明；底部按钮加大间距并与上方内容拉开
+- Claude Code CLI 的「打开终端运行」与卡片上的启动命令保持一致，手动指定安装位置时带完整路径
+
+### 修复
+
+- 修复 Windows 上 Cursor 一键写入报 `spawn EINVAL`：新版 Node 禁止不经 shell 直接启动 `.cmd`，
+  `npx.cmd` / `codex.cmd` 改为经 `cmd.exe` 执行；读取 Codex 模型目录的同类问题一并修复
+- 修复 Claude Code CLI 的 WebSearch 显示「Did 0 searches」：识别它的服务端搜索子请求，直接调用 Kiro 搜索并按官方格式返回，不消耗积分
+- 修复回复正文里出现 `<thinking>…</thinking>` 字样：历史里的思考内容不再以文本形式带回给模型
+
 ## [1.0.27] - 2026-09-30
 
 本版本完善「一键接入桌面 agent」：安装检测区分 macOS 与 Windows 并支持手动指定位置，
