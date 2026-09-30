@@ -1515,6 +1515,29 @@ async function ensureCcursorCatalog(models: KiroModelInfo[]): Promise<void> {
   }
 }
 
+/**
+ * 推理档位在 CCursor 里的写法。
+ *
+ * 只写 thinkingLevel 是不够的（读自 CCursor 扩展源码）：每次请求的档位取
+ * 「Cursor 模型选择器里带来的档位参数 ?? providers.json 的 thinkingLevel」，
+ * 而选择器里那一档是 Cursor 自己记住的——在 Cursor++ 面板里把 thinkingLevel 从 medium 改成 max，
+ * 选择器还停在当初那个「Medium」上，请求照样发 medium，看起来就是「改了不生效」。
+ *
+ * 所以同时声明 parameters.effort（面板里的 QuickSwitch → Effort Levels 就是它）：
+ * Cursor 的选择器会给这个模型出一个 Effort 下拉（快捷键也能循环切），选中的档位随每个请求发出，
+ * 以 reasoning_effort 到达反代，反代再按该模型的 schema 取值。thinkingLevel 只作为默认档。
+ *
+ * Kiro GPT 系的 none 不放进去：CCursor 对 openai-chat 的 effort 列表不做 none 的特殊处理，
+ * 选了会被当成「开着推理、档位是 none」；要关推理，在选择器里关 Thinking 即可。
+ */
+function ccursorEffort(m: KiroModelInfo): Record<string, unknown> {
+  const levels = (m.effort?.options ?? []).filter((level) => level !== 'none')
+  if (!levels.length) return { thinking: false }
+  const fallback = levels.includes('medium') ? 'medium' : levels[Math.floor(levels.length / 2)]
+  const level = m.effort?.default && levels.includes(m.effort.default) ? m.effort.default : fallback
+  return { thinking: true, thinkingLevel: level, parameters: { thinking: true, effort: levels } }
+}
+
 function buildCcursorProviders(info: ProxyTargetInfo): Record<string, unknown> {
   const models = (info.models.length ? info.models : [{ modelId: info.model }])
     .filter((m) => m.modelId !== 'auto')
@@ -1523,8 +1546,7 @@ function buildCcursorProviders(info: ProxyTargetInfo): Record<string, unknown> {
       apiModel: m.modelId, // 发给反代的真实名字，mapProxyModel 会处理
       // 统一加 Kiro 前缀：Cursor 的模型选择器里混着官方模型，一眼能分出哪些走反代
       displayName: kiroLabel(m),
-      thinking: !!(m.effort?.options?.length),
-      thinkingLevel: m.effort?.default || 'medium',
+      ...ccursorEffort(m),
       /*
        * 这两个字段 CCursor 都当必填校验（webview 的校验器：缺了报
        * "Context token limit is required" / "Max output tokens is required"）。

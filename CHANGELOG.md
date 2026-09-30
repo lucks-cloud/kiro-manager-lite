@@ -3,6 +3,19 @@
 本文件记录 Kiro Manager Lite 的版本变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.0.29] - 2026-10-01
+
+本版本修复 Cursor 里推理档位改了不生效的问题，档位改为在 Cursor 的模型选择器里直接切换。
+
+### 修复
+
+- 修复 Cursor 通过 CCursor 接入时推理档位不生效：此前只写了默认档 `thinkingLevel`，
+  而 CCursor 每次请求优先使用 Cursor 模型选择器里记住的档位，在 Cursor++ 面板里改档位不会被采用。
+  现在一键写入会为每个有档位的模型声明 `parameters.effort`，Cursor 的模型选择器里可直接切换
+  Low / Medium / High / Extra High / Max，选中的档位随每个请求发出；Kiro GPT 系的 `none` 不列入，
+  关推理请在选择器里关闭 Thinking。没有档位的模型不再显示无效的档位标签
+- 写入后需在 Cursor 模型选择器里点刷新，或重启 Cursor，才会出现档位选项
+
 ## [1.0.28] - 2026-10-01
 
 本版本修复 Windows 上 Cursor 一键写入必定失败（`spawn EINVAL`），补齐各客户端的联网搜索：
