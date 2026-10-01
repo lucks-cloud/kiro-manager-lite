@@ -3,6 +3,38 @@
 本文件记录 Kiro Manager Lite 的版本变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.0.30] - 2026-10-01
+
+本版本新增 Qoder CN、ZCode、Kimi Code 三个桌面应用的一键接入，修复 Claude 桌面版没有推理档位菜单的问题，
+Kimi Code 的联网搜索改走 Kiro。
+
+### 新增
+
+- 一键接入 Qoder CN：在 `~/.qoder-cn/settings.json` 写入「Kiro Manager Lite」自定义提供方，
+  按模型声明上下文、输出上限、识图能力与推理档位；只增删我们这一条，你自己加的提供方原样保留
+- 一键接入 ZCode：在 `~/.zcode/v2/provider_config.json` 写入「Kiro Manager Lite」个人供应商，
+  每个模型配好上下文、输出上限与推理档位（low ~ max），ZCode 会自动重新加载
+- 一键接入 Kimi Code：在 `~/.kimi-code/config.toml` 写入 `kiro-manager-lite` 供应商与各模型，
+  有档位的模型可在 Kimi Code 里切换 low ~ max；Kimi 自己的供应商与默认模型不受影响
+- Kimi Code 的联网搜索改由反代提供：一键写入把 `[services.moonshot_search]` 指向反代新增的 `/kimi/search`，
+  用账号池跑 Kiro 的联网搜索，免费套餐不再报 403
+
+### 优化
+
+- 桌面应用改名：Claude 桌面版 → Claude Code，Codex 桌面版 → Codex，DeepSeek Harness 桌面版 → DeepSeek Harness
+- 卡片副标题改为「提供商：厂商」；官网链接移到详情弹窗
+- 反代识别短横写法的模型名不再限于 sonnet / haiku / opus，`claude-fable-5-1` 这类新家族也能还原成 Kiro 的模型 id
+- Windows 安装检测：Qoder CN 按其启动器记录的安装位置查找（含 `.qoder-versions` 版本目录）；
+  ZCode 的配置目录与它自己的查找顺序一致（`ZCODE_DESKTOP_HOME_DIR` → `HOME` → `USERPROFILE`）
+
+### 修复
+
+- 修复 Claude 桌面版没有推理档位菜单：它按模型目录里的短横写法（`claude-opus-5-5`）查档位，
+  Kiro 的点号写法查不到；现在写入时 Claude 系模型名改用短横写法，显示名不变，重新写入并重启后生效
+- 修复从开发实例重启 Qoder 等应用后卡死白屏：拉起外部应用时清掉 `ELECTRON_*`、`VITE_*`、`NODE_ENV` 等环境变量，
+  避免对方误加载本应用的界面
+- 修复 Qoder CN 提问报「Invalid Anthropic thinking configuration」：思考模式改为按档位自适应，不再要求固定预算
+
 ## [1.0.29] - 2026-10-01
 
 本版本修复 Cursor 里推理档位改了不生效的问题，档位改为在 Cursor 的模型选择器里直接切换。

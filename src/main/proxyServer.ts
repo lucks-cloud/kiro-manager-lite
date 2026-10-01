@@ -1508,6 +1508,56 @@ const listener: http.RequestListener = (req, res) => {
       }
 
       /*
+       * Kimi Code 的联网搜索：它的 WebSearch 是客户端工具，不经过模型供应商，
+       * 而是拿 Kimi 账号的登录凭证直接 POST 到 Moonshot 的搜索服务，免费套餐一律 403。
+       * 它允许在 config.toml 的 [services.moonshot_search] 里改地址和 Key，一键写入时指到这里，
+       * 由反代用账号池跑 Kiro 的搜索。格式照它的 MoonshotWebSearchProvider（读自 Kimi Code 1.0.4）：
+       * 请求 { text_query }，响应 { search_results: [{ title, url, snippet, date?, site_name? }] }。
+       */
+      if (path === '/kimi/search') {
+        if (!authorized(req)) {
+          sendJson(res, 401, { error: 'API Key 不正确' })
+          return
+        }
+        if (req.method !== 'POST') {
+          sendJson(res, 405, { error: '只接受 POST' })
+          return
+        }
+        let query = ''
+        try {
+          const body = JSON.parse((await readBody(req)).toString('utf8') || '{}') as { text_query?: unknown }
+          query = typeof body.text_query === 'string' ? body.text_query.trim() : ''
+        } catch {
+          sendJson(res, 400, { error: '请求体不是 JSON' })
+          return
+        }
+        if (!query) {
+          sendJson(res, 400, { error: '缺少 text_query' })
+          return
+        }
+        const started = Date.now()
+        try {
+          const results = await searchWithPool(query)
+          if (config.logRequests) {
+            log('info', `[WebSearch] Kimi Code 搜索「${query}」→ ${results.length} 条，${Date.now() - started}ms`)
+          }
+          sendJson(res, 200, {
+            search_results: results.map((r) => ({
+              title: r.title,
+              url: r.url,
+              snippet: r.snippet ?? '',
+              ...(r.publishedDate ? { date: new Date(r.publishedDate).toISOString().slice(0, 10) } : {}),
+              ...(r.domain ? { site_name: r.domain } : {})
+            }))
+          })
+        } catch (error) {
+          // 非 200 时它会把响应体原样拼进报错给模型看，写清楚是反代这边的搜索失败
+          sendJson(res, 502, { error: `Kiro 联网搜索失败：${errorMessage(error)}` })
+        }
+        return
+      }
+
+      /*
        * 上游模型列表的原始响应。
        * 我们映射出的字段只是其中一部分，排查「某个能力/上限从哪来」时
        * 需要看未经加工的那份，所以留一个自检入口。

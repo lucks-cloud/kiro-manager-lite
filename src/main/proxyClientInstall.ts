@@ -4,7 +4,7 @@
 // 默认位置只覆盖官方安装器的落点，用户装到别处（外置盘、D:\Apps、便携版）时靠后两步兜底，
 // 仍然找不到的，界面上让用户自己选一次，存进 store 以后直接用。
 import { execFile } from 'child_process'
-import { existsSync, readdirSync, statSync } from 'fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import { getProxyClientPaths, setProxyClientPath } from './store'
@@ -27,6 +27,39 @@ function winDirs(): { local: string; roaming: string; programs: string; pf: stri
     pf: process.env.ProgramFiles || 'C:\\Program Files',
     pf86: process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
   }
+}
+
+/**
+ * Qoder CN 的 Windows 版自带一个启动器（读自它 0.4.3 的 product.json 与主进程）：
+ * 启动器在 %LOCALAPPDATA%\Qoder CN\Qoder CN Launcher\Qoder CN Launcher.exe（全机安装时状态放 %PROGRAMDATA%），
+ * 旁边的 state.ini 记着 installDir 和 appExecutable——后者是相对安装目录的路径，
+ * 要么直接是 Qoder CN.exe，要么是 .qoder-versions\<版本>\Qoder CN.exe（启动器自己做的版本切换）。
+ * 先按它记的位置找，比猜安装目录准；读不到再回落到常规目录和注册表。
+ */
+function qoderLauncherDirs(): string[] {
+  const roots = [winDirs().local, process.env.PROGRAMDATA || 'C:\\ProgramData']
+  const out: string[] = []
+  for (const root of roots) {
+    const launcher = path.join(root, 'Qoder CN', 'Qoder CN Launcher')
+    for (const name of ['state.ini', 'state.system.ini']) {
+      try {
+        const text = readFileSync(path.join(launcher, name), 'utf8').replace(/^\uFEFF/, '')
+        const kv = new Map<string, string>()
+        for (const line of text.split(/\r?\n/)) {
+          const i = line.indexOf('=')
+          if (i > 0) kv.set(line.slice(0, i).trim(), line.slice(i + 1).trim())
+        }
+        const dir = kv.get('installDir')
+        if (!dir) continue
+        const exe = kv.get('appExecutable')
+        if (exe) out.push(path.dirname(path.join(dir, exe)))
+        out.push(dir)
+      } catch {
+        /* 没有这份状态文件就是没用启动器装过 */
+      }
+    }
+  }
+  return out
 }
 
 function run(command: string, args: string[], timeout: number): Promise<string> {
@@ -201,6 +234,39 @@ const SPECS: Record<ProxyClientTarget, ClientSpec> = {
       keywords: ['WorkBuddy']
     }
   },
+  qoder: {
+    kind: 'app',
+    mac: { app: 'Qoder CN.app', bundleId: 'com.qodercn.app' },
+    win: {
+      exe: ['Qoder CN.exe', 'QoderCN.exe'],
+      dirs: () => [
+        ...qoderLauncherDirs(),
+        path.join(winDirs().programs, 'Qoder CN'),
+        path.join(winDirs().programs, 'qoder-cn'),
+        path.join(winDirs().pf, 'Qoder CN')
+      ],
+      keywords: ['Qoder CN', 'QoderCN']
+    }
+  },
+  zcode: {
+    kind: 'app',
+    mac: { app: 'ZCode.app', bundleId: 'dev.zcode.app' },
+    win: {
+      exe: ['ZCode.exe'],
+      dirs: () => [path.join(winDirs().programs, 'ZCode'), path.join(winDirs().pf, 'ZCode')],
+      keywords: ['ZCode']
+    }
+  },
+  kimi: {
+    kind: 'app',
+    mac: { app: 'Kimi Code.app', bundleId: 'com.kimi.code.desktop' },
+    win: {
+      exe: ['Kimi Code.exe'],
+      dirs: () => [path.join(winDirs().programs, 'Kimi Code'), path.join(winDirs().pf, 'Kimi Code')],
+      // 不能只写 Kimi：会撞上聊天版 Kimi，那个目录里没有 Kimi Code.exe，靠 exe 名兜住也行，但少查一轮
+      keywords: ['Kimi Code']
+    }
+  },
   deepseekApp: {
     kind: 'app',
     mac: { app: 'DeepSeek Harness.app' },
@@ -264,6 +330,7 @@ async function locateMacApp(spec: AppSpec['mac']): Promise<string | null> {
 /**
  * 装在 dir 下的主程序。Squirrel 类安装器（Claude、早期 Electron 应用）把真正的程序放在
  * app-<版本> 子目录里、根目录只有一个启动器；MSIX 包有时放在 app\ 下。都看一层。
+ * Qoder CN 的启动器把各版本放在 .qoder-versions\<版本>\ 下，多看这一层。
  */
 function exeIn(dir: string, names: string[]): string | null {
   if (!dir || !existsSync(dir)) return null
@@ -289,6 +356,16 @@ function exeIn(dir: string, names: string[]): string | null {
     }
   } catch {
     /* 无权限读取的目录（WindowsApps）当作没有 */
+  }
+  try {
+    const versions = path.join(dir, '.qoder-versions')
+    // 版本号按字符串倒序只是近似；拿到任意一个能跑的就够判断「装了」
+    for (const sub of readdirSync(versions).sort().reverse()) {
+      const hit = scan(path.join(versions, sub))
+      if (hit) return hit
+    }
+  } catch {
+    /* 没有这层目录 */
   }
   return null
 }

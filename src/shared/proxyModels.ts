@@ -108,8 +108,12 @@ export function mapProxyModel(
   const exact = known.get(stripped)
   if (exact) return { modelId: exact, thinking, fallback: false }
 
-  // claude-sonnet-4-5 → claude-sonnet-4.5；只转 1~2 位的 minor，避免误伤日期
-  const dotted = stripped.replace(/^(claude-(?:sonnet|haiku|opus))-(\d+)-(\d{1,2})(?=$|[^\d])/, '$1-$2.$3')
+  /*
+   * claude-sonnet-4-5 → claude-sonnet-4.5；只转 1~2 位的 minor，避免误伤日期。
+   * 家族名不写死成 sonnet/haiku/opus：Claude 桌面版按它目录里的短横写法发 claude-fable-5-1 这类新家族，
+   * 写死的话这些会认不出、落到兜底模型。
+   */
+  const dotted = stripped.replace(/^(claude-[a-z]+)-(\d+)-(\d{1,2})(?=$|[^\d])/, '$1-$2.$3')
   const dottedHit = known.get(dotted)
   if (dottedHit) return { modelId: dottedHit, thinking, fallback: false }
 
@@ -121,7 +125,7 @@ export function mapProxyModel(
   const alias = ALIASES[stripped]
   if (alias) return { modelId: known.get(alias) ?? alias, thinking, fallback: false }
   // 形如 claude-opus-4.7 这类本表还没收录的新模型：原样透传，由上游判断
-  if (/^claude-(sonnet|haiku|opus)-\d/.test(dotted)) {
+  if (/^claude-[a-z]+-\d/.test(dotted)) {
     return { modelId: dotted, thinking, fallback: false }
   }
 

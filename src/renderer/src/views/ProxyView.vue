@@ -269,46 +269,71 @@ async function changePool(next: Partial<ProxyConfig>): Promise<void> {
 /**
  * 客户端元信息。
  *
- * 只留名字和官网：想了解这个 agent 的人直接去官网看，
+ * 名字、厂商、官网：卡片上只显示「提供商：厂商」，官网放在详情弹窗里点；
  * 改哪些文件在详情弹窗的「配置文件」里一目了然，不用再配一段说明。
+ * 命令行版和桌面版同名时靠所在分组区分，桌面版不再挂「桌面版」后缀。
  */
-const clientMeta: Record<ProxyClientTarget, { name: string; site: string }> = {
+const clientMeta: Record<ProxyClientTarget, { name: string; vendor: string; site: string }> = {
   claudeCode: {
     name: 'Claude Code CLI',
+    vendor: 'Anthropic',
     site: 'https://claude.com/product/claude-code'
   },
   codex: {
     name: 'Codex CLI',
+    vendor: 'OpenAI',
     site: 'https://developers.openai.com/codex/cli'
   },
   codexApp: {
-    name: 'Codex 桌面版',
+    name: 'Codex',
+    vendor: 'OpenAI',
     site: 'https://openai.com/codex'
   },
   claudeApp: {
-    name: 'Claude 桌面版',
+    name: 'Claude Code',
+    vendor: 'Anthropic',
     site: 'https://claude.ai/download'
   },
   vscode: {
     name: 'VS Code',
+    vendor: 'Microsoft',
     site: 'https://code.visualstudio.com'
   },
   deepseek: {
     name: 'DeepSeek Harness Web',
+    vendor: 'DeepSeek',
     // Web 版就是开源仓库里的 dsh，安装和用法都在 README 里
     site: 'https://github.com/deepseek-ai/deepseek-harness'
   },
   deepseekApp: {
-    name: 'DeepSeek Harness 桌面版',
+    name: 'DeepSeek Harness',
+    vendor: 'DeepSeek',
     site: 'https://deepseek.com/harness'
   },
   workbuddy: {
     name: 'WorkBuddy',
-    site: 'https://cloud.tencent.com/act/pro/workbuddy'
+    vendor: 'Tencent',
+    site: 'https://www.workbuddy.cn'
+  },
+  qoder: {
+    name: 'Qoder CN',
+    vendor: 'Alibaba',
+    site: 'https://qoder.com.cn'
   },
   cursor: {
     name: 'Cursor',
+    vendor: 'Anysphere',
     site: 'https://cursor.com'
+  },
+  zcode: {
+    name: 'ZCode',
+    vendor: 'Z.ai',
+    site: 'https://zcode.z.ai'
+  },
+  kimi: {
+    name: 'Kimi Code',
+    vendor: 'Moonshot AI',
+    site: 'https://www.kimi.com/code'
   }
 }
 
@@ -335,7 +360,10 @@ const RESTART_HINTS: Record<ProxyClientTarget, string> = {
   vscode: '在 Chat 的模型选择器里选带 Kiro 前缀的模型即可；没出现就重启一下 VS Code。',
   deepseek: '退出正在运行的 dsh web 后用下面这条命令重新启动即可生效，或直接点下方按钮打开终端运行。',
   deepseekApp: '桌面版会自动热重载这份配置，一般无需重启；没生效再用下面的按钮重启。',
-  workbuddy: 'WorkBuddy 会自动重新加载，在模型选择器里选带 Kiro 前缀的模型即可；没出现就重启一下。'
+  workbuddy: 'WorkBuddy 会自动重新加载，在模型选择器里选带 Kiro 前缀的模型即可；没出现就重启一下。',
+  qoder: '重启 Qoder CN 后，在模型选择器里选带 Kiro 前缀的模型即可；需要已登录且账号允许使用自定义模型。',
+  zcode: 'ZCode 会自动重新加载，在模型选择器的「Kiro Manager Lite」供应商下选模型即可；没出现就重启一下。',
+  kimi: '配置只在启动时读取，重启 Kimi Code 后在模型选择器里选带 Kiro 前缀的模型即可。'
 }
 
 // ============ 配置保存 ============
@@ -584,6 +612,16 @@ const confirmLines = computed<string[]>(() => {
     lines.push('同时把默认模型指到 Kiro，否则它仍走内置路由、发消息会报缺少 API Key。')
     lines.push('这份文件桌面版会热重载，通常不用重启。')
   }
+  if (prompt.target === 'qoder') {
+    lines.push('在 settings.json 里加入一组「Kiro Manager Lite」自定义提供方（带 API Key），插件开关和你自己加的提供方原样保留。')
+    lines.push('Qoder 只在登录且账号允许自定义模型时才会显示它们。')
+  }
+  if (prompt.target === 'kimi') {
+    lines.push('在 config.toml 里加入「kiro-manager-lite」供应商（带 API Key）和各模型的档位配置，Kimi 自己的供应商和默认模型原样保留。')
+  }
+  if (prompt.target === 'zcode') {
+    lines.push('在 provider_config.json 里加入「Kiro Manager Lite」自定义供应商（带 API Key）和各模型的档位配置，你自己加的供应商原样保留。')
+  }
   if (prompt.target === 'workbuddy') {
     lines.push('在 models.json 里加入 Kiro 模型（带 API Key），你在设置页加的自定义模型原样保留。')
   }
@@ -666,7 +704,10 @@ const clientGroups = computed(() => {
         'deepseekApp',
         'cursor',
         'vscode',
-        'workbuddy'
+        'workbuddy',
+        'qoder',
+        'zcode',
+        'kimi'
       ]
     }
   ]
@@ -716,7 +757,10 @@ const OPENABLE: ProxyClientTarget[] = [
   'codexApp',
   'cursor',
   'deepseekApp',
-  'workbuddy'
+  'workbuddy',
+  'qoder',
+  'zcode',
+  'kimi'
 ]
 
 /**
@@ -1389,12 +1433,10 @@ onUnmounted(() => stop?.())
                 <strong class="tile-name">{{ clientMeta[item.target].name }}</strong>
               </span>
               <!--
-                卡片上的官网只展示、不可点：整张卡片本身是打开详情的点击区，
+                卡片上只写厂商、不放链接：整张卡片本身是打开详情的点击区，
                 里面再嵌一个跳外链的热区很容易误触。要访问官网去详情弹窗里点。
               -->
-              <span class="tile-site" :title="clientMeta[item.target].site">
-                {{ siteLabel(clientMeta[item.target].site) }}
-              </span>
+              <span class="tile-site">提供商：{{ clientMeta[item.target].vendor }}</span>
             </span>
           </div>
         </div>

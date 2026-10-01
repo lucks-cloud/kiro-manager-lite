@@ -13,6 +13,7 @@ import * as fs from 'fs/promises'
 import * as os from 'os'
 import * as path from 'path'
 import { log } from './logger'
+import { cleanChildEnv } from './childEnv'
 import { findBinary, installLabel, locateCliSync, locateClient } from './proxyClientInstall'
 import {
   getProxyClientBackup,
@@ -121,6 +122,12 @@ export function clientFiles(target: ProxyClientTarget): string[] {
   if (target === 'vscode') return [vscodeModelsPath()]
   // WorkBuddy：同样外科式还原（只摘我们的条目），快照用来判断原文件在不在、原白名单有哪些
   if (target === 'workbuddy') return [workbuddyModelsPath()]
+  // Qoder：settings.json 里还有插件开关和用户自己加的提供方，还原只摘我们那一条，见 restoreQoder
+  if (target === 'qoder') return [qoderSettingsPath()]
+  // ZCode：provider_config.json 里还有用户自己加的供应商，还原只摘我们那一条，见 restoreZcode
+  if (target === 'zcode') return [zcodeConfigPath()]
+  // Kimi Code：config.toml 里还有它自己的托管供应商、权限、钩子，还原只摘我们那几张表，见 restoreKimi
+  if (target === 'kimi') return [kimiConfigPath()]
   return [codexProfilePath(), codexCatalogPath(), ...legacyCodexFiles()]
 }
 
@@ -134,6 +141,9 @@ export function displayFiles(target: ProxyClientTarget): string[] {
   if (target === 'deepseekApp') return [dshProfilePath(DSH_DESKTOP_PROFILE)]
   if (target === 'vscode') return [vscodeModelsPath()]
   if (target === 'workbuddy') return [workbuddyModelsPath()]
+  if (target === 'qoder') return [qoderSettingsPath()]
+  if (target === 'zcode') return [zcodeConfigPath()]
+  if (target === 'kimi') return [kimiConfigPath()]
   return [codexProfilePath(), codexCatalogPath()]
 }
 
@@ -924,6 +934,455 @@ async function workbuddyRunning(): Promise<boolean> {
   }
 }
 
+// ============ Qoder CN（阿里） ============
+//
+// 自定义模型存在本机 ~/.qoder-cn/settings.json 的 providers 里（不是云端）。规则读自 Qoder CN 0.4.3：
+// 界面「设置 → 模型 → 添加模型」交给内置的 qodercli 进程，日志里是 storage=settings.providers；
+// 写法照它自己生成的条目：
+//  - 键形如 qoder-custom-<uuid>；type 固定 openai-compatible，真正的协议看 protocol（anthropic / openai）；
+//  - baseUrl 不带 /v1，它按协议自己拼路径；
+//  - models[] 逐个声明 contextWindow / maxOutputTokens / capabilities（vision、thinking 档位）。
+//    它自己加的条目输出上限默认 8192，长回答会被截断，所以这里按模型填真实值。
+// 能不能用自定义提供方由账号权限决定（日志里的 custom_provider_runtime_access），没登录时不显示。
+// 这个文件 Qoder 自己也在写（插件开关、用户加的其它提供方），只增删我们那一个键。
+
+/**
+ * 我们那条提供方的键：照它的格式用固定的 uuid，还原时按它认领。
+ * 不能另起名字：它的列表接口按 qoder-custom- 前缀识别自定义提供方。
+ */
+const QODER_PROVIDER_ID = 'qoder-custom-6b1d6f3e-4a7c-4e2b-9f1a-4b6c5a0d1e2f'
+const QODER_BUNDLE_ID = 'com.qodercn.app'
+/** Qoder 的档位只认这几种（它界面上给的就是这套），Kiro GPT 系的 none 不写 */
+const QODER_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
+
+function qoderSettingsPath(): string {
+  return path.join(home(), '.qoder-cn', 'settings.json')
+}
+
+function qoderModels(info: ProxyTargetInfo): Record<string, unknown>[] {
+  return orderedModels(info).map((m) => {
+    const efforts = (m.effort?.options ?? []).filter((e) => QODER_EFFORTS.includes(e))
+    return {
+      model: m.modelId,
+      // 加前缀：Qoder 自带同名的 Claude 模型，选择器里得分得清
+      displayName: kiroLabel(m),
+      contextWindow: modelInputTokens(m),
+      maxOutputTokens: modelOutputTokens(m),
+      capabilities: {
+        vision: modelTakesImages(m),
+        /*
+         * 思考模式写 adaptive（按档位自适应），不能只写 enabled。
+         * 踩过的坑（读自 Qoder 的 worker runtime）：modes 含 enabled 时 requiresBudgetForEnabled 默认为 true，
+         * 它会要求每次请求带固定的 budgetTokens，没有就在本地直接拒绝——
+         * 「Invalid Anthropic thinking configuration … requires an explicit fixed budget」，
+         * 请求根本没发到反代，界面只显示「系统发生异常」。
+         * Kiro 的模型都是按档位（output_config.effort）控制思考的，正好对应 adaptive；
+         * enabled 也留着（以防它有地方只认 enabled），但声明不需要固定预算。
+         */
+        thinking: efforts.length
+          ? {
+              modes: ['adaptive', 'enabled'],
+              preferredMode: 'adaptive',
+              requiresBudgetForEnabled: false,
+              supportsEffort: true,
+              supportedEffortLevels: efforts
+            }
+          : { modes: [], supportsEffort: false, supportedEffortLevels: [] }
+      }
+    }
+  })
+}
+
+async function applyQoder(info: ProxyTargetInfo): Promise<void> {
+  const file = qoderSettingsPath()
+  const settings = await readJsonObject(file)
+  const providers =
+    settings.providers && typeof settings.providers === 'object' && !Array.isArray(settings.providers)
+      ? (settings.providers as Record<string, unknown>)
+      : {}
+  providers[QODER_PROVIDER_ID] = {
+    baseUrl: info.baseUrl,
+    apiKey: info.apiKey,
+    type: 'openai-compatible',
+    // 走 Anthropic 协议：Kiro 的模型以 Claude 为主，推理档位、工具调用这条路最完整；GPT 等模型反代照样能转
+    protocol: 'anthropic',
+    authType: 'api-key',
+    model: info.model,
+    models: qoderModels(info)
+  }
+  settings.providers = providers
+  await writeFileAtomic(file, `${JSON.stringify(settings, null, 2)}\n`)
+  // 文件里有 API Key，和它自己写的一样只给本人读写
+  await fs.chmod(file, 0o600).catch(() => undefined)
+}
+
+/** 只摘我们那一条；摘完 providers 空了就连键一起删，回到它没加过自定义模型时的样子 */
+async function restoreQoder(): Promise<void> {
+  const file = qoderSettingsPath()
+  const settings = await readJsonObject(file).catch(() => null)
+  const providers = settings?.providers as Record<string, unknown> | undefined
+  if (!settings || !providers || typeof providers !== 'object' || !(QODER_PROVIDER_ID in providers)) return
+  delete providers[QODER_PROVIDER_ID]
+  if (!Object.keys(providers).length) delete settings.providers
+  await writeFileAtomic(file, `${JSON.stringify(settings, null, 2)}\n`)
+  await fs.chmod(file, 0o600).catch(() => undefined)
+}
+
+async function qoderApplied(info: ProxyTargetInfo): Promise<boolean> {
+  const settings = await readJsonObject(qoderSettingsPath()).catch(() => null)
+  const ours = (settings?.providers as Record<string, Record<string, unknown>> | undefined)?.[QODER_PROVIDER_ID]
+  return !!ours && ours.baseUrl === info.baseUrl && ours.apiKey === info.apiKey
+}
+
+/** 可执行文件名同样没改（Electron 默认名），按 .app 里的路径匹配 */
+async function qoderRunning(): Promise<boolean> {
+  if (process.platform !== 'darwin') return false
+  try {
+    await run('pgrep', ['-f', 'Qoder CN.app/Contents/MacOS/'], 5_000)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// ============ ZCode（智谱） ============
+//
+// 自定义供应商存在本机 ~/.zcode/v2/provider_config.json（Windows 同样在用户目录下）。规则读自 ZCode 3.14.4：
+//  - providerConfigRules.providerRules[]：group 固定 standard-personal（「个人供应商」），
+//    access 写 api-key 并直接带 apiKey（个人供应商的 key 就存在这份文件里，不进 credentials.json）；
+//    api.type 选 anthropic-messages，baseUrl 不带 /v1——它按协议固定拼 /v1/messages。
+//  - personalModelIds 是模型列表；界面直接显示模型 id，没有单独的显示名，所以 Kiro 只能体现在供应商名上。
+//  - modelConfigRules.manualProviderModelRules[]：按 providerId + modelId 逐个声明上下文、输入能力、
+//    输出上限和推理档位。字段是严格校验的（多一个键整份配置都不认），只写它手动配置允许的那几项。
+//  - 档位怎么落到请求体由 reasoningLevel.map 表达式决定；Kiro 的模型都是 output_config.effort 控制思考，
+//    和它内置给 Claude 5 系的写法一致。
+//  - 它会定时轮询这份文件，写完一般不用重启。
+// 这个文件 ZCode 自己也在写（用户在设置里加的供应商、排序），只增删我们那一个 providerId。
+
+const ZCODE_PROVIDER_ID = 'kiro-manager-lite'
+const ZCODE_BUNDLE_ID = 'dev.zcode.app'
+/** 和 Qoder 一样只写这几档；GPT 系的 none 在 Anthropic 协议下没有对应写法 */
+const ZCODE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
+
+/**
+ * 和 ZCode 自己找主目录的顺序一致：ZCODE_DESKTOP_HOME_DIR → HOME → USERPROFILE。
+ * Windows 上装了 Git Bash 等工具的人常设了 HOME，它就以 HOME 为准，只用 os.homedir()（USERPROFILE）会写错地方。
+ */
+function zcodeConfigPath(): string {
+  const root =
+    process.env.ZCODE_DESKTOP_HOME_DIR?.trim() || process.env.HOME?.trim() || process.env.USERPROFILE?.trim() || home()
+  return path.join(root, '.zcode', 'v2', 'provider_config.json')
+}
+
+/** 拿到 config 下的各层，缺哪层补哪层；结构不对（被手改坏）时按空的处理，不覆盖成别的类型 */
+function zcodeSections(doc: Record<string, unknown>): {
+  config: Record<string, unknown>
+  order: unknown[]
+  providers: Record<string, unknown>[]
+  manualModels: Record<string, unknown>[]
+} {
+  const obj = (v: unknown): Record<string, unknown> =>
+    v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {}
+  const config = obj(doc.config)
+  const providerRules = obj(config.providerConfigRules)
+  const modelRules = obj(config.modelConfigRules)
+  if (!Array.isArray(config.providerOrder)) config.providerOrder = []
+  if (!Array.isArray(providerRules.providerRules)) providerRules.providerRules = []
+  if (!Array.isArray(modelRules.providerModelRules)) modelRules.providerModelRules = []
+  if (!Array.isArray(modelRules.manualProviderModelRules)) modelRules.manualProviderModelRules = []
+  config.providerConfigRules = providerRules
+  config.modelConfigRules = modelRules
+  doc.schemaVersion ??= 1
+  doc.config = config
+  return {
+    config,
+    order: config.providerOrder as unknown[],
+    providers: providerRules.providerRules as Record<string, unknown>[],
+    manualModels: modelRules.manualProviderModelRules as Record<string, unknown>[]
+  }
+}
+
+/** 把我们名下的条目全部摘掉（重写前、还原时共用），别人的原样保留 */
+function dropZcodeEntries(doc: Record<string, unknown>): boolean {
+  const { config, providers, manualModels } = zcodeSections(doc)
+  const before = providers.length + manualModels.length + (config.providerOrder as unknown[]).length
+  config.providerOrder = (config.providerOrder as unknown[]).filter((id) => id !== ZCODE_PROVIDER_ID)
+  const ruleSets = config.providerConfigRules as Record<string, unknown>
+  ruleSets.providerRules = providers.filter((r) => r?.providerId !== ZCODE_PROVIDER_ID)
+  const modelSets = config.modelConfigRules as Record<string, unknown>
+  modelSets.manualProviderModelRules = manualModels.filter((r) => r?.providerId !== ZCODE_PROVIDER_ID)
+  modelSets.providerModelRules = (modelSets.providerModelRules as Record<string, unknown>[]).filter(
+    (r) => r?.providerId !== ZCODE_PROVIDER_ID
+  )
+  const after =
+    (ruleSets.providerRules as unknown[]).length +
+    (modelSets.manualProviderModelRules as unknown[]).length +
+    (config.providerOrder as unknown[]).length
+  return after !== before
+}
+
+function zcodeModelRule(m: KiroModelInfo): Record<string, unknown> {
+  const efforts = (m.effort?.options ?? []).filter((e) => ZCODE_EFFORTS.includes(e))
+  return {
+    providerId: ZCODE_PROVIDER_ID,
+    modelId: m.modelId,
+    config: {
+      enabled: true,
+      properties: {
+        contextWindow: modelInputTokens(m),
+        supportsJsonSchemaOutput: false,
+        // 不声明原生搜索：它会改走自己的搜索工具，反代那边的服务端搜索走不到
+        supportsNativeWebSearch: false,
+        supportsMidConversationSystem: false,
+        inputFormat: { supportsImage: modelTakesImages(m), supportsVideo: false, supportsPdf: false }
+      },
+      optionSpecs: {
+        /*
+         * 有档位的按档位写 effort；没有档位的只给一个 disabled、映射为空对象（不往请求里加思考参数）。
+         * 不能整个省掉：省掉就落到它的兜底规则 [disabled, enabled]，选 enabled 会给不支持档位的模型发 effort=high。
+         */
+        reasoningLevel: efforts.length
+          ? {
+              values: efforts,
+              map: '{"thinking": {"type": "adaptive"}, "output_config": {"effort": reasoningLevel}}'
+            }
+          : { values: ['disabled'], map: '{}' },
+        maxOutputTokens: { max: modelOutputTokens(m) }
+      }
+    }
+  }
+}
+
+async function applyZcode(info: ProxyTargetInfo): Promise<void> {
+  const file = zcodeConfigPath()
+  const doc = await readJsonObject(file)
+  dropZcodeEntries(doc)
+  const { order, providers, manualModels } = zcodeSections(doc)
+  const models = orderedModels(info)
+  order.push(ZCODE_PROVIDER_ID)
+  providers.push({
+    providerId: ZCODE_PROVIDER_ID,
+    providerName: 'Kiro Manager Lite',
+    config: {
+      group: 'standard-personal',
+      access: { type: 'api-key', apiKey: info.apiKey },
+      // Anthropic 协议：Kiro 的模型以 Claude 为主，推理档位、工具调用这条路最完整；GPT 等模型反代照样能转
+      api: { type: 'anthropic-messages', baseUrl: info.baseUrl },
+      personalModelIds: models.map((m) => m.modelId),
+      modelOrder: models.map((m) => m.modelId)
+    }
+  })
+  manualModels.push(...models.map(zcodeModelRule))
+  await writeFileAtomic(file, `${JSON.stringify(doc, null, 2)}\n`)
+  // 文件里有 API Key，和它自己写的一样只给本人读写
+  await fs.chmod(file, 0o600).catch(() => undefined)
+}
+
+async function restoreZcode(): Promise<void> {
+  const file = zcodeConfigPath()
+  const doc = await readJsonObject(file).catch(() => null)
+  if (!doc || !dropZcodeEntries(doc)) return
+  await writeFileAtomic(file, `${JSON.stringify(doc, null, 2)}\n`)
+  await fs.chmod(file, 0o600).catch(() => undefined)
+}
+
+async function zcodeApplied(info: ProxyTargetInfo): Promise<boolean> {
+  const doc = await readJsonObject(zcodeConfigPath()).catch(() => null)
+  if (!doc) return false
+  const ours = zcodeSections(doc).providers.find((r) => r?.providerId === ZCODE_PROVIDER_ID)
+  const cfg = ours?.config as { access?: { apiKey?: string }; api?: { baseUrl?: string } } | undefined
+  return !!cfg && cfg.api?.baseUrl === info.baseUrl && cfg.access?.apiKey === info.apiKey
+}
+
+async function zcodeRunning(): Promise<boolean> {
+  if (process.platform !== 'darwin') return false
+  try {
+    await run('pgrep', ['-f', 'ZCode.app/Contents/MacOS/ZCode'], 5_000)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// ============ Kimi Code（月之暗面） ============
+//
+// 配置在 ~/.kimi-code/config.toml（KIMI_CODE_HOME 可改），规则读自 Kimi Code 桌面版 1.0.4：
+//  - [providers."<id>"]：type 可选 anthropic / openai / kimi / google-genai / openai_responses / vertexai，
+//    键名是 snake_case（它读进来再转驼峰）：base_url、api_key、custom_headers……
+//    走 anthropic：它用官方 Anthropic SDK，base_url 不带 /v1，SDK 自己拼 /v1/messages。
+//  - [models."<provider>/<model>"]：provider、model、max_context_size（必填）、max_output_size、display_name、
+//    capabilities（thinking / always_thinking / image_in / tool_use…）、support_efforts、default_effort、
+//    adaptive_thinking。adaptive_thinking = true 时它发 thinking.type=adaptive + output_config.effort，
+//    正是 Kiro 的模型认的写法；不写的话它按模型名猜，猜不中就退回 budget_tokens 那一套。
+//  - 它自己改设置时会把整份 TOML 重新序列化（注释、标记行都会丢），
+//    所以不用标记包裹，而是按表头前缀认领：[providers."kiro-manager-lite"] 和 [models."kiro-manager-lite/…"]。
+//  - 只在启动时读配置，改完要重启。
+// 不动 default_model：那是用户自己选的默认模型，在它的模型选择器里切到 Kiro 前缀的即可。
+//
+// 联网搜索另走一条线：它的 WebSearch 不经过模型供应商，而是用 Kimi 账号的登录凭证直连 Moonshot 搜索服务，
+// 免费套餐一律 403。[services.moonshot_search] 配了 base_url 就优先用它，所以指到反代的 /kimi/search。
+// 只接管 search 不碰 moonshot_fetch：抓网页失败时它自己会退回本地抓取，不受套餐影响。
+// 它的托管登录刷新模型列表时只回写 providers / models / default_model / thinking，不会覆盖 services。
+
+const KIMI_PROVIDER_ID = 'kiro-manager-lite'
+const KIMI_BUNDLE_ID = 'com.kimi.code.desktop'
+/** 它界面上认的档位；Kiro GPT 系的 none 在 Anthropic 协议下没有对应写法，不写 */
+const KIMI_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
+
+function kimiConfigPath(): string {
+  const dir = process.env.KIMI_CODE_HOME?.trim()
+  return path.join(dir || path.join(home(), '.kimi-code'), 'config.toml')
+}
+
+/**
+ * 表头是不是我们的：providers 下我们那一张（含它可能补的子表）、models 下 kiro-manager-lite/ 开头的，
+ * 以及搜索服务那张（含 custom_headers 之类的子表）。
+ * 搜索服务那张表名是固定的，不带我们的前缀：用户原先若自己配过它，写入时会被我们接管，
+ * 还原靠写入前的快照放回（见 restoreKimi）。
+ */
+function isKimiOurHeader(line: string): boolean {
+  const header = line.trim()
+  return (
+    header.startsWith(`[providers."${KIMI_PROVIDER_ID}"]`) ||
+    header.startsWith(`[providers."${KIMI_PROVIDER_ID}".`) ||
+    header.startsWith(`[models."${KIMI_PROVIDER_ID}/`) ||
+    header === KIMI_SEARCH_HEADER ||
+    header.startsWith('[services.moonshot_search.')
+  )
+}
+
+const KIMI_SEARCH_HEADER = '[services.moonshot_search]'
+
+/** 从一段 TOML 里取出 [services.moonshot_search] 及其子表的原文；没有就是空串 */
+function kimiSearchSection(content: string): string {
+  const out: string[] = []
+  let inside = false
+  for (const line of content.split(/\r?\n/)) {
+    if (/^\s*\[/.test(line)) {
+      const header = line.trim()
+      inside = header === KIMI_SEARCH_HEADER || header.startsWith('[services.moonshot_search.')
+    }
+    if (inside) out.push(line)
+  }
+  return out.join('\n').trimEnd()
+}
+
+/** 摘掉我们名下的所有表，其余逐行原样保留 */
+function dropKimiSections(content: string): string {
+  const newline = content.includes('\r\n') ? '\r\n' : '\n'
+  const out: string[] = []
+  let skipping = false
+  for (const line of content ? content.split(/\r?\n/) : []) {
+    if (/^\s*\[/.test(line)) skipping = isKimiOurHeader(line)
+    if (!skipping) out.push(line)
+  }
+  return out.join(newline).trimEnd()
+}
+
+function tomlStringArray(values: string[]): string {
+  return `[ ${values.map((v) => `"${tomlString(v)}"`).join(', ')} ]`
+}
+
+function kimiSections(info: ProxyTargetInfo): string {
+  const lines: string[] = [
+    `[providers."${KIMI_PROVIDER_ID}"]`,
+    'type = "anthropic"',
+    `base_url = "${tomlString(info.baseUrl)}"`,
+    `api_key = "${tomlString(info.apiKey)}"`,
+    '',
+    KIMI_SEARCH_HEADER,
+    `base_url = "${tomlString(`${info.baseUrl}/kimi/search`)}"`,
+    `api_key = "${tomlString(info.apiKey)}"`
+  ]
+  for (const m of orderedModels(info)) {
+    const efforts = (m.effort?.options ?? []).filter((e) => KIMI_EFFORTS.includes(e))
+    const capabilities = [
+      // 有档位才声明能思考；没档位的模型反代控制不了思考，声明了也只是个摆设开关
+      ...(efforts.length ? ['thinking'] : []),
+      ...(modelTakesImages(m) ? ['image_in'] : []),
+      'tool_use'
+    ]
+    const defaultEffort =
+      m.effort?.default && efforts.includes(m.effort.default)
+        ? m.effort.default
+        : efforts[Math.floor(efforts.length / 2)]
+    lines.push(
+      '',
+      `[models."${KIMI_PROVIDER_ID}/${tomlString(m.modelId)}"]`,
+      `provider = "${KIMI_PROVIDER_ID}"`,
+      `model = "${tomlString(m.modelId)}"`,
+      // 加前缀：它自带 Kimi 的模型，选择器里得分得清哪些走反代
+      `display_name = "${tomlString(kiroLabel(m))}"`,
+      `max_context_size = ${modelInputTokens(m)}`,
+      `max_output_size = ${modelOutputTokens(m)}`,
+      `capabilities = ${tomlStringArray(capabilities)}`
+    )
+    if (efforts.length) {
+      lines.push(
+        `support_efforts = ${tomlStringArray(efforts)}`,
+        `default_effort = "${defaultEffort}"`,
+        'adaptive_thinking = true'
+      )
+    }
+  }
+  return lines.join('\n')
+}
+
+async function applyKimi(info: ProxyTargetInfo): Promise<void> {
+  const file = kimiConfigPath()
+  const kept = dropKimiSections((await readTextIfExists(file)) ?? '')
+  const content = `${kept ? `${kept}\n\n` : ''}${kimiSections(info)}\n`
+  await writeFileAtomic(file, content)
+  // 文件里有 API Key，只给本人读写
+  await fs.chmod(file, 0o600).catch(() => undefined)
+}
+
+/**
+ * 摘掉我们的表；写入前用户自己配过搜索服务的，把那段原文放回去。
+ * 其余部分以当前文件为准（不整份用快照盖回），写入后用户在 Kimi 里改的设置不会丢。
+ */
+async function restoreKimi(original: string | null): Promise<void> {
+  const file = kimiConfigPath()
+  const content = await readTextIfExists(file)
+  if (content === null) return
+  const kept = dropKimiSections(content)
+  // 快照只在首次写入时拍；万一拍到的已经是我们写的（指向 /kimi/search），就不算用户的
+  const saved = original ? kimiSearchSection(original) : ''
+  const userSearch = saved.includes('/kimi/search') ? '' : saved
+  const next = [kept, userSearch].filter(Boolean).join('\n\n')
+  if (next === content.trimEnd()) return
+  await writeFileAtomic(file, next ? `${next}\n` : '')
+}
+
+async function kimiApplied(info: ProxyTargetInfo): Promise<boolean> {
+  const content = (await readTextIfExists(kimiConfigPath())) ?? ''
+  // 只看我们那张 provider 表里的地址和 Key：它重新序列化后空格、引号风格可能变，按值比对
+  const lines = content.split(/\r?\n/)
+  const start = lines.findIndex((l) => l.trim() === `[providers."${KIMI_PROVIDER_ID}"]`)
+  if (start < 0) return false
+  const body: string[] = []
+  for (const line of lines.slice(start + 1)) {
+    if (/^\s*\[/.test(line)) break
+    body.push(line)
+  }
+  const value = (key: string): string | undefined =>
+    body
+      .map((l) => l.match(new RegExp(`^\\s*${key}\\s*=\\s*["']([^"']*)["']`))?.[1])
+      .find((v) => v !== undefined)
+  return value('base_url') === info.baseUrl && value('api_key') === info.apiKey
+}
+
+async function kimiRunning(): Promise<boolean> {
+  if (process.platform !== 'darwin') return false
+  try {
+    // 同一台机器上常常还装着 Kimi.app（聊天版），按完整路径匹配，别认错
+    await run('pgrep', ['-f', 'Kimi Code.app/Contents/MacOS/Kimi Code'], 5_000)
+    return true
+  } catch {
+    return false
+  }
+}
+
 /**
  * 重启 / 打开一个按 bundle id 定位的桌面应用。
  * 用 AppleScript 正常退出，让它自己收尾（保存会话、落库），不直接杀进程。
@@ -1188,6 +1647,19 @@ function claudeMaxEffort(options: string[] | undefined): string | undefined {
   return CLAUDE_EFFORTS[Math.max(...ranked)]
 }
 
+/**
+ * 写给 Claude 桌面版的模型名：Claude 系把版本号的点换成短横（claude-opus-5.5 → claude-opus-5-5）。
+ *
+ * 踩过的坑：桌面版的档位选择器不看我们给的 maxEffort 有没有，而是先拿模型名去它的模型目录
+ * （model-catalog/published.json，和内置的兜底表）里查这个模型支持哪些档位，查不到就不显示档位菜单；
+ * maxEffort 只能在查到的档位里再封顶。目录里的 id 全是短横写法，比较时只做小写和去日期，
+ * 所以 Kiro 的点号写法除了恰好没有小版本号的（claude-opus-5）以外全都查不到。
+ * 反代的 mapProxyModel 会把短横写法还原成点号，请求照样落到对的模型上。
+ */
+function claudeAppModelName(modelId: string): string {
+  return modelId.replace(/^(claude-[a-z]+-\d+)\.(\d{1,2})(?=$|[^\d])/i, '$1-$2')
+}
+
 async function applyClaudeApp(info: ProxyTargetInfo): Promise<void> {
   // 1. 打开 3P 模式。这个文件可能已有别的字段（用户配过 MCP 等），只加不覆盖
   const mode = await readJsonObject(claude3pModePath()).catch(() => ({}) as Record<string, unknown>)
@@ -1214,7 +1686,7 @@ async function applyClaudeApp(info: ProxyTargetInfo): Promise<void> {
     const supports1m = modelInputTokens(m) >= 1_000_000
     const cap = claudeMaxEffort('effort' in m ? m.effort?.options : undefined)
     return {
-      name: m.modelId,
+      name: claudeAppModelName(m.modelId),
       labelOverride: kiroLabel(m),
       /*
        * 桌面版没有「填上下文大小」这种字段（条目 schema 就 7 个字段，没有数值项），
@@ -1245,7 +1717,7 @@ async function applyClaudeApp(info: ProxyTargetInfo): Promise<void> {
         inferenceGatewayBaseUrl: info.baseUrl,
         inferenceGatewayApiKey: info.apiKey,
         inferenceGatewayAuthScheme: 'bearer',
-        inferenceModels: models.length ? models : [{ name: info.model }],
+        inferenceModels: models.length ? models : [{ name: claudeAppModelName(info.model) }],
         ...(defaultEffort ? { defaultModelEffort: defaultEffort } : {})
       },
       null,
@@ -1419,7 +1891,7 @@ function runCcursor(
     const child = spawn(cmd.file, cmd.args, {
       windowsVerbatimArguments: cmd.verbatim,
       env: {
-        ...process.env,
+        ...cleanChildEnv(),
         PATH: `${nodeDir}${path.delimiter}${process.env.PATH ?? ''}`,
         // 装完不要交互提问
         CI: '1',
@@ -2396,7 +2868,8 @@ async function codexAppBinary(): Promise<string | null> {
 
 function run(command: string, args: string[], timeout = 15_000): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(command, args, { timeout, windowsHide: true }, (error, stdout, stderr) => {
+    // open / osascript 拉起的应用会继承这里的环境，不能把本应用的 Electron 变量带过去（见 childEnv）
+    execFile(command, args, { timeout, windowsHide: true, env: cleanChildEnv() }, (error, stdout, stderr) => {
       if (error) reject(new Error(String(stderr || error.message).slice(0, 300)))
       else resolve(String(stdout))
     })
@@ -2459,7 +2932,7 @@ export async function launchCodexApp(): Promise<void> {
   // 已经在跑的话必须先退出：macOS 对同一个 bundle 只会激活现有实例，注入的变量就白费了
   await quitCodexApp()
 
-  const child = spawn(binary, [], { detached: true, stdio: 'ignore' })
+  const child = spawn(binary, [], { detached: true, stdio: 'ignore', env: cleanChildEnv() })
   // 脱离父进程，关掉本应用不会把它带走
   child.unref()
   log('info', `[Proxy] 已启动 Codex 桌面版：${binary}`)
@@ -2572,6 +3045,7 @@ async function openInTerminal(command: string): Promise<void> {
      * start 的第一个带引号参数会被当成窗口标题，所以先给一个空标题 ""。
      */
     const child = spawn('cmd', ['/c', 'start', '""', 'cmd', '/k', command], {
+      env: cleanChildEnv(),
       detached: true,
       stdio: 'ignore',
       windowsVerbatimArguments: true
@@ -2595,6 +3069,9 @@ export async function openProxyClient(target: ProxyClientTarget): Promise<void> 
   if (target === 'workbuddy') {
     return restartMacApp('WorkBuddy', 'workbuddy', WORKBUDDY_BUNDLE_ID, workbuddyRunning)
   }
+  if (target === 'qoder') return restartMacApp('Qoder CN', 'qoder', QODER_BUNDLE_ID, qoderRunning)
+  if (target === 'zcode') return restartMacApp('ZCode', 'zcode', ZCODE_BUNDLE_ID, zcodeRunning)
+  if (target === 'kimi') return restartMacApp('Kimi Code', 'kimi', KIMI_BUNDLE_ID, kimiRunning)
   // 和卡片上展示的启动命令同一份：手动指定了位置的会带完整路径
   if (target === 'claudeCode') return openInTerminal(cliInvoke('claudeCode', 'claude'))
   if (target === 'codex') return openInTerminal(codexCommand())
@@ -2627,6 +3104,9 @@ const INSTALL_HINTS: Record<ProxyClientTarget, string> = {
   cursor: '没有找到 Cursor，可点击上方链接快捷安装。',
   vscode: '没有找到 VS Code，可点击上方链接快捷安装。',
   workbuddy: '没有找到 WorkBuddy，可点击上方链接快捷安装。',
+  qoder: '没有找到 Qoder CN，可点击上方链接快捷安装。',
+  zcode: '没有找到 ZCode，可点击上方链接快捷安装。',
+  kimi: '没有找到 Kimi Code，可点击上方链接快捷安装。',
   deepseek: '没有找到 dsh。安装：npm i -g @deepseek-ai/dsh，或先跑一次 npx @deepseek-ai/dsh web。',
   deepseekApp: '没有找到 DeepSeek Harness 桌面版，可点击上方链接快捷安装。'
 }
@@ -2683,6 +3163,9 @@ export async function applyProxyClient(
   else if (target === 'deepseekApp') await applyDeepseekApp(info)
   else if (target === 'vscode') await applyVscode(info)
   else if (target === 'workbuddy') await applyWorkbuddy(info)
+  else if (target === 'qoder') await applyQoder(info)
+  else if (target === 'zcode') await applyZcode(info)
+  else if (target === 'kimi') await applyKimi(info)
   else if (target === 'cursor') await applyCursor(info, onProgress)
   else await applyCodex(info)
   log('info', `[Proxy] 已写入 ${target} 配置：${clientFiles(target).join('、')}`)
@@ -2730,6 +3213,20 @@ export async function restoreProxyClient(
       continue
     }
     // 同理：用户会在 WorkBuddy 设置页里增删自定义模型，只摘我们的条目
+    if (target === 'qoder' && file.path === qoderSettingsPath()) {
+      await restoreQoder()
+      continue
+    }
+    // 同理：用户会在 ZCode 设置里加自己的供应商，只摘我们那一条
+    if (target === 'zcode' && file.path === zcodeConfigPath()) {
+      await restoreZcode()
+      continue
+    }
+    // 同理：config.toml 里还有它自己的托管供应商等配置，只摘我们那几张表
+    if (target === 'kimi' && file.path === kimiConfigPath()) {
+      await restoreKimi(file.existed ? file.content : null)
+      continue
+    }
     if (target === 'workbuddy' && file.path === workbuddyModelsPath()) {
       await restoreWorkbuddy(file)
       continue
@@ -2767,7 +3264,10 @@ const APPLIED_CHECKS: Record<ProxyClientTarget, (info: ProxyTargetInfo) => Promi
   deepseek: deepseekApplied,
   deepseekApp: deepseekAppApplied,
   vscode: vscodeApplied,
-  workbuddy: workbuddyApplied
+  workbuddy: workbuddyApplied,
+  qoder: qoderApplied,
+  zcode: zcodeApplied,
+  kimi: kimiApplied
 }
 
 /** 能探测进程的（图形界面）才有值，命令行版是 undefined */
@@ -2777,7 +3277,10 @@ const APP_RUNNING_CHECKS: Partial<Record<ProxyClientTarget, () => Promise<boolea
   cursor: cursorRunning,
   deepseekApp: deepseekAppRunning,
   vscode: vscodeRunning,
-  workbuddy: workbuddyRunning
+  workbuddy: workbuddyRunning,
+  qoder: qoderRunning,
+  zcode: zcodeRunning,
+  kimi: kimiRunning
 }
 
 /** 需要用户自己敲的启动命令 */
@@ -2798,7 +3301,10 @@ export async function proxyClientStates(info: ProxyTargetInfo): Promise<ProxyCli
     'deepseek',
     'deepseekApp',
     'vscode',
-    'workbuddy'
+    'workbuddy',
+    'qoder',
+    'zcode',
+    'kimi'
   ]
   const states: ProxyClientState[] = []
   for (const target of targets) {

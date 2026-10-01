@@ -9,6 +9,7 @@ import * as os from 'os'
 import * as path from 'path'
 import { sleep, waitUntil } from './utils'
 import type { RestartIdeResult } from '../shared/types'
+import { cleanChildEnv } from './childEnv'
 
 /** 每轮等待 IDE 退出的间隔 */
 const QUIT_POLL_MS = 300
@@ -26,7 +27,7 @@ const LINUX_KIRO_PATTERN = '(^|/)kiro( |$)'
 /** execFile 的 promise 版：只关心 stdout，失败不抛 */
 function run(cmd: string, args: string[], timeout = 8000): Promise<{ ok: boolean; stdout: string }> {
   return new Promise((resolve) => {
-    execFile(cmd, args, { timeout, windowsHide: true }, (error, stdout) => {
+    execFile(cmd, args, { timeout, windowsHide: true, env: cleanChildEnv() }, (error, stdout) => {
       resolve({ ok: !error, stdout: String(stdout ?? '') })
     })
   })
@@ -103,7 +104,8 @@ async function startKiro(): Promise<boolean> {
   if (!exe) return false
   try {
     // detached + unref：管理器自身退出时不会把 IDE 一起带走
-    spawn(exe, [], { detached: true, stdio: 'ignore', windowsHide: false }).unref()
+    // 不把本应用的 Electron 环境变量带给 Kiro IDE（原因见 childEnv）
+    spawn(exe, [], { detached: true, stdio: 'ignore', windowsHide: false, env: cleanChildEnv() }).unref()
     return true
   } catch {
     return false

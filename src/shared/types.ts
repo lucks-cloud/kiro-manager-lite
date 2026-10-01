@@ -994,6 +994,12 @@ export type ProxyClientTarget =
   | 'deepseekApp'
   /** 腾讯 WorkBuddy 桌面版，读 ~/.workbuddy/models.json 里的自定义模型 */
   | 'workbuddy'
+  /** 阿里 Qoder CN 桌面版，读 ~/.qoder-cn/settings.json 的 providers */
+  | 'qoder'
+  /** 智谱 ZCode 桌面版，读 ~/.zcode/v2/provider_config.json 的自定义供应商 */
+  | 'zcode'
+  /** 月之暗面 Kimi Code 桌面版，读 ~/.kimi-code/config.toml 的 providers / models */
+  | 'kimi'
 
 export interface ProxyClientState {
   target: ProxyClientTarget
