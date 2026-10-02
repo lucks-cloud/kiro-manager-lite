@@ -2,9 +2,10 @@
 import Store from 'electron-store'
 import { app } from 'electron'
 import * as path from 'path'
-import * as fs from 'fs/promises'
+import { mkdirSync } from 'fs'
 import {
   DEFAULT_KEY_GATEWAY_DATA,
+  DEFAULT_PRIMARY_COLOR,
   DEFAULT_SETTINGS,
   type AccountStoreData,
   type AppSettings,
@@ -131,6 +132,20 @@ function write<K extends keyof Schema>(key: K, value: Schema[K]): void {
   store.set(key, value)
   snapshot ??= store.store
   snapshot[key] = JSON.parse(JSON.stringify(value)) as Schema[K]
+}
+
+// ============ 初始化 ============
+
+/** 主库回到出厂默认值 */
+export function resetStoreData(): void {
+  store.clear()
+  snapshot = null
+}
+
+/** 有改写前快照的桌面 agent（即当前写入过、还没还原的那些） */
+export function proxyClientBackupTargets(): string[] {
+  const all = read('proxyClientBackups') as Record<string, ProxyClientBackup> | undefined
+  return Object.keys(all ?? {})
 }
 
 export function getProxyApiKeys(): ProxyApiKey[] {
@@ -368,13 +383,9 @@ export function getAccountData(): AccountStoreData {
 
 export async function setAccountData(data: AccountStoreData): Promise<void> {
   write('accountData', data)
-  await writeBackup(data)
 }
 
-/**
- * 从主进程最新快照删除账号，避免渲染进程用旧整表覆盖主动续期刚写入的新凭证。
- * 同时从滚动备份里移除这些账号，保证“删除”不会在历史备份中留下可恢复凭证。
- */
+/** 从主进程最新快照删除账号，避免渲染进程用旧整表覆盖主动续期刚写入的新凭证 */
 export async function deleteAccountData(
   ids: string[]
 ): Promise<{ accounts: AccountStoreData; removed: number }> {
@@ -395,12 +406,24 @@ export async function deleteAccountData(
         : current.activeAccountId
   }
   await setAccountData(accounts)
-  await purgeAccountsFromBackups(remove)
   return { accounts, removed }
 }
 
 export function getSettings(): AppSettings {
-  return { ...DEFAULT_SETTINGS, ...(read('settings') as Partial<AppSettings>) }
+  const raw = (read('settings') ?? {}) as Partial<AppSettings> & { darkMode?: unknown }
+  const { darkMode, ...rest } = raw
+  const merged: AppSettings = { ...DEFAULT_SETTINGS, ...rest }
+  /*
+   * 旧版只有一个 darkMode 开关。没选过主题风格的老用户按它换算，升级后明暗不变；
+   * 不能直接落到新默认的「自动」，否则开着浅色的人会在系统深色时突然变黑。
+   * 旧键在下一次保存时自然被丢掉（rest 里已经没有它）。
+   */
+  if (rest.themeMode === undefined && typeof darkMode === 'boolean') {
+    merged.themeMode = darkMode ? 'dark' : 'light'
+  }
+  // 开发期间有过「跟随系统强调色」，存的是 system 这个非色值，回到默认紫
+  if (!/^#[0-9a-f]{6}$/i.test(merged.primaryColor)) merged.primaryColor = DEFAULT_PRIMARY_COLOR
+  return merged
 }
 
 export function setSettings(settings: Partial<AppSettings>): AppSettings {
@@ -443,72 +466,23 @@ export function setKeyData(data: KeyGatewayData): void {
   })
 }
 
-// ============ 滚动备份：每次保存留一份，防止 store 损坏丢号 ============
+// ============ 备份目录 ============
 
-/** 备份最短间隔，避免频繁写盘 */
-const BACKUP_INTERVAL_MS = 5 * 60 * 1000
-/** 最多保留的备份份数 */
-const BACKUP_KEEP = 10
-
+/** 自动备份（备份计划）的 .kml 存放位置；清除全部数据时整个目录一起删 */
 export function getBackupDir(): string {
   return path.join(app.getPath('userData'), 'backups')
 }
 
-let lastBackupAt = 0
-
-/** 删除账号时同步净化滚动备份，避免旧备份继续保存已删除账号的凭证与用量快照。 */
-async function purgeAccountsFromBackups(remove: Set<string>): Promise<number> {
-  if (!remove.size) return 0
+/**
+ * 确保备份目录存在。启动时就建好：设置页上能看到这个路径、能点「打开备份目录」，
+ * 不能等第一次备份才出现（目录不存在时打开会静默失败，看起来像按钮坏了）。
+ */
+export function ensureBackupDir(): string {
+  const dir = getBackupDir()
   try {
-    const dir = getBackupDir()
-    const files = (await fs.readdir(dir)).filter((name) => name.startsWith('accounts-'))
-    let removed = 0
-    for (const name of files) {
-      const file = path.join(dir, name)
-      try {
-        const parsed = JSON.parse(await fs.readFile(file, 'utf-8')) as AccountStoreData
-        if (!Array.isArray(parsed.accounts)) continue
-        const remaining = parsed.accounts.filter((account) => !remove.has(account.id))
-        const count = parsed.accounts.length - remaining.length
-        if (!count) continue
-        parsed.accounts = remaining
-        if (parsed.activeAccountId && remove.has(parsed.activeAccountId)) {
-          parsed.activeAccountId = null
-        }
-        await fs.writeFile(file, JSON.stringify(parsed, null, 2), 'utf-8')
-        removed += count
-      } catch (error) {
-        console.warn(`[Store] 无法净化账号备份 ${name}:`, error)
-      }
-    }
-    return removed
+    mkdirSync(dir, { recursive: true })
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code
-    if (code !== 'ENOENT') console.warn('[Store] purge backups failed:', error)
-    return 0
+    console.warn('[Store] 创建备份目录失败:', error)
   }
-}
-
-async function writeBackup(data: AccountStoreData): Promise<void> {
-  if (Date.now() - lastBackupAt < BACKUP_INTERVAL_MS) return
-  lastBackupAt = Date.now()
-  try {
-    const dir = getBackupDir()
-    await fs.mkdir(dir, { recursive: true })
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-    await fs.writeFile(
-      path.join(dir, `accounts-${stamp}.json`),
-      JSON.stringify(data, null, 2),
-      'utf-8'
-    )
-
-    // 文件名带 ISO 时间戳，字典序即时间序，取前面的就是最旧的
-    const files = (await fs.readdir(dir)).filter((f) => f.startsWith('accounts-')).sort()
-    for (const stale of files.slice(0, Math.max(0, files.length - BACKUP_KEEP))) {
-      await fs.unlink(path.join(dir, stale)).catch(() => undefined)
-    }
-    console.log(`[Store] 已创建账号备份（共 ${data.accounts.length} 个账号）`)
-  } catch (e) {
-    console.warn('[Store] backup failed:', e)
-  }
+  return dir
 }

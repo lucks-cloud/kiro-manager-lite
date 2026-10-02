@@ -209,6 +209,15 @@ const api = {
     invoke('app:open-external', url, privateMode),
   showPath: (target: 'store' | 'backup' | 'logs') => invoke('app:show-path', target),
 
+  // 数据管理：整库导出 / 导入 / 清除（导入、清除完成后应用会自动重启）
+  exportAllData: () => invoke('data:export'),
+  pickImportData: () => invoke('data:import-pick'),
+  applyImportData: () => invoke('data:import-apply'),
+  resetAllData: () => invoke('data:reset'),
+  getBackupStatus: () => invoke('backup:status'),
+  runBackupNow: () => invoke('backup:run'),
+  onBackupStatus: (handler: (status: unknown) => void) => subscribe('backup:status', handler),
+
   // 托盘
   syncTray: (snapshot: unknown) => invoke('tray:sync', snapshot),
   onTrayAction: (handler: (action: string) => void) => subscribe('tray:action', handler),
@@ -222,7 +231,10 @@ const api = {
 
   // 托盘「退出程序」触发的退出确认
   quitApp: () => invoke('app:quit'),
-  onConfirmQuit: (handler: () => void) => subscribe('app:confirm-quit', () => handler())
+  onConfirmQuit: (handler: () => void) => subscribe('app:confirm-quit', () => handler()),
+  // 窗口关闭按钮「每次询问」：主进程请界面弹确认框，选完交回去
+  onConfirmClose: (handler: () => void) => subscribe('app:confirm-close', () => handler()),
+  closeWindowChoice: (choice: 'minimize' | 'quit' | 'cancel') => invoke('app:close-choice', choice)
 }
 
 if (process.contextIsolated) {

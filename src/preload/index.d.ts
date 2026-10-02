@@ -9,6 +9,8 @@ import type {
   AppInfo,
   AppSettings,
   AuthMethod,
+  BackupScheduleStatus,
+  DataBackupSummary,
   BrowserOpenInfo,
   BuilderIdStartInfo,
   ChatTestChunk,
@@ -336,6 +338,19 @@ export interface Api {
   onProxyLog: (handler: (entry: ProxyLogEntry | null) => void) => () => void
   openExternal: (url: string, privateMode?: boolean) => Promise<IpcResult<BrowserOpenInfo>>
   showPath: (target: 'store' | 'backup' | 'logs') => Promise<IpcResult>
+  /** 导出全部数据为 .kml；用户取消时 saved 为 false */
+  exportAllData: () => Promise<IpcResult<{ saved: boolean; path?: string }>>
+  /** 选择 .kml 并返回摘要；用户取消时 data 为 null */
+  pickImportData: () => Promise<IpcResult<DataBackupSummary | null>>
+  /** 用刚选的备份替换全部数据，成功后应用立即重启（这个调用通常等不到返回） */
+  applyImportData: () => Promise<IpcResult>
+  /** 清除全部数据并还原外部配置，成功后应用立即重启 */
+  resetAllData: () => Promise<IpcResult>
+  /** 备份计划状态：上次 / 下次执行时间、备份目录里的份数 */
+  getBackupStatus: () => Promise<IpcResult<BackupScheduleStatus>>
+  /** 立即执行一次备份（和计划到点时完全一样） */
+  runBackupNow: () => Promise<IpcResult<BackupScheduleStatus>>
+  onBackupStatus: (handler: (status: BackupScheduleStatus) => void) => () => void
 
   queryLogs: (query: LogQuery) => Promise<IpcResult<LogQueryResult>>
   clearLogs: () => Promise<IpcResult>
@@ -349,6 +364,8 @@ export interface Api {
 
   quitApp: () => Promise<IpcResult>
   onConfirmQuit: (handler: () => void) => () => void
+  onConfirmClose: (handler: () => void) => () => void
+  closeWindowChoice: (choice: 'minimize' | 'quit' | 'cancel') => Promise<IpcResult>
 }
 
 declare global {

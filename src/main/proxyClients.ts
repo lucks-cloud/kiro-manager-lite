@@ -3008,18 +3008,49 @@ function loopbackReachableVia(proxy: SystemProxy, baseUrl: string): Promise<bool
   })
 }
 
+/** 不经代理直连反代的 /health，确认反代本身在跑 */
+function proxyAliveDirect(baseUrl: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = http.get(`${baseUrl}/health`, { timeout: 1_500 }, (res) => {
+      res.resume()
+      resolve(res.statusCode === 200)
+    })
+    req.on('error', () => resolve(false))
+    req.on('timeout', () => {
+      req.destroy()
+      resolve(false)
+    })
+  })
+}
+
+/** 结论缓存：同一个代理、同一个反代地址，短时间内不重复探测 */
+let loopbackCache: { key: string; at: number; value: string | undefined } | null = null
+const LOOPBACK_CACHE_MS = 30_000
+
 /**
  * 给界面用的系统代理结论。
- * 返回 undefined 表示没问题（没开代理，或者开了但回环能直连）。
+ * 返回 undefined 表示没问题（没开代理、反代没在跑，或者开了代理但回环能直连）。
+ *
+ * 踩过的坑：反代没启动时经代理去连回环，代理那头连不上会等到超时（Clash 约 3 秒）再回 502，
+ * 每张卡片各探一次就是十几次串行等待，刷新一次客户端列表要半分钟，
+ * 界面上「重新生成 Key」之类会顺带刷新列表的按钮就一直转圈；而且这时报「被代理拦了」也是误判。
+ * 所以先不经代理直连一次：反代都没在跑就不用查代理；查出的结论缓存 30 秒。
  */
 async function proxyLoopbackWarning(baseUrl: string): Promise<string | undefined> {
   const proxy = await systemProxy()
   if (!proxy) return undefined
-  if (await loopbackReachableVia(proxy, baseUrl)) return undefined
-  return (
-    `系统代理（${proxy.host}:${proxy.port}）把本机请求转发到了远端，客户端会连不上反代。` +
-    '请在代理工具的规则里把 127.0.0.1/8 设为 DIRECT（直连）后重试。'
-  )
+  const key = `${proxy.host}:${proxy.port}|${baseUrl}`
+  if (loopbackCache && loopbackCache.key === key && Date.now() - loopbackCache.at < LOOPBACK_CACHE_MS) {
+    return loopbackCache.value
+  }
+  let value: string | undefined
+  if ((await proxyAliveDirect(baseUrl)) && !(await loopbackReachableVia(proxy, baseUrl))) {
+    value =
+      `系统代理（${proxy.host}:${proxy.port}）把本机请求转发到了远端，客户端会连不上反代。` +
+      '请在代理工具的规则里把 127.0.0.1/8 设为 DIRECT（直连）后重试。'
+  }
+  loopbackCache = { key, at: Date.now(), value }
+  return value
 }
 
 /**
@@ -3306,6 +3337,7 @@ export async function proxyClientStates(info: ProxyTargetInfo): Promise<ProxyCli
     'zcode',
     'kimi'
   ]
+  const proxyIssue = await proxyLoopbackWarning(info.baseUrl).catch(() => undefined)
   const states: ProxyClientState[] = []
   for (const target of targets) {
     /*
@@ -3356,7 +3388,7 @@ export async function proxyClientStates(info: ProxyTargetInfo): Promise<ProxyCli
       hasBackup: getProxyClientBackup(target) !== null,
       command: command ? await command().catch(() => undefined) : undefined,
       // 没装是最根本的问题，优先于系统代理等其它提示
-      warning: install.hint ?? (await clientWarning(target, info).catch(() => undefined))
+      warning: install.hint ?? (await clientWarning(target, proxyIssue).catch(() => undefined))
     })
   }
   return states
@@ -3393,9 +3425,9 @@ async function codexWarning(): Promise<string | undefined> {
  */
 async function clientWarning(
   target: ProxyClientTarget,
-  info: ProxyTargetInfo
+  /** 系统代理的结论对所有卡片都一样，由调用方查一次传进来 */
+  proxyIssue: string | undefined
 ): Promise<string | undefined> {
-  const proxyIssue = await proxyLoopbackWarning(info.baseUrl)
   if (proxyIssue) return proxyIssue
 
   // 命令行版：全局默认 provider 被指到第三方时，不带 --profile 会走错地方

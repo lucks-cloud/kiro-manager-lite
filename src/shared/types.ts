@@ -2,6 +2,7 @@
 // 账户管理 —— 主进程 / 渲染进程共享类型
 // ============================================
 import { DEFAULT_REGION } from './regions'
+import { DEFAULT_BACKUP_CYCLE, DEFAULT_BACKUP_KEEP, type BackupCycle } from './backupSchedule'
 import { DEFAULT_PORTAL_LOCALE, type PortalLocale } from './portalLocale'
 import type { ModelEffort } from './modelSchema'
 
@@ -538,6 +539,37 @@ export interface RestartIdeResult {
   message: string
 }
 
+/** 备份计划的状态，设置页展示用 */
+export interface BackupScheduleStatus {
+  /** 上次自动备份的时间；从没备份过为 null */
+  lastAt: number | null
+  /** 上次自动备份失败的原因；成功后清空 */
+  lastError: string | null
+  /** 下次执行时间；计划没开为 null */
+  nextAt: number | null
+  /** 备份目录里现有的份数 */
+  count: number
+}
+
+/** 导入整库备份（.kml）前给用户确认的摘要 */
+export interface DataBackupSummary {
+  /** 数据文件路径 */
+  file: string
+  /** 导出时间；旧文件或手改过缺这一项时为 0 */
+  exportedAt: number
+  /** 导出时的应用版本 */
+  appVersion: string
+  /** 文件来自更新版本的应用：已知的部分照常导入，新增的部分会被忽略 */
+  newerSchema: boolean
+  /** 各部分的数量；文件里没带这一部分时为 null（导入时保持本机现状） */
+  accounts: number | null
+  apiKeys: number | null
+  /** 反代 API Key 数量，含默认 Key */
+  proxyKeys: number | null
+  /** 带了账号 / API Key 的用量记录 */
+  usageHistory: boolean
+}
+
 /** 应用与运行时信息 */
 export interface AppInfo {
   version: string
@@ -545,7 +577,10 @@ export interface AppInfo {
   chrome: string
   node: string
   platform: string
+  /** 加密主库文件（electron-store，名字固定带 .json 后缀，内容是密文） */
   storePath: string
+  /** 应用数据目录：主库、历史记录、日志、备份都在这下面 */
+  dataDir: string
   backupDir: string
 }
 
@@ -1085,10 +1120,20 @@ export type AccountDisplayMode = 'card' | 'compact' | 'list'
  */
 export type AccountExportFormat = 'json' | 'oidc' | 'kami' | 'csv' | 'txt' | 'clipboard'
 
+/** 主题风格：auto 跟随系统明暗，light / dark 固定 */
+export type ThemeMode = 'auto' | 'light' | 'dark'
+
+/** 默认主题色：紫罗兰 */
+export const DEFAULT_PRIMARY_COLOR = '#7c3aed'
+
 export interface AppSettings {
-  /** 主题色 */
+  /** 主题色，十六进制色值 */
   primaryColor: string
-  darkMode: boolean
+  /**
+   * 主题风格。取代旧版的 darkMode 开关：旧数据里只有 darkMode 时，
+   * 主进程读设置时按它换算成 light / dark（见 store.getSettings），老用户升级后观感不变。
+   */
+  themeMode: ThemeMode
   /**
    * 全局控件尺寸。
    * large 是本应用一直以来的默认观感（按钮、输入框都偏大，信息密度低但好点）；
@@ -1145,12 +1190,12 @@ export interface AppSettings {
   apiKeyRefreshConcurrency: number
   /** 删除 API Key 前二次确认 */
   confirmBeforeDeleteApiKey: boolean
-  /**
-   * 导出成功后是否在文件管理器里定位该文件。
-   * 导出的多是凭证类文件，用户下一步基本都要去拿它，所以默认打开；
-   * 批量连续导出时反复弹窗反而干扰，故留出关闭的余地。
-   */
-  revealExportedFile: boolean
+  /** 备份计划开关：开启后按 backupCycle 静默导出全部数据（和手动导出的 .kml 完全一致） */
+  backupEnabled: boolean
+  /** 备份计划的执行周期，见 shared/backupSchedule */
+  backupCycle: BackupCycle
+  /** 备份目录里只保留最新的几份，更早的自动删除 */
+  backupKeep: number
   /** 启用系统托盘 */
   trayEnabled: boolean
   /** 点击窗口关闭按钮时的行为：每次询问 / 最小化到托盘 / 直接退出 */
@@ -1190,8 +1235,8 @@ export interface AppSettings {
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
-  primaryColor: '#7c3aed',
-  darkMode: false,
+  primaryColor: DEFAULT_PRIMARY_COLOR,
+  themeMode: 'auto',
   // 保持既有观感：老用户升级上来不会突然变小
   componentSize: 'large',
   accountDisplayMode: 'card',
@@ -1217,7 +1262,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   apiKeyUsageRefreshInterval: 5,
   apiKeyRefreshConcurrency: 5,
   confirmBeforeDeleteApiKey: true,
-  revealExportedFile: true,
+  // 默认开启：每 30 分钟静默备份一次，只留最新 3 份
+  backupEnabled: true,
+  backupCycle: { ...DEFAULT_BACKUP_CYCLE },
+  backupKeep: DEFAULT_BACKUP_KEEP,
   trayEnabled: true,
   closeAction: 'minimize',
   proactiveRenewalEnabled: true,

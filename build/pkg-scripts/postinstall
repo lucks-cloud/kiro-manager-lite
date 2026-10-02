@@ -1,0 +1,11 @@
+#!/bin/sh
+# pkg 安装完成后执行（以 root 身份）。
+# 系统安装器写入的文件本来就不带下载隔离属性，这里再清一次兜底：
+# 万一用户先用 DMG 拖过一份带隔离属性的旧版本，覆盖安装后残留的属性也一并去掉，
+# 打开时就不会再报「已损坏，无法打开」。
+# $2 是安装目标目录（installLocation，即 /Applications）。失败不影响安装结果。
+APP="${2:-/Applications}/Kiro Manager Lite.app"
+if [ -d "$APP" ]; then
+  /usr/bin/xattr -cr "$APP" 2>/dev/null || true
+fi
+exit 0

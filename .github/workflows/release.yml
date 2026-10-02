@@ -22,6 +22,7 @@ jobs:
             script: build:mac
             artifacts: |
               dist/*.dmg
+              dist/*.pkg
               dist/*.zip
               dist/*.blockmap
               dist/latest-mac.yml
@@ -109,13 +110,13 @@ jobs:
 
           | 平台 | 文件 |
           | --- | --- |
-          | macOS (Apple Silicon) | `*-mac-arm64.dmg` |
-          | macOS (Intel) | `*-mac-x64.dmg` |
+          | macOS (Apple Silicon) | `*-mac-arm64.pkg`（推荐）或 `*-mac-arm64.dmg` |
+          | macOS (Intel) | `*-mac-x64.pkg`（推荐）或 `*-mac-x64.dmg` |
           | Windows | `*-win-x64-setup.exe` |
           | Linux | `*-linux-x86_64.AppImage` |
 
-          macOS 安装包未做签名与公证，首次打开请右键选择「打开」，或在
-          「系统设置 - 隐私与安全性」中允许运行。
+          macOS 推荐用 `.pkg`：双击按向导安装，装好后打开应用不会再提示「已损坏」。
+          安装包未做签名与公证，首次双击 `.pkg` 若被拦截，请在「系统设置 - 隐私与安全性」中点击「仍要打开」。
 
           ---
 

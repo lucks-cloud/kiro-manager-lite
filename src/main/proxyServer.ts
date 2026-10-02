@@ -1853,6 +1853,13 @@ export async function applyProxyConfig(next: ProxyConfig): Promise<ProxyStatus> 
   return proxyStatus()
 }
 
+/** 把内存里还没落盘的用量与日志立即写盘（导出备份前调用，保证备份是最新的） */
+export function flushProxyData(): void {
+  flushProxyKeyUsage()
+  flushAccountUsage()
+  flushProxyLogs()
+}
+
 export function shutdownProxySync(): void {
   // 放在 server 判断前：服务已停但还有没落盘的用量 / 日志时也要写
   flushProxyKeyUsage()

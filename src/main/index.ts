@@ -1,4 +1,4 @@
-import { app, dialog, nativeImage, screen, shell, BrowserWindow } from 'electron'
+import { app, dialog, ipcMain, nativeImage, screen, shell, BrowserWindow } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { applyRuntimeSettings, registerIpc } from './ipc'
@@ -31,6 +31,8 @@ import { initLogger, installConsoleBridge, log, shutdownLogger } from './logger'
 import { sendToRenderer } from './utils'
 import { initializeKeyService, shutdownKeyServiceSync } from './keyService'
 import { initProxyServer, shutdownProxySync } from './proxyServer'
+import { applyThemeMode, windowBackground } from './appearance'
+import { initBackupScheduler, stopBackupScheduler } from './backupScheduler'
 
 /*
  * 按设置里的地区指定 Chromium 区域。
@@ -79,7 +81,8 @@ function createWindow(): void {
     // Windows / Linux 的窗口与任务栏图标；macOS 用的是 Dock 图标，不看这里
     ...(process.platform === 'darwin' ? {} : { icon: appIconPath('windows-icon') }),
     autoHideMenuBar: true,
-    backgroundColor: getSettings().darkMode ? '#111318' : '#f5f6fa',
+    // 先按主题风格设好 themeSource，「自动」时才能按系统当前明暗取底色
+    backgroundColor: (applyThemeMode(getSettings().themeMode), windowBackground()),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -118,7 +121,15 @@ function createWindow(): void {
     if (isQuitting || !settings.trayEnabled) return
 
     let action = settings.closeAction
-    // 「每次询问」：close 事件里同步弹窗，拿到选择后再决定是隐藏还是退出
+    /*
+     * 「每次询问」：交给界面弹 a-modal，选完经 app:close-choice 回来再执行（见 applyCloseChoice）。
+     * 页面还没加载完或已经崩了就收不到消息，窗口会关不掉，这种情况退回系统原生对话框。
+     */
+    if (action === 'ask' && mainWindow && !mainWindow.webContents.isLoading() && !mainWindow.webContents.isCrashed()) {
+      event.preventDefault()
+      sendToRenderer(mainWindow, 'app:confirm-close')
+      return
+    }
     if (action === 'ask') {
       const choice = dialog.showMessageBoxSync(mainWindow!, {
         type: 'question',
@@ -136,17 +147,8 @@ function createWindow(): void {
       action = choice === 0 ? 'minimize' : 'quit'
     }
 
-    if (action === 'minimize') {
-      event.preventDefault()
-      mainWindow?.hide()
-      // macOS：隐藏窗口的同时隐藏 Dock 图标，彻底常驻到菜单栏
-      if (process.platform === 'darwin') app.dock?.hide()
-      return
-    }
-
-    // 选择退出：置位后走正常退出流程，避免被本监听再次拦截
-    isQuitting = true
-    app.quit()
+    if (action === 'minimize') event.preventDefault()
+    applyCloseChoice(action)
   })
 
   // 窗口真正销毁后清空引用，避免后续访问已销毁对象（Object has been destroyed）
@@ -165,6 +167,25 @@ function createWindow(): void {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
 }
+
+/** 执行关闭窗口的选择：最小化到托盘或退出。原生对话框和界面的 a-modal 共用 */
+function applyCloseChoice(action: 'minimize' | 'quit'): void {
+  if (action === 'minimize') {
+    mainWindow?.hide()
+    // macOS：隐藏窗口的同时隐藏 Dock 图标，彻底常驻到菜单栏
+    if (process.platform === 'darwin') app.dock?.hide()
+    return
+  }
+  // 选择退出：置位后走正常退出流程，避免被 close 监听再次拦截
+  isQuitting = true
+  app.quit()
+}
+
+// 界面里「关闭窗口」确认框的选择；取消什么都不做
+ipcMain.handle('app:close-choice', (_e, choice: unknown) => {
+  if (choice === 'minimize' || choice === 'quit') applyCloseChoice(choice)
+  return { success: true }
+})
 
 function focusWindow(): void {
   // 窗口不存在或已被销毁时重新创建
@@ -240,6 +261,8 @@ app.whenReady().then(() => {
 
   // 按上次持久化的激活账号，启动即恢复主动续期调度（若功能已开启）
   scheduleForActiveAccount()
+  // 备份计划：开了就按周期静默备份；启动时若已过点会立即补一次
+  initBackupScheduler((status) => sendToRenderer(mainWindow, 'backup:status', status))
 
   // 先登记回调，再按设置决定是否真正创建托盘图标
   registerTrayCallbacks({
@@ -278,6 +301,7 @@ app.on('will-quit', () => {
   shutdownLoginServers()
   unregisterProtocol()
   clearProactiveRenewal('app quitting')
+  stopBackupScheduler()
   flushUsageHistory()
   flushGatewayHistory()
   // 同步还原 Kiro IDE 端点后再退出，避免 IDE 指向已停止的本地网关。

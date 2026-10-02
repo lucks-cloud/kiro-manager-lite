@@ -1,7 +1,7 @@
 import { BrowserWindow, dialog, ipcMain, shell, app, type IpcMainInvokeEvent } from 'electron'
-import { writeFile } from 'fs/promises'
+import { readFile, writeFile } from 'fs/promises'
 import { existsSync } from 'fs'
-import { dirname } from 'path'
+import { dirname, extname, join } from 'path'
 import {
   checkAccountStatus,
   forgetSwitchedAccounts,
@@ -19,6 +19,8 @@ import { restartKiroIde } from './kiroProcess'
 import { listKiroModels, streamApiKeyChat, streamKiroChat } from './kiroChat'
 import {
   cancelLogin,
+  shutdownLoginServers,
+  unregisterProtocol,
   completeSocialLogin,
   pollBuilderIdLogin,
   pollEnterpriseLogin,
@@ -40,6 +42,7 @@ import {
 import { setUsageApiType } from './kiroApi'
 import { setInAppLocale } from './kiroPortal'
 import { setProxyConfig } from './net'
+import { applyThemeMode } from './appearance'
 import { checkForUpdate } from './updater'
 import {
   disableShellAutoApprove,
@@ -64,10 +67,26 @@ import {
   proxyUsage,
   refreshProxyModels,
   resetProxyStats,
+  shutdownProxySync,
   startProxy,
   stopProxy,
   tryProxyEndpoint
 } from './proxyServer'
+import {
+  applyBackup,
+  buildBackup,
+  clearRendererStorage,
+  parseBackup,
+  summarizeBackup,
+  wipeLocalData
+} from './dataBackup'
+import {
+  backupStatus,
+  clearBackupState,
+  onBackupSettingsChanged,
+  runBackupNow,
+  stopBackupScheduler
+} from './backupScheduler'
 import {
   createProxyKey,
   deleteProxyKey,
@@ -88,13 +107,14 @@ import {
 } from './proxyClients'
 import { clearCustomPath, pickDialogOptions, resetInstallCache, saveCustomPath } from './proxyClientInstall'
 import { FALLBACK_MODEL_IDS } from '../shared/proxyModels'
-import { clearLogs, exportLogs, getLogDir, queryLogs } from './logger'
+import { clearLogs, exportLogs, getLogDir, log, queryLogs } from './logger'
 import { buildXlsx, buildZip } from './xlsxWriter'
 import {
   addKey,
   configureGateway,
   deleteKey,
   disableGateway,
+  shutdownKeyServiceSync,
   enableGateway,
   getGatewayStatus,
   importKeys,
@@ -117,8 +137,12 @@ import {
   deleteAccountData,
   getAccountData,
   getBackupDir,
+  ensureBackupDir,
+  getKeyData,
   getProxyConfig,
   getSettings,
+  getShellApproveBackup,
+  proxyClientBackupTargets,
   getStorePath,
   saveProxyConfig,
   setAccountData,
@@ -181,6 +205,7 @@ function handle(
 
 /** 把设置里与主进程相关的部分同步下去 */
 export function applyRuntimeSettings(settings: AppSettings): void {
+  applyThemeMode(settings.themeMode)
   setUsageApiType(settings.usageApiType)
   setProxyConfig(settings.proxyEnabled, settings.proxyUrl)
   setInAppLocale(settings.portalLocale)
@@ -509,17 +534,13 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   }
 
   /**
-   * 落盘后在文件管理器里定位该文件，由设置项「导出后」控制。
+   * 落盘后一律在文件管理器里定位该文件。
    *
    * 导出的多是凭证类文件，用户下一步基本都要去拿它，省掉自己翻目录这一步。
    * 用 showItemInFolder 而不是 openPath：后者会直接用默认程序打开文件内容，
    * 凭证文件被自动弹开并不是我们想要的效果。
-   *
-   * 每次现读设置而不是缓存：这个开关随时可改，且导出本身是低频操作，
-   * 读一次 store 的开销可以忽略。
    */
   function revealExported(filePath: string): void {
-    if (!getSettings().revealExportedFile) return
     // 定位失败不该让导出本身算失败，文件已经写成功了
     try {
       shell.showItemInFolder(filePath)
@@ -590,6 +611,8 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
       if (patch.proactiveRenewalEnabled) scheduleForActiveAccount()
       else clearProactiveRenewal('disabled by user')
     }
+    // 备份计划的开关或周期变了就重新排程；只改保留份数不用（下次备份时按新值清理）
+    if (patch.backupEnabled !== undefined || patch.backupCycle !== undefined) onBackupSettingsChanged()
     return ok(merged)
   })
 
@@ -602,6 +625,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
       node: process.versions.node,
       platform: process.platform,
       storePath: getStorePath(),
+      dataDir: app.getPath('userData'),
       backupDir: getBackupDir()
     })
   )
@@ -807,8 +831,149 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   })
 
   handle('app:show-path', (_e, target: 'store' | 'backup' | 'logs') => {
-    const paths = { store: app.getPath('userData'), backup: getBackupDir(), logs: getLogDir() }
+    const paths = { store: app.getPath('userData'), backup: ensureBackupDir(), logs: getLogDir() }
     shell.openPath(paths[target] ?? paths.store)
+    return ok()
+  })
+
+  // ============ 数据管理：整库导出 / 导入 / 清除 ============
+
+  handle('backup:status', async () => ok(await backupStatus()))
+  handle('backup:run', async () => ok(await runBackupNow()))
+
+  /**
+   * 导入、清除之后重启应用：各模块的内存缓存、定时器、已启动的网关与反代都还是旧数据，
+   * 逐个通知它们重载容易漏，重启最可靠。
+   *
+   * 不走正常退出流程（will-quit 里会把内存里的旧用量、旧日志刷回磁盘，盖掉刚写入的数据），
+   * 所以这里先手动做完退出时必须做的事：还原 Kiro IDE 端点、停反代、交还 kiro:// 协议，
+   * 然后由调用方写数据，最后 app.exit 立即退出、不再给任何定时器运行的机会。
+   */
+  function stopServicesForRelaunch(): void {
+    // 先停备份计划：导入 / 清除写数据的中途要是正好到点，会把半新半旧的数据打成一份备份
+    stopBackupScheduler()
+    cancelLogin()
+    shutdownLoginServers()
+    unregisterProtocol()
+    clearProactiveRenewal('data reset')
+    shutdownKeyServiceSync()
+    shutdownProxySync()
+  }
+
+  /*
+   * 开发模式不能自己重启：界面跑在 electron-vite 的 dev server（localhost:5173）上，
+   * 旧进程一退出它就跟着停了，relaunch 出来的新进程只能加载到一片白屏。
+   * 所以开发时只退出，提示重新 npm run dev；打包后界面是本地文件，照常重启。
+   */
+  function relaunchNow(): void {
+    if (!app.isPackaged) {
+      dialog.showMessageBoxSync({
+        type: 'info',
+        title: 'Kiro Manager Lite',
+        message: '数据已处理完成',
+        detail: '开发模式下无法自动重启（dev server 会随应用一起退出），请重新运行 npm run dev。'
+      })
+      app.exit(0)
+      return
+    }
+    app.relaunch()
+    app.exit(0)
+  }
+
+  /** 导出数据为 .json，保存后在文件管理器里定位它 */
+  handle('data:export', async () => {
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-')
+    const result = await dialog.showSaveDialog(getWindow()!, {
+      title: '导出数据',
+      defaultPath: join(app.getPath('downloads'), `kiro-manager-lite-${stamp}.json`),
+      filters: [{ name: 'Kiro Manager Lite 数据', extensions: ['json'] }]
+    })
+    if (result.canceled || !result.filePath) return ok({ saved: false })
+    // Windows 上用户改名时可能把后缀删了，补回来，否则导入时选不到
+    const file = extname(result.filePath).toLowerCase() === '.json' ? result.filePath : `${result.filePath}.json`
+    await writeFile(file, buildBackup(), 'utf8')
+    revealExported(file)
+    log('info', `[Backup] 已导出数据：${file}`)
+    return ok({ saved: true, path: file })
+  })
+
+  /**
+   * 选一份导出的 .json 并解析，返回摘要给界面确认；真正导入要再调 data:import-apply。
+   * 解析结果暂存在主进程，渲染层传不进任意内容。
+   */
+  let pendingImport: ReturnType<typeof parseBackup> | null = null
+  handle('data:import-pick', async () => {
+    const result = await dialog.showOpenDialog(getWindow()!, {
+      title: '导入数据',
+      properties: ['openFile'],
+      filters: [{ name: 'Kiro Manager Lite 数据', extensions: ['json'] }]
+    })
+    const file = result.filePaths[0]
+    if (result.canceled || !file) return ok(null)
+    // 对话框的过滤在部分平台可以被「所有文件」绕过，这里再卡一次后缀
+    if (extname(file).toLowerCase() !== '.json') return fail(new Error('只支持导入 .json 数据文件'))
+    pendingImport = parseBackup(await readFile(file, 'utf8'))
+    return ok({ file, ...summarizeBackup(pendingImport) })
+  })
+
+  /** 把暂存文件里带了的部分写进本机（没带的保持现状），然后重启 */
+  handle('data:import-apply', () => {
+    if (!pendingImport) return fail(new Error('请先选择要导入的备份文件'))
+    const file = pendingImport
+    pendingImport = null
+    log('info', '[Backup] 导入数据，应用将重启')
+    stopServicesForRelaunch()
+    applyBackup(file)
+    relaunchNow()
+    return ok()
+  })
+
+  /**
+   * 清除全部数据，回到刚安装时的状态，然后重启。
+   *
+   * 先把本应用改过的外部配置还原：本地备份一删，就再也找不到改写前的原样了——
+   * Kiro IDE 会一直指向已经不存在的本地网关，权限规则和桌面 agent 的配置也会残留。
+   * 外部还原失败不中断清除（文件被用户删了、应用卸载了），只记日志。
+   */
+  /** 机器码被重置过：有原始备份、且当前值和它对不上 */
+  async function machineIdChanged(): Promise<boolean> {
+    try {
+      const status = await getMachineIdStatus()
+      return !!status.backup && !status.matchesBackup
+    } catch {
+      return false
+    }
+  }
+
+  handle('data:reset', async () => {
+    log('info', '[Backup] 清除全部数据，应用将重启')
+    /*
+     * 机器码最先还原：它要关掉再拉起 Kiro IDE；放在后面的话，IDE 重新起来时
+     * 端点、权限配置还没还原完，会读到半新半旧的状态。
+     * 原始机器码备份在主库里，下面一清就没了，这是唯一的还原机会。
+     */
+    if (await machineIdChanged()) {
+      await restoreMachineId()
+        .then((r) => r.warnings.forEach((w) => log('warn', `[Backup] 还原机器码：${w}`)))
+        .catch((e) => log('warn', `[Backup] 还原机器码失败：${errorMessage(e)}`))
+    }
+    if (getKeyData().enabled) {
+      await disableGateway().catch((e) => log('warn', `[Backup] 还原 Kiro IDE 端点失败：${errorMessage(e)}`))
+    }
+    if (getShellApproveBackup()) {
+      await disableShellAutoApprove().catch((e) => log('warn', `[Backup] 还原 Shell 自动同意失败：${errorMessage(e)}`))
+    }
+    for (const target of proxyClientBackupTargets()) {
+      await restoreProxyClient(target as ProxyClientTarget, clientInfo()).catch((e) =>
+        log('warn', `[Backup] 还原 ${target} 配置失败：${errorMessage(e)}`)
+      )
+    }
+    await clearLogs()
+    await clearRendererStorage().catch(() => undefined)
+    stopServicesForRelaunch()
+    wipeLocalData()
+    clearBackupState()
+    relaunchNow()
     return ok()
   })
 

@@ -6,6 +6,7 @@ import zhCN from 'ant-design-vue/es/locale/zh_CN'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
 import AppTitleBar from '@/components/layout/AppTitleBar.vue'
 import UpdateAvailableModal from '@/components/common/UpdateAvailableModal.vue'
+import CloseConfirmModal from '@/components/common/CloseConfirmModal.vue'
 import { useSettingsStore } from '@/stores/settings'
 import { useAccountsStore } from '@/stores/accounts'
 import { useKeysStore } from '@/stores/keys'
@@ -33,8 +34,10 @@ function confirmQuit(): void {
     title: '退出 Kiro Manager Lite',
     content: '退出后自动刷新与 IDE 主动续期都会停止，托盘图标也会一起关闭。',
     okText: '退出',
-    okType: 'danger',
+    // 实心红：okType: 'danger' 只是描边红，退出这种确认要更醒目
+    okButtonProps: { type: 'primary', danger: true },
     cancelText: '取消',
+    centered: true,
     onOk: () => void window.api.quitApp(),
     afterClose: () => {
       quitConfirmOpen = false
@@ -121,5 +124,6 @@ watch(
       </div>
     </div>
     <UpdateAvailableModal />
+    <CloseConfirmModal />
   </a-config-provider>
 </template>

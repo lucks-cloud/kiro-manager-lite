@@ -37,9 +37,15 @@ function navigate(info: { key: string | number }): void {
 
 const accountCount = computed(() => accountsStore.stats.total)
 
-const darkModeLabel = computed(() =>
-  settingsStore.settings.darkMode ? '浅色模式' : '深色模式'
-)
+/*
+ * 侧栏底部的快捷切换：按当前实际明暗翻到另一边，固定成浅色 / 深色。
+ * 「自动」下点一次也会变成固定值，想回到跟随系统去设置页选「自动」。
+ */
+const darkModeLabel = computed(() => (settingsStore.isDark ? '浅色模式' : '深色模式'))
+
+function toggleDark(): void {
+  void settingsStore.update({ themeMode: settingsStore.isDark ? 'light' : 'dark' })
+}
 
 const items = computed(() => [
   { key: 'home', label: '主页', icon: HomeOutlined },
@@ -102,10 +108,10 @@ const items = computed(() => [
         <a-button
           type="text"
           class="footer-btn"
-          @click="settingsStore.update({ darkMode: !settingsStore.settings.darkMode })"
+          @click="toggleDark"
         >
           <template #icon>
-            <BulbFilled v-if="settingsStore.settings.darkMode" />
+            <BulbFilled v-if="settingsStore.isDark" />
             <BulbOutlined v-else />
           </template>
           <span v-if="!collapsed">{{ darkModeLabel }}</span>

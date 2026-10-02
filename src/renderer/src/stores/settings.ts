@@ -7,10 +7,25 @@ export const useSettingsStore = defineStore('settings', () => {
   const settings = ref<AppSettings>({ ...DEFAULT_SETTINGS })
   const appInfo = ref<AppInfo | null>(null)
 
+  /*
+   * 系统当前是不是深色。主进程把 themeSource 设成 system 时，这个媒体查询跟着系统走；
+   * 只在「自动」下用得到（浅色 / 深色时主进程强制了 themeSource，查询结果也会跟着变，但不看它）。
+   */
+  const darkQuery = window.matchMedia('(prefers-color-scheme: dark)')
+  const systemDark = ref(darkQuery.matches)
+  darkQuery.addEventListener('change', (e) => (systemDark.value = e.matches))
+
+  /** 实际生效的明暗：自动时看系统 */
+  const isDark = computed(() =>
+    settings.value.themeMode === 'auto' ? systemDark.value : settings.value.themeMode === 'dark'
+  )
+
+  const primaryColor = computed(() => settings.value.primaryColor)
+
   const themeConfig = computed(() => ({
-    algorithm: settings.value.darkMode ? theme.darkAlgorithm : theme.defaultAlgorithm,
+    algorithm: isDark.value ? theme.darkAlgorithm : theme.defaultAlgorithm,
     token: {
-      colorPrimary: settings.value.primaryColor,
+      colorPrimary: primaryColor.value,
       borderRadius: 8
     }
   }))
@@ -29,11 +44,11 @@ export const useSettingsStore = defineStore('settings', () => {
   /** 主题色同时写入 CSS 变量，供 antd 之外的自定义样式使用 */
   function applyTheme(): void {
     const root = document.documentElement
-    root.classList.toggle('dark', settings.value.darkMode)
-    root.style.setProperty('--kal-primary', settings.value.primaryColor)
+    root.classList.toggle('dark', isDark.value)
+    root.style.setProperty('--kal-primary', primaryColor.value)
   }
 
-  watch(() => [settings.value.darkMode, settings.value.primaryColor], applyTheme)
+  watch(() => [isDark.value, primaryColor.value], applyTheme)
 
   async function load(): Promise<void> {
     const [settingsRes, infoRes] = await Promise.all([
@@ -55,7 +70,7 @@ export const useSettingsStore = defineStore('settings', () => {
     if (res.success && res.data) settings.value = { ...DEFAULT_SETTINGS, ...res.data }
   }
 
-  return { settings, appInfo, themeConfig, toolbarSize, load, update }
+  return { settings, appInfo, themeConfig, isDark, primaryColor, toolbarSize, load, update }
 })
 
 // setup 风格的 store 默认不参与 HMR，改完 store 后运行中的实例会缺少新增方法

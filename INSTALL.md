@@ -8,8 +8,8 @@
 
 | 平台 | 应下载的文件 | 适用设备 |
 | --- | --- | --- |
-| macOS Apple Silicon | `*-mac-arm64.dmg` | Apple M 系列芯片 |
-| macOS Intel | `*-mac-x64.dmg` | Intel 芯片 |
+| macOS Apple Silicon | `*-mac-arm64.pkg`（推荐）或 `*-mac-arm64.dmg` | Apple M 系列芯片 |
+| macOS Intel | `*-mac-x64.pkg`（推荐）或 `*-mac-x64.dmg` | Intel 芯片 |
 | Windows | `*-win-x64-setup.exe` | 64 位 Windows |
 | Linux | `*-linux-x86_64.AppImage` | 64 位 x86 Linux |
 
@@ -29,12 +29,24 @@ Releases 页面，再选择“更多信息”→“仍要运行”。不要为�
 ## macOS
 
 先在“苹果菜单”→“关于本机”查看芯片：Apple M 系列下载 `arm64`，Intel 芯片下载 `x64`。
+
+### 推荐：使用 .pkg 安装包
+
+1. 下载 `*-mac-<芯片>.pkg` 并双击，按系统“安装器”的向导完成安装，应用会装进“应用程序”文件夹。
+2. 首次双击若提示“无法验证开发者”，前往“系统设置”→“隐私与安全性”，在页面下方点击“仍要打开”，
+   再按向导安装。这一步只在安装时需要一次。
+3. 通过安装器装上的应用不带下载隔离属性，打开时不会再提示“已损坏”；安装后脚本还会再清理一次，
+   覆盖此前用 DMG 装过的版本也一样。
+
+### 使用 DMG
+
 打开 DMG 后，将 Kiro Manager Lite 拖入“应用程序”文件夹。
 
 当前安装包未做 Apple 签名与公证。首次打开若提示“无法验证开发者”，可在 Finder 的“应用程序”中
 按住 `Control` 点击应用，选择“打开”，然后再次确认；也可前往“系统设置”→“隐私与安全性”允许本次打开。
 
-若提示应用“已损坏，无法打开”，请先确认安装包来自官方 Releases，再关闭应用并执行：
+若提示应用“已损坏，无法打开”，最省事的办法是改用同版本的 `.pkg` 覆盖安装一次（数据保留）；
+也可以先确认安装包来自官方 Releases，再关闭应用并执行：
 
 ```bash
 xattr -cr "/Applications/Kiro Manager Lite.app"
@@ -62,7 +74,8 @@ chmod +x kiro-account-lite-*-linux-x86_64.AppImage
 
 1. 完全退出应用（包括托盘或菜单栏中的后台进程）。
 2. 从 Releases 下载新版本对应平台的安装包。
-3. Windows 直接运行新安装程序；macOS 用新应用覆盖“应用程序”中的旧版本；Linux 替换旧 AppImage。
+3. Windows 直接运行新安装程序；macOS 运行新的 `.pkg`（或用 DMG 里的新应用覆盖“应用程序”中的旧版本）；
+   Linux 替换旧 AppImage。
 4. 启动应用并在“关于”页面确认版本号。
 
 覆盖安装默认保留账号、API Key、设置、积分历史和日志。凭证属于敏感数据，升级前可在应用设置中

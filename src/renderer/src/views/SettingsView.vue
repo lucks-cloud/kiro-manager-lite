@@ -1,18 +1,27 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, h, onMounted, onUnmounted, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import {
-  CodeOutlined,
-  DeleteOutlined,
-  DownOutlined,
+  CloudUploadOutlined,
   DownloadOutlined,
   FolderOpenOutlined,
-  InboxOutlined,
   ReloadOutlined,
   UploadOutlined
 } from '@ant-design/icons-vue'
+import {
+  BACKUP_CYCLE_OPTIONS,
+  BACKUP_KEEP_MAX,
+  BACKUP_KEEP_MIN,
+  BACKUP_MIN_INTERVAL_MINUTES,
+  WEEKDAY_LABELS,
+  describeBackupCycle,
+  normalizeBackupCycle,
+  normalizeBackupKeep,
+  type BackupCycle
+} from '@shared/backupSchedule'
 import { DEFAULT_SETTINGS } from '@shared/types'
-import type { AppSettings } from '@shared/types'
+import type { AppSettings, BackupScheduleStatus, DataBackupSummary, ThemeMode } from '@shared/types'
+import ThemeModeIcon from '@/components/common/ThemeModeIcon.vue'
 import {
   PORTAL_LOCALE_CUSTOM,
   PORTAL_LOCALE_PRESETS,
@@ -21,14 +30,12 @@ import {
 } from '@shared/portalLocale'
 import { useSettingsStore } from '@/stores/settings'
 import SettingSwitch from '@/components/common/SettingSwitch.vue'
+import PathMenu from '@/components/common/PathMenu.vue'
 import { useAccountsStore } from '@/stores/accounts'
 import { useKeysStore } from '@/stores/keys'
 import { formatCheckedAt } from '@/utils/format'
 import { now } from '@/utils/now'
 import { bodyPopupContainer, confirmDanger } from '@/utils/ui'
-import ExportAccountsModal from '@/components/accounts/ExportAccountsModal.vue'
-import ImportAccountsFileModal from '@/components/accounts/ImportAccountsFileModal.vue'
-import ImportAccountsTextModal from '@/components/accounts/ImportAccountsTextModal.vue'
 
 const settingsStore = useSettingsStore()
 const accountsStore = useAccountsStore()
@@ -44,17 +51,6 @@ const FORM_LAYOUT = {
   wrapperCol: { flex: '1 1 auto' }
 } as const
 
-/**
- * 「数据管理」卡片专用栅格：标签按内容宽度并左对齐。
- * 该卡片其余行是 .data-row（标题贴着卡片左边），沿用 130px 右对齐的标签列
- * 会让这一行的标签缩到卡片中间，和下面几行对不齐。
- */
-const DATA_FORM_LAYOUT = {
-  layout: 'horizontal',
-  labelAlign: 'left',
-  labelCol: { flex: '0 0 auto' },
-  wrapperCol: { flex: '1 1 auto' }
-} as const
 
 /** 下次刷新的时间与倒计时，跟着共享时钟每 5 秒重算 */
 function nextRefreshText(at: number | null): string {
@@ -79,7 +75,23 @@ watch(
   }
 )
 
-const presetColors = ['#7c3aed', '#1677ff', '#13c2c2', '#52c41a', '#fa8c16', '#eb2f96', '#f5222d']
+const themeModeOptions: { value: ThemeMode; label: string }[] = [
+  { value: 'auto', label: '自动' },
+  { value: 'light', label: '浅色' },
+  { value: 'dark', label: '深色' }
+]
+
+/** 主题色预设。色值沿用旧版的七个，老用户选过的颜色升级后仍能在这里对上、显示为选中 */
+const colorOptions: { value: string; label: string }[] = [
+  { value: '#7c3aed', label: '紫罗兰' },
+  { value: '#1677ff', label: '天空蓝' },
+  { value: '#13c2c2', label: '青碧色' },
+  { value: '#52c41a', label: '翡翠绿' },
+  { value: '#fa8c16', label: '琥珀橙' },
+  { value: '#eb2f96', label: '樱花粉' },
+  { value: '#f5222d', label: '朱砂红' }
+]
+
 
 /** 输入框可能给出 null 或越界值，统一夹到 1-100 */
 function clampImportConcurrency(value: unknown): number {
@@ -92,17 +104,6 @@ const closeActionOptions: { value: AppSettings['closeAction']; label: string }[]
   { value: 'ask', label: '每次询问' },
   { value: 'minimize', label: '最小化到托盘' },
   { value: 'quit', label: '退出程序' }
-]
-
-/**
- * 设置项本身是 boolean，但 a-select 的 value 只接受 Array / Object / String / Number，
- * 直接喂 boolean 会触发 prop 类型校验告警。所以选项用字符串，在边界上转换。
- */
-const REVEAL_EXPORTED_ON = 'reveal'
-
-const revealExportedOptions: { value: string; label: string }[] = [
-  { value: REVEAL_EXPORTED_ON, label: '打开文件夹并选中文件' },
-  { value: 'silent', label: '不打开文件夹' }
 ]
 
 const portalLocale = computed(
@@ -185,52 +186,164 @@ function openPath(target: 'store' | 'backup'): void {
   void window.api.showPath(target)
 }
 
-const exportOpen = ref(false)
-/** 导入拆成两个入口：拖拽文件、粘贴文本 */
-const importFileOpen = ref(false)
-const importTextOpen = ref(false)
+/** 备份范围说明，和主进程 dataBackup 里实际打包的内容一致 */
+const BACKUP_SCOPE = '账号、Kiro API Key、账号与 API Key 的用量记录、本地反代的 API Key'
 
-const accountCount = computed(() => accountsStore.accounts.length)
+// ============ 备份计划 ============
 
-function openExport(): void {
-  if (accountCount.value === 0) return void message.warning('还没有账号可以导出')
-  exportOpen.value = true
+const cycle = computed(() => normalizeBackupCycle(settings.value.backupCycle))
+const cycleOptions = BACKUP_CYCLE_OPTIONS
+const weekdayOptions = WEEKDAY_LABELS.map((label, value) => ({ value, label }))
+const monthDayOptions = Array.from({ length: 31 }, (_, i) => ({ value: i + 1, label: `${i + 1} 号` }))
+
+/** 每种周期需要填哪几项，和图示一致：选了类型后右侧只出现相关的输入框 */
+const cycleFields = computed(() => {
+  const t = cycle.value.type
+  return {
+    n: t === 'nDays' || t === 'nHours' || t === 'nMinutes',
+    weekday: t === 'week',
+    day: t === 'month',
+    hour: t === 'day' || t === 'nDays' || t === 'week' || t === 'month',
+    minute: t !== 'nMinutes'
+  }
+})
+
+const nUnit = computed(() => ({ nDays: '天', nHours: '小时', nMinutes: '分钟' })[cycle.value.type as 'nDays'] ?? '')
+const nMin = computed(() => (cycle.value.type === 'nMinutes' ? BACKUP_MIN_INTERVAL_MINUTES : 1))
+
+function updateCycle(patch: Partial<BackupCycle>): void {
+  update({ backupCycle: normalizeBackupCycle({ ...cycle.value, ...patch }) })
 }
 
+/** 换周期类型时把 N 夹进新类型的范围：从 N 小时的 2 换到 N 分钟，2 分钟低于下限 */
+function changeCycleType(type: BackupCycle['type']): void {
+  updateCycle({ type, n: type === 'nMinutes' ? Math.max(cycle.value.n, 30) : cycle.value.n })
+}
+
+const backupState = ref<BackupScheduleStatus | null>(null)
+const backingUp = ref(false)
+let offBackupStatus: (() => void) | null = null
+
+onMounted(async () => {
+  offBackupStatus = window.api.onBackupStatus((status) => (backupState.value = status))
+  const res = await window.api.getBackupStatus()
+  if (res.success && res.data) backupState.value = res.data
+})
+onUnmounted(() => offBackupStatus?.())
+
+// 开关、周期一改，主进程会重排并推送新状态；这里再主动拉一次，避免推送比保存先到
+watch(
+  () => [settings.value.backupEnabled, JSON.stringify(settings.value.backupCycle)],
+  async () => {
+    const res = await window.api.getBackupStatus()
+    if (res.success && res.data) backupState.value = res.data
+  }
+)
+
+const backupNextText = computed(() => {
+  const next = backupState.value?.nextAt
+  if (!settings.value.backupEnabled || !next) return '未开启'
+  return formatCheckedAt(next, now.value)
+})
+
+const backupLastText = computed(() => {
+  const s = backupState.value
+  if (!s?.lastAt) return '还没有备份过'
+  return `${formatCheckedAt(s.lastAt, now.value)}${s.lastError ? '（失败）' : ''}`
+})
+
+async function backupNow(): Promise<void> {
+  backingUp.value = true
+  try {
+    const res = await window.api.runBackupNow()
+    if (!res.success) return void message.error(res.error || '备份失败')
+    backupState.value = res.data ?? backupState.value
+    if (res.data?.lastError) message.error(`备份失败：${res.data.lastError}`)
+    else message.success('已备份到备份目录')
+  } finally {
+    backingUp.value = false
+  }
+}
+
+const exporting = ref(false)
+const importing = ref(false)
 const resetting = ref(false)
 
-function resetSettings(): void {
+/** 导出数据：保存后主进程会在文件管理器里选中该文件 */
+async function exportAll(): Promise<void> {
+  exporting.value = true
+  try {
+    const res = await window.api.exportAllData()
+    if (!res.success) return void message.error(res.error || '导出失败')
+    if (res.data?.saved) message.success('已导出数据')
+  } finally {
+    exporting.value = false
+  }
+}
+
+/** Modal.confirm 渲染在 body 下，组件的 scoped 样式管不到，段落间距只能内联 */
+const CONFIRM_LINE = 'margin: 0 0 6px'
+
+function formatBackupTime(at: number): string {
+  return new Date(at).toLocaleString('zh-CN', { hour12: false })
+}
+
+/** 先选文件、看摘要，确认后再整体替换；替换完成后应用会自行重启 */
+async function importAll(): Promise<void> {
+  importing.value = true
+  let summary: DataBackupSummary | null | undefined
+  try {
+    const res = await window.api.pickImportData()
+    if (!res.success) return void message.error(res.error || '读取备份失败')
+    summary = res.data
+  } finally {
+    importing.value = false
+  }
+  if (!summary) return
+  const parts: string[] = []
+  if (summary.accounts !== null) parts.push(`${summary.accounts} 个账号`)
+  if (summary.apiKeys !== null) parts.push(`${summary.apiKeys} 个 Kiro API Key`)
+  if (summary.proxyKeys !== null) parts.push(`${summary.proxyKeys} 个反代 API Key`)
+  if (summary.usageHistory) parts.push('用量记录')
+  const lines = [
+    `导出时间：${summary.exportedAt ? formatBackupTime(summary.exportedAt) : '未知'}${summary.appVersion ? `（v${summary.appVersion}）` : ''}`,
+    `包含：${parts.join('、') || '无可导入的内容'}`,
+    '文件里带了的部分会替换本机对应的数据，没带的部分和设置等其他数据保持不变；完成后应用自动重启。'
+  ]
+  if (summary.newerSchema) {
+    lines.push('该文件来自更新版本的应用，本版本认识的部分会照常导入，其余部分会被忽略。')
+  }
   confirmDanger({
-    title: '恢复默认设置',
-    content: '所有设置项会回到初始值，包括主题、刷新策略、代理与托盘配置。账号数据不会被删除。',
-    okText: '恢复默认',
-    // 默认的 okType: 'danger' 是描边按钮，这里要实心红
+    title: '导入数据',
+    content: h('div', lines.map((line) => h('p', { style: CONFIRM_LINE }, line))),
+    okText: '导入并重启',
     okButtonProps: { type: 'primary', danger: true },
     onOk: async () => {
-      resetting.value = true
-      try {
-        // 直接提交全量默认值：主进程会逐字段覆盖，托盘等副作用也会一起生效
-        await settingsStore.update({ ...DEFAULT_SETTINGS })
-        // 代理输入框是本地草稿，重置后同步回默认值
-        proxyDraft.value = settingsStore.settings.proxyUrl
-        message.success('设置已恢复默认')
-      } finally {
-        resetting.value = false
-      }
+      const res = await window.api.applyImportData()
+      // 成功时应用已经重启，走不到这里；能拿到结果就是失败了
+      if (!res.success) message.error(res.error || '导入失败')
     }
   })
 }
 
-function clearAll(): void {
-  if (accountCount.value === 0) return void message.info('当前没有账号数据')
+/*
+ * 外部配置（机器码、Kiro IDE 端点、自动同意 AI 操作、桌面 agent）由主进程在初始化时自动还原，
+ * 确认框里不逐条列出，只说清楚会删掉什么。
+ */
+function resetAll(): void {
   confirmDanger({
-    title: '清除所有账号数据',
-    content: `会删除本应用保存的全部 ${accountCount.value} 个账号。请先导出备份，该操作不可撤销。`,
-    okText: '确认清除',
+    title: '初始化',
+    content: h('div', [
+      h('p', { style: CONFIRM_LINE }, '删除全部账号、API Key、设置、本地反代配置与反代 API Key、日志、历史记录和备份目录里的所有备份，和初次安装时一样。'),
+      h('p', { style: CONFIRM_LINE }, '该操作不可撤销，完成后应用自动重启。')
+    ]),
+    okText: '确认初始化',
+    okButtonProps: { type: 'primary', danger: true },
     onOk: async () => {
-      const result = await accountsStore.removeAccounts(accountsStore.accounts.map((a) => a.id))
-      if (result.error) return void message.error(result.error)
-      message.success(`已清除 ${result.removed} 个账号`)
+      resetting.value = true
+      const res = await window.api.resetAllData()
+      resetting.value = false
+      if (!res.success) message.error(res.error || '初始化失败')
     }
   })
 }
@@ -240,20 +353,41 @@ function clearAll(): void {
   <div>
     <a-card size="small" title="外观" style="margin-bottom: 16px">
       <a-form v-bind="FORM_LAYOUT">
-        <a-form-item label="深色模式">
-          <SettingSwitch field="darkMode" />
+        <a-form-item label="主题风格">
+          <div class="choice-group" role="radiogroup" aria-label="主题风格">
+            <button
+              v-for="opt in themeModeOptions"
+              :key="opt.value"
+              type="button"
+              role="radio"
+              class="choice-card"
+              :class="{ selected: settings.themeMode === opt.value }"
+              :aria-checked="settings.themeMode === opt.value"
+              @click="update({ themeMode: opt.value })"
+            >
+              <ThemeModeIcon :mode="opt.value" />
+              <span class="choice-label">{{ opt.label }}</span>
+            </button>
+          </div>
+          <div class="choice-hint">选择界面主题风格，「自动」跟随系统的浅色 / 深色切换</div>
         </a-form-item>
         <a-form-item label="主题色">
-          <a-space wrap>
+          <div class="choice-group" role="radiogroup" aria-label="主题色">
             <button
-              v-for="color in presetColors"
-              :key="color"
-              class="color-dot"
-              :class="{ selected: settings.primaryColor === color }"
-              :style="{ background: color }"
-              @click="update({ primaryColor: color })"
-            />
-          </a-space>
+              v-for="opt in colorOptions"
+              :key="opt.value"
+              type="button"
+              role="radio"
+              class="choice-card"
+              :class="{ selected: settings.primaryColor === opt.value }"
+              :aria-checked="settings.primaryColor === opt.value"
+              @click="update({ primaryColor: opt.value })"
+            >
+              <span class="swatch" :style="{ background: opt.value }" />
+              <span class="choice-label">{{ opt.label }}</span>
+            </button>
+          </div>
+          <div class="choice-hint">选择界面的强调色，用于按钮、链接与选中态</div>
         </a-form-item>
         <a-form-item label="控件尺寸">
           <a-radio-group
@@ -513,125 +647,246 @@ function clearAll(): void {
     </a-card>
 
     <a-card size="small" title="数据管理" style="margin-bottom: 16px">
-      <a-form v-bind="DATA_FORM_LAYOUT">
-        <a-form-item label="导出后" class="field-inline">
-          <a-select
-            :value="settings.revealExportedFile ? REVEAL_EXPORTED_ON : 'silent'"
-            :options="revealExportedOptions"
-            :get-popup-container="bodyPopupContainer"
-            style="width: 260px"
-            @change="(v: unknown) => update({ revealExportedFile: v === REVEAL_EXPORTED_ON })"
+      <a-form v-bind="FORM_LAYOUT">
+        <a-form-item label="数据目录">
+          <PathMenu
+            v-if="settingsStore.appInfo?.dataDir"
+            :path="settingsStore.appInfo.dataDir"
+            @reveal="openPath('store')"
           />
-          <span class="muted">导出成功后是否定位到文件</span>
+          <span v-else class="muted">-</span>
+        </a-form-item>
+        <a-form-item label="导入导出">
+          <a-space wrap>
+            <a-button :loading="exporting" @click="exportAll">
+              <template #icon><DownloadOutlined /></template>
+              导出数据
+            </a-button>
+            <a-button :loading="importing" @click="importAll">
+              <template #icon><UploadOutlined /></template>
+              导入数据
+            </a-button>
+            <a-button danger :loading="resetting" @click="resetAll">
+              <template #icon><ReloadOutlined /></template>
+              初始化
+            </a-button>
+          </a-space>
+        </a-form-item>
+
+      </a-form>
+      <ul class="tips">
+        <li>导出内容：{{ BACKUP_SCOPE }}。设置项、反代监听配置等不在其中。</li>
+        <li>导出为明文 .json 文件，包含账号凭证与各类 API Key，请妥善保管，不要发给他人。</li>
+        <li>导入只接受本应用导出的 .json 文件，替换本机对应的账号、API Key、用量记录与反代 API Key，其余数据保持不变；完成后应用自动重启。备份目录里的文件也可以直接导入。</li>
+        <li>
+          初始化会先还原本应用改过的外部配置（机器码、Kiro IDE 端点、自动同意 AI 操作、已写入的桌面 agent），
+          再清掉全部数据、日志、历史记录和备份目录，和初次安装时一样，完成后应用自动重启。
+        </li>
+      </ul>
+    </a-card>
+
+    <a-card size="small" title="备份计划">
+      <a-form v-bind="FORM_LAYOUT">
+        <a-form-item label="备份计划" class="field-inline">
+          <SettingSwitch field="backupEnabled" />
+          <span class="muted">开启后按下面的周期静默备份，内容与「导出数据」完全一致</span>
+        </a-form-item>
+        <a-form-item label="执行周期">
+          <div class="cycle-row">
+            <a-select
+              :value="cycle.type"
+              :options="cycleOptions"
+              :disabled="!settings.backupEnabled"
+              :get-popup-container="bodyPopupContainer"
+              style="width: 120px"
+              @change="(v: unknown) => changeCycleType(v as BackupCycle['type'])"
+            />
+            <a-input-number
+              v-if="cycleFields.n"
+              :value="cycle.n"
+              :min="nMin"
+              :precision="0"
+              :addon-after="nUnit"
+              :disabled="!settings.backupEnabled"
+              style="width: 150px"
+              @change="(v: unknown) => updateCycle({ n: Number(v) || nMin })"
+            />
+            <a-select
+              v-if="cycleFields.weekday"
+              :value="cycle.weekday"
+              :options="weekdayOptions"
+              :disabled="!settings.backupEnabled"
+              :get-popup-container="bodyPopupContainer"
+              style="width: 100px"
+              @change="(v: unknown) => updateCycle({ weekday: Number(v) })"
+            />
+            <a-select
+              v-if="cycleFields.day"
+              :value="cycle.day"
+              :options="monthDayOptions"
+              :disabled="!settings.backupEnabled"
+              :get-popup-container="bodyPopupContainer"
+              style="width: 100px"
+              @change="(v: unknown) => updateCycle({ day: Number(v) })"
+            />
+            <a-input-number
+              v-if="cycleFields.hour"
+              :value="cycle.hour"
+              :min="0"
+              :max="23"
+              :precision="0"
+              addon-after="时"
+              :disabled="!settings.backupEnabled"
+              style="width: 130px"
+              @change="(v: unknown) => updateCycle({ hour: Number(v) || 0 })"
+            />
+            <a-input-number
+              v-if="cycleFields.minute"
+              :value="cycle.minute"
+              :min="0"
+              :max="59"
+              :precision="0"
+              addon-after="分"
+              :disabled="!settings.backupEnabled"
+              style="width: 130px"
+              @change="(v: unknown) => updateCycle({ minute: Number(v) || 0 })"
+            />
+          </div>
+          <div class="choice-hint">
+            {{ describeBackupCycle(cycle) }}
+            <template v-if="settings.backupEnabled">· 下次执行 {{ backupNextText }}</template>
+          </div>
+        </a-form-item>
+        <a-form-item label="保留份数" class="field-inline">
+          <a-input-number
+            :value="settings.backupKeep"
+            :min="BACKUP_KEEP_MIN"
+            :max="BACKUP_KEEP_MAX"
+            :precision="0"
+            addon-before="最新"
+            addon-after="份"
+            :disabled="!settings.backupEnabled"
+            style="width: 180px"
+            @change="(v: unknown) => update({ backupKeep: normalizeBackupKeep(v) })"
+          />
+          <span class="muted">超出的旧备份在下次备份后自动删除</span>
+        </a-form-item>
+        <a-form-item label="备份目录">
+          <PathMenu
+            v-if="settingsStore.appInfo?.backupDir"
+            :path="settingsStore.appInfo.backupDir"
+            @reveal="openPath('backup')"
+          />
+          <div class="choice-hint">
+            上次备份：{{ backupLastText }} · 现有 {{ backupState?.count ?? 0 }} 份
+            <span v-if="backupState?.lastError" class="restart-hint">（{{ backupState.lastError }}）</span>
+          </div>
+        </a-form-item>
+        <a-form-item label=" " :colon="false">
+          <a-space wrap>
+            <a-button :loading="backingUp" @click="backupNow">
+              <template #icon><CloudUploadOutlined /></template>
+              立即备份
+            </a-button>
+            <a-button @click="openPath('backup')">
+              <template #icon><FolderOpenOutlined /></template>
+              打开备份目录
+            </a-button>
+          </a-space>
         </a-form-item>
       </a-form>
-
-      <div class="data-row">
-        <div class="data-row-text">
-          <div class="data-row-title">导出数据</div>
-          <div class="muted">支持 JSON 完整备份、卡密、CSV、TXT，也可直接复制到剪贴板</div>
-        </div>
-        <a-button @click="openExport">
-          <template #icon><DownloadOutlined /></template>
-          导出
-        </a-button>
-      </div>
-
-      <div class="data-row">
-        <div class="data-row-text">
-          <div class="data-row-title">导入数据</div>
-          <div class="muted">从文件或粘贴内容导入账号，完整备份可原样恢复</div>
-        </div>
-        <a-dropdown>
-          <a-button>
-            <template #icon><UploadOutlined /></template>
-            导入
-            <DownOutlined />
-          </a-button>
-          <template #overlay>
-            <a-menu>
-              <a-menu-item key="file" @click="importFileOpen = true">
-                <InboxOutlined />
-                从文件导入
-              </a-menu-item>
-              <a-menu-item key="text" @click="importTextOpen = true">
-                <CodeOutlined />
-                输入 JSON 导入
-              </a-menu-item>
-            </a-menu>
-          </template>
-        </a-dropdown>
-      </div>
-
-      <div class="data-row">
-        <div class="data-row-text">
-          <div class="data-row-title danger">清除所有数据</div>
-          <div class="muted">删除本应用保存的全部账号，操作不可撤销</div>
-        </div>
-        <a-button danger type="primary" @click="clearAll">
-          <template #icon><DeleteOutlined /></template>
-          清除
-        </a-button>
-      </div>
+      <ul class="tips">
+        <li>备份文件与「导出数据」完全一致（明文 .json），同样包含凭证，请妥善保管。</li>
+        <li>应用没开或电脑睡眠时错过的备份，下次启动或唤醒后补一次，不按错过的次数重复补。</li>
+      </ul>
     </a-card>
 
-    <a-card size="small" title="初始化" style="margin-bottom: 16px">
-      <div class="data-row">
-        <div class="data-row-text">
-          <div class="data-row-title">恢复默认设置</div>
-          <div class="muted">
-            把上面所有设置项（外观、刷新、网络、导入、托盘等）恢复到初始值，账号数据不受影响
-          </div>
-        </div>
-        <a-button type="primary" danger :loading="resetting" @click="resetSettings">
-          <template #icon><ReloadOutlined /></template>
-          初始化
-        </a-button>
-      </div>
-    </a-card>
-
-    <a-card size="small" title="存储位置">
-      <a-descriptions :column="1" size="small">
-        <a-descriptions-item label="账号数量">{{ accountCount }}</a-descriptions-item>
-        <a-descriptions-item label="存储文件">
-          <span class="mono">{{ settingsStore.appInfo?.storePath || '-' }}</span>
-        </a-descriptions-item>
-        <a-descriptions-item label="备份目录">
-          <span class="mono">{{ settingsStore.appInfo?.backupDir || '-' }}</span>
-        </a-descriptions-item>
-      </a-descriptions>
-      <a-space style="margin-top: 8px">
-        <a-button @click="openPath('store')">
-          <template #icon><FolderOpenOutlined /></template>
-          打开数据目录
-        </a-button>
-        <a-button @click="openPath('backup')">
-          <template #icon><FolderOpenOutlined /></template>
-          打开备份目录
-        </a-button>
-      </a-space>
-    </a-card>
-
-    <ExportAccountsModal v-model:open="exportOpen" />
-    <ImportAccountsFileModal v-model:open="importFileOpen" />
-    <ImportAccountsTextModal v-model:open="importTextOpen" />
   </div>
 </template>
 
 <style scoped>
-.color-dot {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  border: 2px solid transparent;
-  cursor: pointer;
+/*
+ * 主题风格 / 主题色的选项卡：图标或色块在上、名称在下。
+ * 选中项描边与文字换成主题色，右上角一个实心圆点；未选中的悬停时描边提亮。
+ */
+.choice-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.choice-card {
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 76px;
+  height: 72px;
   padding: 0;
+  /* --kal-border 只有 8% 不透明度，做卡片轮廓太淡，按正文色调一档 */
+  border: 1.5px solid color-mix(in srgb, currentColor 16%, transparent);
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.choice-card:hover {
+  border-color: color-mix(in srgb, var(--kal-primary) 50%, transparent);
+}
+
+.choice-card:focus-visible {
+  outline: 2px solid var(--kal-primary);
   outline-offset: 2px;
 }
 
-.color-dot.selected {
-  border-color: rgba(0, 0, 0, 0.45);
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.6) inset;
+.choice-card.selected {
+  border-color: var(--kal-primary);
+  color: var(--kal-primary);
+}
+
+.choice-card.selected::after {
+  content: '';
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--kal-primary);
+}
+
+.choice-label {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.choice-card.selected .choice-label {
+  font-weight: 600;
+}
+
+.swatch {
+  width: 30px;
+  height: 18px;
+  border-radius: 5px;
+}
+
+/* 执行周期：类型下拉 + 按类型出现的几个输入框，一行排开、放不下再换行 */
+.cycle-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+
+.choice-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--kal-muted);
 }
 
 /*
@@ -661,42 +916,6 @@ function clearAll(): void {
 .next-refresh {
   display: block;
   margin-top: 2px;
-  font-size: 12px;
-}
-
-/* 数据管理里的「说明 + 右侧操作」行 */
-.data-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 0;
-  border-top: 1px solid var(--kal-border);
-}
-
-.data-row:first-child {
-  padding-top: 0;
-  border-top: none;
-}
-
-.data-row:last-child {
-  padding-bottom: 0;
-}
-
-.data-row-text {
-  min-width: 0;
-}
-
-.data-row-title {
-  font-weight: 600;
-  margin-bottom: 2px;
-}
-
-.data-row-title.danger {
-  color: var(--kal-danger, #ff4d4f);
-}
-
-.data-row .muted {
   font-size: 12px;
 }
 
