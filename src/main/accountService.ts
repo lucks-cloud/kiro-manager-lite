@@ -18,6 +18,7 @@ import {
   writeKiroAuthToken
 } from './kiroAuth'
 import { sleep } from './utils'
+import { syncKiroCliAuth } from './kiroCliAuth'
 import { DEFAULT_REGION } from '../shared/regions'
 import type {
   Account,
@@ -394,10 +395,11 @@ export async function syncCredentialsToIde(
       }
     }
 
+    const expiresAt = expiresAtIso(next.expiresIn)
     await writeKiroAuthToken({
       accessToken: next.accessToken,
       refreshToken: next.refreshToken,
-      expiresAtIso: expiresAtIso(next.expiresIn),
+      expiresAtIso: expiresAt,
       authMethod: authMethod === 'social' ? 'social' : 'IdC',
       provider: provider || (disk?.provider as IdpType) || account.idp || 'BuilderId',
       region: region || disk?.region,
@@ -417,6 +419,20 @@ export async function syncCredentialsToIde(
           ? resolveProfileArn({ authMethod, provider: provider || account.idp, region })
           : undefined)
     })
+    // The IDE and CLI hold independent copies of the rotated refresh token.
+    // Update the CLI only when its current token still belongs to this account.
+    const cliSync = await syncKiroCliAuth({
+      accessToken: next.accessToken,
+      refreshToken: next.refreshToken,
+      expiresAtIso: expiresAt,
+      authMethod: authMethod === 'social' ? 'social' : 'IdC',
+      provider: provider || account.idp || 'BuilderId',
+      region: region || DEFAULT_REGION,
+      profileArn: account.profileArn || account.credentials.profileArn || disk?.profileArn,
+      clientId,
+      clientSecret
+    }, previousRefreshToken)
+    if (!cliSync.synced) console.warn(`[AccountService] CLI 续期同步跳过：${cliSync.error}`)
     lastSwitchedAccountId = account.id
     return { syncedToIde: true }
   } catch (e) {
@@ -619,10 +635,11 @@ export async function switchAccount(input: SwitchAccountInput): Promise<SwitchAc
     notes.push(`未能实测通过，按默认规则写入 profileArn：${arnToWrite ?? '(不写)'}`)
   }
 
+  const expiresAt = expiresAtIso(expiresIn)
   const { tokenPath, clientRegPath, prunedRegistrations } = await writeKiroAuthToken({
     accessToken,
     refreshToken: finalRefreshToken,
-    expiresAtIso: expiresAtIso(expiresIn),
+    expiresAtIso: expiresAt,
     authMethod,
     provider,
     region,
@@ -636,6 +653,18 @@ export async function switchAccount(input: SwitchAccountInput): Promise<SwitchAc
     notes.push(`清理了 ${prunedRegistrations} 个陈旧的客户端注册文件`)
   }
 
+  const cliSync = await syncKiroCliAuth({
+    accessToken,
+    refreshToken: finalRefreshToken,
+    expiresAtIso: expiresAt,
+    authMethod,
+    provider,
+    region,
+    profileArn: arnToWrite,
+    clientId,
+    clientSecret
+  })
+
   lastSwitchedAccountId = input.accountId
   return {
     accessToken,
@@ -645,6 +674,7 @@ export async function switchAccount(input: SwitchAccountInput): Promise<SwitchAc
     clientRegPath,
     profileArn: arnToWrite,
     verified,
+    cliSync,
     verifyError: verified ? undefined : verifyError || '用量接口没有返回可识别的结果',
     notes
   }
