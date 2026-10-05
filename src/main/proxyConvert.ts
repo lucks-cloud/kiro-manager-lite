@@ -57,14 +57,18 @@ export const MAX_WEB_SEARCH_ROUNDS = 5
 /**
  * 交给模型的搜索工具定义。
  * 描述写得具体一点，模型才知道什么时候该用它（不写清楚它会倾向于凭记忆作答）。
+ * 也要写清楚什么时候不该用：这个工具是反代主动挂上的，客户端没要求，
+ * 实测模型被问「你是什么模型」时会去搜一遍来核实，白多一轮上游请求（总耗时从 4 秒涨到 16 秒）。
  */
 export function webSearchToolSpec(): NormTool {
   return {
     name: WEB_SEARCH_TOOL,
     description:
       'Search the public web for current information. Use this whenever the answer depends on ' +
-      'recent events, prices, versions, or anything that may have changed after your training data. ' +
-      'Returns a ranked list of titles, URLs and snippets.',
+      'recent events, prices, versions, or anything that may have changed after your training data, ' +
+      'or when the user explicitly asks you to search. Do not use it for questions about yourself ' +
+      '(your name, model or capabilities), for general knowledge you already have, or for the ' +
+      "user's own code and files. Returns a ranked list of titles, URLs and snippets.",
     schema: {
       type: 'object',
       properties: {
@@ -101,6 +105,12 @@ export interface NormalizedRequest {
    * （客户端收到一个它不认识的工具调用会直接卡住）。见 proxyServer 里的搜索循环。
    */
   webSearch?: { maxUses: number }
+  /**
+   * 「禁用工具调用」：除了清空 tools，历史里的工具轮次也必须全部压成文本。
+   * 只清 tools 不够——历史用过的工具名会被补成占位定义发给上游，
+   * 上一轮的结构化 toolUses / toolResults 也会原样带上，模型照样能发起工具调用。
+   */
+  toolsDisabled?: boolean
   /**
    * Claude Code 的 WebSearch 子请求要搜的词。
    *
@@ -608,6 +618,7 @@ export function buildKiroPayload(
   const resultIds = new Set(current.toolResults.map((r) => r.toolUseId).filter(Boolean))
   const pairedIds = new Set((lastAssistant?.toolUses ?? []).map((t) => t.toolUseId))
   const keepStructured =
+    !request.toolsDisabled &&
     resultIds.size > 0 &&
     resultIds.size === pairedIds.size &&
     [...resultIds].every((id) => pairedIds.has(id))
@@ -652,7 +663,8 @@ export function buildKiroPayload(
     })
   }
 
-  const tools = buildTools(request.tools, historyToolNames, toolNameMap)
+  // 禁用工具时一个定义都不发：占位定义也是工具，模型看到了就能调
+  const tools = request.toolsDisabled ? [] : buildTools(request.tools, historyToolNames, toolNameMap)
   const context: Record<string, unknown> = {}
   if (tools.length) context.tools = tools
   if (keepStructured) {
@@ -796,6 +808,8 @@ export interface ServerSearchBlock {
 /** SSE 写入的公共部分 */
 abstract class SseWriter {
   protected started = false
+  /** 最近一次往客户端写东西的时间，心跳据此判断是否已经静默太久 */
+  private lastWriteAt = 0
 
   constructor(
     protected readonly res: ServerResponse,
@@ -811,6 +825,28 @@ abstract class SseWriter {
     const payload = typeof data === 'string' ? data : JSON.stringify(data)
     this.res.write(`${event ? `event: ${event}\n` : ''}data: ${payload}\n\n`)
     this.started = true
+    this.lastWriteAt = Date.now()
+  }
+
+  /**
+   * 心跳：流已经开始、但静默超过 idleMs 时写一条保活。
+   *
+   * 首字之后也会有很长的空窗：客户端没要推理时思考内容不转发；工具参数要攒齐才发
+   * （模型写一个几百行的文件，参数要生成几十秒）；托管搜索在两轮之间要去搜、再等上游。
+   * 这期间连接上一个字节都没有，带空闲超时的客户端或中间层会当成断线。
+   *
+   * Anthropic 用官方的 ping 事件（官方 API 自己就发，SDK 认识）；
+   * 其余协议用 SSE 注释行（冒号开头），按规范所有解析器都直接忽略，不会被当成内容。
+   * 只在 started 之后发：之前发就得先提交 200 状态码，出错时没法再回 429 / 401。
+   */
+  heartbeat(idleMs: number): void {
+    if (!this.started || this.res.writableEnded || Date.now() - this.lastWriteAt < idleMs) return
+    this.res.write(this.pingFrame())
+    this.lastWriteAt = Date.now()
+  }
+
+  protected pingFrame(): string {
+    return ': ping\n\n'
   }
 
   abstract text(delta: string): void
@@ -824,6 +860,10 @@ abstract class SseWriter {
 /** Anthropic Messages 的 SSE：message_start → content_block_* → message_delta → message_stop */
 export class AnthropicSseWriter extends SseWriter {
   private readonly messageId = `msg_${randomUUID().replace(/-/g, '')}`
+
+  protected pingFrame(): string {
+    return 'event: ping\ndata: {"type":"ping"}\n\n'
+  }
   private blockIndex = -1
   private openBlock: 'text' | 'thinking' | 'tool' | null = null
 

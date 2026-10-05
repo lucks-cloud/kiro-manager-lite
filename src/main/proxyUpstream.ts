@@ -3,7 +3,6 @@
 // 重试的边界只有一条，但很关键：**一旦有内容写给客户端就不能再重试**。
 // 否则客户端会收到两段拼在一起的回复，或者一串索引错乱的 SSE 块。
 // 所以调用方传进来的 canRetry() 必须如实反映「有没有 flush 过」。
-import { createHash } from 'crypto'
 import { errorMessage } from '../shared/errors'
 import { jsonOf, takeFrames } from './eventStream'
 import {
@@ -15,7 +14,9 @@ import {
   listKiroModels
 } from './kiroChat'
 import { codeWhispererEndpoint, qEndpoint } from './kiroEndpoints'
+import { KIRO_BUILDER_ID_PLACEHOLDER_ARN, KIRO_SOCIAL_PROFILE_ARN, isSocialLogin } from './kiroAuth'
 import { httpStream } from './net'
+import { log } from './logger'
 import { refreshAccountToken } from './accountService'
 import { sleep } from './utils'
 import { getAccountData, getKeyData, getProxyModels, setAccountData, setProxyModels } from './store'
@@ -37,12 +38,17 @@ interface EndpointSpec {
   url: string
 }
 
+/**
+ * 自动模式先 Amazon Q 再 CodeWhisperer，与官方 IDE 一致：
+ * Kiro IDE 的对话客户端按区域取 q.<区域>.amazonaws.com（us-east-1 / eu-central-1 各一条），
+ * codewhisperer.<区域> 只是 SDK 自带的默认地址。两者请求体、凭证、计费完全相同。
+ */
 function endpointsFor(mode: ProxyEndpoint, region?: string): EndpointSpec[] {
   const cw = { name: 'codewhisperer', url: `${codeWhispererEndpoint(region)}/generateAssistantResponse` }
   const q = { name: 'amazonq', url: `${qEndpoint(region)}/generateAssistantResponse` }
   if (mode === 'codewhisperer') return [cw]
   if (mode === 'amazonq') return [q]
-  return [cw, q]
+  return [q, cw]
 }
 
 export interface UpstreamCallbacks {
@@ -214,8 +220,10 @@ function orderForRequest(members: PoolMember[], source: ProxyAccountSource): Poo
   return [...members.slice(start), ...members.slice(0, start)]
 }
 
-/** token 剩余不足这个时间就先刷新，避免请求发出去正好过期 */
+/** token 剩余不足这个时间就安排刷新 */
 const REFRESH_LEAD_MS = 2 * 60 * 1000
+/** 剩余不足这个时间就当已过期：请求在路上的这几秒里可能正好过期 */
+const MIN_USABLE_MS = 15 * 1000
 
 /**
  * 确保账号的 accessToken 可用。
@@ -224,8 +232,37 @@ const REFRESH_LEAD_MS = 2 * 60 * 1000
 /** 确保账号的 token 可用（过期就刷新）；联网搜索也要用，所以导出 */
 export async function ensureToken(account: Account): Promise<Account> {
   const expiresAt = account.credentials.expiresAt ?? 0
-  if (account.credentials.accessToken && expiresAt - Date.now() > REFRESH_LEAD_MS) return account
+  const left = expiresAt - Date.now()
+  if (account.credentials.accessToken && left > REFRESH_LEAD_MS) return account
+  /*
+   * 快到期但还能用：这次请求直接用现有 token，刷新放到后台，不让请求干等一次刷新往返。
+   * 设置里的自动刷新默认会提前半小时刷好，正常走不到这里；关掉自动刷新时才会碰上。
+   * 真过期了（或剩不到几秒）才必须当场刷：拿过期 token 发出去只会白吃一个 401。
+   */
+  if (account.credentials.accessToken && left > MIN_USABLE_MS) {
+    void refreshOnce(account).catch((e) =>
+      log('warn', `[Proxy] ${account.email} 后台刷新 token 失败：${errorMessage(e)}`)
+    )
+    return account
+  }
+  return refreshOnce(account)
+}
 
+/**
+ * 同一个账号同时只刷一次：refreshToken 是轮换式的，两个请求并发去刷，
+ * 后到的会拿着已作废的旧 refreshToken，把账号刷成「凭证失效」。
+ */
+const refreshing = new Map<string, Promise<Account>>()
+
+function refreshOnce(account: Account): Promise<Account> {
+  const running = refreshing.get(account.id)
+  if (running) return running
+  const task = doRefresh(account).finally(() => refreshing.delete(account.id))
+  refreshing.set(account.id, task)
+  return task
+}
+
+async function doRefresh(account: Account): Promise<Account> {
   const result = await refreshAccountToken(account)
   const data = getAccountData()
   const index = data.accounts.findIndex((a) => a.id === account.id)
@@ -384,7 +421,7 @@ async function parseStream(
   onFlush: () => void
 ): Promise<ParseOutcome> {
   const reader = body.getReader()
-  let buffer = Buffer.alloc(0)
+  let buffer: Buffer = Buffer.alloc(0)
   let stopReason = ''
   let credits = 0
   let contextPercent = 0
@@ -487,6 +524,16 @@ export interface CallOptions {
   canRetry: () => boolean
   /** 每次准备用某个账号 / Key 发请求时通知调用方，用于日志展示 */
   onAttempt?: (member: PoolIdentity, attempt: number) => void
+  /**
+   * 耗时分解，用于排查首字慢在哪一段：
+   *  - prepared：账号 token 与 profileArn 已就绪（可能刚刷新过 token）
+   *  - headers：上游返回了响应头，之后等的就是模型本身
+   */
+  onTiming?: (phase: 'prepared' | 'headers') => void
+  /** 本次发给上游的请求体字节数（序列化时顺手量，不再额外 stringify 一遍） */
+  onRequestBytes?: (bytes: number) => void
+  /** 上游接受了请求（返回 2xx）的端点主机名，换端点 / 换号时以最后一次为准 */
+  onEndpoint?: (host: string) => void
 }
 
 /** payload 里的 profileArn 每个账号不同，发请求前按账号覆盖；API Key 一律不带 */
@@ -497,24 +544,78 @@ function withProfileArn(payload: Record<string, unknown>, arn?: string): Record<
   return next
 }
 
-/** 同一个 accessToken 的 profileArn 候选缓存，避免每次请求都问一遍上游 */
-const arnCache = new Map<string, { list: (string | undefined)[]; at: number }>()
-const ARN_TTL = 10 * 60 * 1000
+/**
+ * 每个账号的 profileArn 候选缓存，避免每次请求都问一遍上游。
+ *
+ * 按账号而不是按 accessToken 存：profileArn 属于账号，不随 token 轮换而变。
+ * 早先按 token 哈希存，token 大约每小时换一次，换完后的第一个请求必定缓存不命中，
+ * 要先多打一次 ListAvailableProfiles（Builder ID / IdC 都会走这一步），首字因此多等几百毫秒。
+ * sig 记下会影响候选的字段，账号重新登录、换了 profile 时自动失效；
+ * 用这份候选全部被拒（授权类错误）时由 dropArnCache 清掉，下次重新问。
+ */
+const arnCache = new Map<string, { sig: string; list: (string | undefined)[]; at: number }>()
+const ARN_TTL = 6 * 60 * 60 * 1000
+
+function arnSig(account: Account): string {
+  return [
+    account.profileArn || account.credentials.profileArn || '',
+    account.credentials.region || '',
+    account.idp || '',
+    account.credentials.authMethod || ''
+  ].join('|')
+}
+
+function dropArnCache(accountId: string): void {
+  arnCache.delete(accountId)
+  needsLookup.add(accountId)
+}
+
+/**
+ * 不联网就能确定的候选，用于跳过 ListAvailableProfiles。
+ *
+ * 这个接口对 Builder ID 和社交账号永远返回 403（它们没有 profile），问了也白问，
+ * 却要多等一个往返（实测约 0.7 秒，正是「账号就绪」慢的来源）。
+ * 企业账号存过 profileArn（切号校验时实测过）也直接用。
+ * 只有企业账号没存过 ARN、或者本地候选被拒过时，才去问后端。
+ */
+function localArnList(account: Account): (string | undefined)[] | null {
+  const stored = account.profileArn || account.credentials.profileArn
+  const social = isSocialLogin({ authMethod: account.credentials.authMethod, provider: account.idp })
+  if (social) return uniqueArns([stored, KIRO_SOCIAL_PROFILE_ARN, undefined])
+  if (account.idp === 'BuilderId') return uniqueArns([stored, KIRO_BUILDER_ID_PLACEHOLDER_ARN, undefined])
+  if (stored) return uniqueArns([stored, KIRO_BUILDER_ID_PLACEHOLDER_ARN, undefined])
+  return null
+}
+
+function uniqueArns(list: (string | undefined)[]): (string | undefined)[] {
+  const out: (string | undefined)[] = []
+  for (const arn of list) if (!out.includes(arn)) out.push(arn)
+  return out
+}
+
+/** 本地候选被拒过的账号：下次老老实实问后端 */
+const needsLookup = new Set<string>()
 
 async function arnListFor(account: Account): Promise<(string | undefined)[]> {
-  const key = createHash('sha256').update(account.credentials.accessToken).digest('hex').slice(0, 16)
-  const cached = arnCache.get(key)
-  if (cached && Date.now() - cached.at < ARN_TTL) return cached.list
+  const sig = arnSig(account)
+  const cached = arnCache.get(account.id)
+  if (cached && cached.sig === sig && Date.now() - cached.at < ARN_TTL) return cached.list
+  const local = needsLookup.has(account.id) ? null : localArnList(account)
+  if (local) {
+    arnCache.set(account.id, { sig, list: local, at: Date.now() })
+    return local
+  }
+  needsLookup.delete(account.id)
   const list = await arnCandidatesFor(account.credentials.accessToken, {
     profileArn: account.profileArn || account.credentials.profileArn,
     region: account.credentials.region,
     idp: account.idp,
     authMethod: account.credentials.authMethod
   })
-  // token 大约每小时轮换一次，旧 token 的条目不会再命中，顺手清掉免得 Map 越积越多
+  // 账号被删掉后条目不会再命中，顺手清掉过期的，免得 Map 越积越多
   const now = Date.now()
   for (const [k, v] of arnCache) if (now - v.at >= ARN_TTL) arnCache.delete(k)
-  arnCache.set(key, { list, at: now })
+  arnCache.set(account.id, { sig, list, at: now })
   return list
 }
 
@@ -564,6 +665,7 @@ async function attemptOnce(
   for (const arn of prepared.arnList) {
     // 同一个 arn 换端点重试时请求体不变，序列化一次复用（载荷可能有几 MB）
     const body = JSON.stringify(withProfileArn(options.payload, arn))
+    options.onRequestBytes?.(Buffer.byteLength(body))
     for (const endpoint of prepared.endpoints) {
       if (aborted(options.signal)) throw new UpstreamError('客户端已断开', 499)
       try {
@@ -577,6 +679,8 @@ async function attemptOnce(
           const raw = await res.text().catch(() => '')
           throw new UpstreamError(`HTTP ${res.status}: ${raw.slice(0, 300) || '没有响应体'}`, res.status)
         }
+        options.onTiming?.('headers')
+        options.onEndpoint?.(new URL(endpoint.url).host)
         const outcome = await parseStream(
           res.body,
           options.modelId,
@@ -647,6 +751,8 @@ export async function callUpstream(
       continue
     }
 
+    options.onTiming?.('prepared')
+
     for (let round = 0; ; round++) {
       attempts++
       options.onAttempt?.(prepared.identity, attempts)
@@ -674,6 +780,8 @@ export async function callUpstream(
       if (err.status === 400 && !/profilearn/i.test(err.message)) throw err
 
       if (isAccountUnusable(err) || isAuthStatus(err.status)) {
+        // 缓存的 profileArn 候选可能已经不对了，下次用这个号时重新问
+        if (isAuthStatus(err.status) && member.kind === 'account') dropArnCache(member.id)
         retries.push(`${member.email}：${brief}，换下一个账号`)
         break
       }

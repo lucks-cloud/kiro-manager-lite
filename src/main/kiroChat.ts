@@ -25,10 +25,13 @@ import { jsonOf, takeFrames } from './eventStream'
 import { parseModelEffort } from '../shared/modelSchema'
 import type { ChatTestInput, KiroModelInfo } from '../shared/types'
 
-/** 对话端点：主用 CodeWhisperer，失败回退 Amazon Q，两者请求体一致（固定 us-east-1） */
+/**
+ * 对话端点：主用 Amazon Q，失败回退 CodeWhisperer，两者请求体一致（固定 us-east-1）。
+ * 顺序与官方 IDE 一致，也和反代的自动模式一致，测活结果才能代表反代实际走的路径。
+ */
 const CHAT_ENDPOINTS = [
-  `${codeWhispererEndpoint()}/generateAssistantResponse`,
-  `${qEndpoint()}/generateAssistantResponse`
+  `${qEndpoint()}/generateAssistantResponse`,
+  `${codeWhispererEndpoint()}/generateAssistantResponse`
 ]
 
 /** 账号身份信息：决定请求头与 profileArn 的取法 */
@@ -427,7 +430,7 @@ async function streamWithArn(
       }
 
       const reader = res.body.getReader()
-      let buffer = Buffer.alloc(0)
+      let buffer: Buffer = Buffer.alloc(0)
       let text = ''
       let firstByteMs = 0
       let modelId: string | undefined
@@ -585,7 +588,7 @@ export async function streamApiKeyChat(
     }
 
     const reader = res.body.getReader()
-    let buffer = Buffer.alloc(0)
+    let buffer: Buffer = Buffer.alloc(0)
     let text = ''
     let firstByteMs = 0
     let modelId: string | undefined

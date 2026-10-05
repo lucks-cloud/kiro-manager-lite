@@ -32,7 +32,7 @@ export const AWS_SDK_VERSION = '1.0.39'
  * 官方格式是 `KiroIDE-<版本>-<机器码>`，读自 Kiro 0.12.333 的 kiro-agent 扩展：
  *   `KiroIDE-${vscode.kiroVersion}-${USER_MACHINE_ID}`，USER_MACHINE_ID = getMachineId()，
  *   getMachineId() 先用 node-machine-id 的 machineIdSync()，失败才回落 vscode.env.machineId。
- * 三个参考项目（Kiro-account-manager、Kiro-Go、kiro.rs）也都带这个后缀，所以一律带上。
+ * 所以一律带上这个后缀，和官方请求头保持一致。
  *
  * 注意：machineIdSync() 取的是**操作系统**的设备标识再做 sha256
  * （macOS 的 IOPlatformUUID、Windows 的 MachineGuid、Linux 的 /etc/machine-id），
@@ -178,8 +178,7 @@ export function kiroUserAgent(): string {
 
 /**
  * x-amz-user-agent 用的短 UA。
- * 用短横连接：Kiro-Go、kiro.rs 与官方 UA 都是这个写法；
- * Kiro-account-manager 这里用了空格（`KiroIDE 0.12.155 <id>`），是它独有的写法，不照搬。
+ * 用短横连接，和官方 UA 的写法一致；不要写成空格分隔（`KiroIDE 0.12.155 <id>`）。
  */
 export function kiroAmzUserAgent(): string {
   return `aws-sdk-js/${AWS_SDK_VERSION} ${kiroIdeTag()}`

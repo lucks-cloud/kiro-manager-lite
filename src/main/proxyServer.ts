@@ -77,9 +77,44 @@ import type {
 } from '../shared/types'
 import {
   DEFAULT_PROXY_CONFIG,
+  HEARTBEAT_MAX_SEC,
+  HEARTBEAT_MIN_SEC,
+  KEEP_ALIVE_MAX_SEC,
+  KEEP_ALIVE_MIN_SEC,
   PAYLOAD_LIMIT_MAX_KB,
   PAYLOAD_LIMIT_MIN_KB
 } from '../shared/types'
+import { setKeepAlive } from './net'
+
+/** 配置里的数值夹到可用范围；缺失或非数字（旧配置、手改配置文件）回落默认值 */
+function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+  const n = typeof value === 'number' && Number.isFinite(value) ? value : fallback
+  return Math.min(max, Math.max(min, n))
+}
+
+/** 按配置设置上游连接保持时间；启动和每次改参数都要调 */
+function applyNetworkConfig(next: ProxyConfig): void {
+  setKeepAlive(
+    clampNumber(
+      next.upstreamKeepAliveSec,
+      KEEP_ALIVE_MIN_SEC,
+      KEEP_ALIVE_MAX_SEC,
+      DEFAULT_PROXY_CONFIG.upstreamKeepAliveSec
+    )
+  )
+}
+
+/** 心跳间隔（毫秒）；关闭时返回 0 */
+function heartbeatIdleMs(): number {
+  if (config.heartbeatEnabled === false) return 0
+  const sec = clampNumber(
+    config.heartbeatIntervalSec,
+    HEARTBEAT_MIN_SEC,
+    HEARTBEAT_MAX_SEC,
+    DEFAULT_PROXY_CONFIG.heartbeatIntervalSec
+  )
+  return sec * 1000
+}
 
 /** 请求体上限：Claude Code 带完整仓库上下文时能到几 MB */
 const MAX_BODY_BYTES = 32 * 1024 * 1024
@@ -111,6 +146,7 @@ export function initProxyServer(notifier: Notifier, version?: string): void {
   notify = notifier
   if (version) appVersion = version
   config = getProxyConfig()
+  applyNetworkConfig(config)
   if (config.autoStart) {
     void startProxy().catch((error) => {
       log('warn', `[Proxy] 自动启动失败：${errorMessage(error)}`)
@@ -504,7 +540,7 @@ function currentModels(): KiroModelInfo[] {
 }
 
 /**
- * 模型系列，给按系列分组显示的客户端用。规则与 Kiro-account-manager 一致：
+ * 模型系列，给按系列分组显示的客户端用：
  * 认得的几个大系列直接归类，其余取 id 的前两段（deepseek-3.2 → deepseek-3）。
  */
 function modelFamily(id: string): string {
@@ -530,10 +566,10 @@ function modelFamily(id: string): string {
  * 缺了这些，客户端只能按默认值（常见是 4K / 8K）来裁剪上下文，1M 的模型也被当成小模型用。
  *
  * 字段全部来自上游 ListAvailableModels，不写死；取不到的才用兜底值。
- * 和参考实现有两处刻意不同：
- *  - created 用秒。参考给的是毫秒（1790732462123），OpenAI 规范是 Unix 秒；
- *  - reasoning 按「该模型有没有推理档位」判断。参考只认 Claude 那种 thinking 字段，
- *    于是 gpt-5.6 明明有六个档位却标成 reasoning: false，客户端就不会给它开推理。
+ * 两处容易写错的：
+ *  - created 用秒，不是毫秒（1790732462123）：OpenAI 规范是 Unix 秒；
+ *  - reasoning 按「该模型有没有推理档位」判断，不能只认 Claude 那种 thinking 字段，
+ *    否则 gpt-5.6 明明有六个档位却标成 reasoning: false，客户端就不会给它开推理。
  */
 function modelEntry(model: KiroModelInfo, created: number): Record<string, unknown> {
   const id = model.modelId
@@ -629,11 +665,11 @@ function modelList(): unknown {
 /** Gemini 的模型列表：name 要带 models/ 前缀，SDK 按它去拼 generateContent 的路径 */
 function geminiModelList(): unknown {
   return {
-    // auto 也列出来：Gemini 客户端点 models/auto 时照样能用（交给 Kiro 选），和参考一致
+    // auto 也列出来：Gemini 客户端点 models/auto 时照样能用（交给 Kiro 选）
     models: currentModels().map((model) => ({
       name: `models/${model.modelId}`,
       baseModelId: model.modelId,
-      // Google 的 Model 资源必有这个字段；上游没有版本概念，和参考一样固定给 001
+      // Google 的 Model 资源必有这个字段；上游没有版本概念，固定给 001
       version: '001',
       displayName: model.modelName || model.modelId,
       description: model.description ?? '',
@@ -657,16 +693,15 @@ function uptimeMs(): number {
 }
 
 /**
- * 健康检查。
- * 前半截是 Kiro-account-manager 的字段（status / version / accounts / availableAccounts / stats），
- * 照它的形状给，拿它写的监控脚本、面板能直接复用；running 是我们自己的字段。
+ * 健康检查：status / version / running / accounts / availableAccounts / stats。
+ * 字段名是 Kiro 反代监控里常见的形状，现成的监控脚本、面板能直接复用。
  */
 function healthPayload(): Record<string, unknown> {
   return {
     status: 'ok',
     version: appVersion,
     running: true,
-    // accounts 是账号总数、availableAccounts 是此刻会被选中的——和参考一致，
+    // accounts 是账号总数、availableAccounts 是此刻会被选中的，
     // 一个号失效时两个数一对比就能看出来
     accounts: getAccountData().accounts.length,
     availableAccounts: poolIds().size,
@@ -681,8 +716,8 @@ function healthPayload(): Record<string, unknown> {
 }
 
 /**
- * 一条请求日志换成参考实现 recentRequests 的形状。
- * 它的 model 是客户端请求里写的名字；我们另外带上实际发给 Kiro 的 kiroModel。
+ * 一条请求日志换成 recentRequests 的精简形状。
+ * model 是客户端请求里写的名字，kiroModel 是实际发给 Kiro 的。
  */
 function recentRequest(entry: ProxyLogEntry): Record<string, unknown> {
   return {
@@ -701,8 +736,8 @@ function recentRequest(entry: ProxyLogEntry): Record<string, unknown> {
 }
 
 /**
- * 最近 n 条请求，按时间正序（旧的在前）——参考实现是这个顺序，
- * 按它写的解析脚本通常直接取最后一条当「最新」。
+ * 最近 n 条请求，按时间正序（旧的在前）：
+ * 解析脚本通常直接取最后一条当「最新」。
  * 只收已经结束的：还在输出中的请求 token 和耗时都还没定，给出去是半截数据。
  */
 function recentRequests(n: number): Record<string, unknown>[] {
@@ -716,19 +751,19 @@ function recentRequests(n: number): Record<string, unknown>[] {
 /**
  * 管理 API。返回 undefined 表示没有这个接口。
  *
- * 字段分两部分：参考实现有的一个不少（驼峰那套），我们原有的也保留（同一份数据的另一种写法），
- * 这样按任一边写的脚本都能用。
+ * 字段分两部分：通用的驼峰字段，以及我们原有的字段（同一份数据的另一种写法），
+ * 这样按任一套写的脚本都能用。
  *
  * 账号列表只给能公开的字段。凭证（token、密码）一个都不出——
  * 这个接口能被任何持有反代 Key 的客户端调用，Key 是可以分给别人的。
- * expiresAt 是凭证的过期时间戳，不是凭证本身，参考实现也给，保留。
+ * expiresAt 是凭证的过期时间戳，不是凭证本身，可以给。
  */
 function adminRoute(path: string, url: URL): unknown {
   if (path === '/admin/stats') {
     const all = usageList()
     /*
-     * accountStats：按账号 id 的字典，和参考的 AccountStats 同形状。
-     * 区别是我们的数据是持久化的累计值，参考的只算本次启动以来——重启后不会清零。
+     * accountStats：按账号 id 的字典。
+     * 数据是持久化的累计值，不只算本次启动以来，重启后不会清零。
      */
     const accountStats: Record<string, unknown> = {}
     for (const item of all) {
@@ -749,7 +784,7 @@ function adminRoute(path: string, url: URL): unknown {
       }
     }
     return {
-      // ---- 参考实现的字段 ----
+      // ---- 通用字段 ----
       totalRequests: stats.requests,
       successRequests: stats.succeeded,
       failedRequests: stats.failed,
@@ -775,7 +810,7 @@ function adminRoute(path: string, url: URL): unknown {
       return {
         id: account.id,
         email: account.email,
-        // 参考的 isAvailable = 此刻能不能被反代选中；我们按账号池（状态、封禁、所选范围）判断
+        // isAvailable = 此刻能不能被反代选中，按账号池（状态、封禁、所选范围）判断
         isAvailable: pool.has(account.id),
         lastUsed: used?.lastUsedAt ?? 0,
         requestCount: used?.requests ?? 0,
@@ -798,10 +833,10 @@ function adminRoute(path: string, url: URL): unknown {
   }
 
   if (path === '/admin/logs') {
-    // ?limit= 默认 100（参考的条数），最多给到内存里全部
+    // ?limit= 默认 100，最多给到内存里全部
     const limit = Math.max(1, Math.min(LOG_CAPACITY, Number(url.searchParams.get('limit')) || 100))
     return {
-      // 参考实现的形状：精简字段、时间正序
+      // 精简字段、时间正序
       recentRequests: recentRequests(limit),
       // 我们的完整日志：新的在前，带协议、档位、重试过程等
       total: logs.length,
@@ -964,6 +999,12 @@ async function handleServerSearch(ctx: HandleContext, query: string): Promise<vo
   }
 }
 
+/**
+ * 流式响应的心跳：静默超过参数里设的间隔（默认 15 秒）才发，检查频率取间隔的三分之一。
+ * 默认 15 秒：和 Anthropic 官方接口的 ping 频率同一量级，远低于常见客户端与中间层的空闲超时，
+ * 又不会在正常出字时多发一条。
+ */
+
 async function handleChat(ctx: HandleContext): Promise<void> {
   const { request, res, protocol } = ctx
   if (protocol === 'anthropic' && request.serverSearchQuery && !config.disableTools) {
@@ -1010,6 +1051,7 @@ async function handleChat(ctx: HandleContext): Promise<void> {
      */
     request.tools = []
     request.webSearch = undefined
+    request.toolsDisabled = true
   } else if (config.managedToolExecution) {
     /*
      * 客户端自己带了搜索工具（Claude Code 的 WebSearch）就不注入：它的 WebSearch 走上面的子请求，
@@ -1076,14 +1118,18 @@ async function handleChat(ctx: HandleContext): Promise<void> {
     usage: { inputTokens: estimatedInputTokens, outputTokens: 0 }
   }
   const events: StreamEventCounts = { text: 0, thinking: 0, toolCalls: 0, searchCalls: 0 }
+  // 同一个对象挂到日志上：计数随流实时更新，请求详情里的「流详情」不依赖「记录流事件」开关
+  entry.streamEvents = events
   const logStreamSummary = (ok: boolean): void => {
     if (!config.logStreamEvents) return
     log(
       'info',
       `[Proxy/Stream] ${ctx.path} ${mapped.modelId} ${ok ? '完成' : '失败'} ` +
         `文本块 ${events.text} · 推理块 ${events.thinking} · 工具调用 ${events.toolCalls} · ` +
-        `托管搜索 ${events.searchCalls} · 首字 ${entry.firstTokenMs ?? '-'}ms · ` +
-        `请求体 ${Math.round(Buffer.byteLength(JSON.stringify(payload)) / 1024)}KB`
+        // 都是从请求开始的累计时间点（@ 表示「在第几毫秒」），不是各段耗时
+        `托管搜索 ${events.searchCalls} · 账号就绪 @${entry.prepareMs ?? '-'}ms · ` +
+        `上游响应头 @${entry.upstreamHeadersMs ?? '-'}ms · 首字 @${entry.firstTokenMs ?? '-'}ms · ` +
+        `请求体 ${entry.requestBytes != null ? Math.round(entry.requestBytes / 1024) : '-'}KB`
     )
   }
 
@@ -1126,6 +1172,13 @@ async function handleChat(ctx: HandleContext): Promise<void> {
   let searchRounds = 0
   let searchesDone = 0
 
+  // 心跳：流开始后静默超过设定间隔就补一条保活，原因见 SseWriter.heartbeat；参数里可关
+  const idleMs = heartbeatIdleMs()
+  const heartbeat =
+    writer && idleMs > 0
+      ? setInterval(() => writer.heartbeat(idleMs), Math.max(1_000, Math.floor(idleMs / 3)))
+      : null
+
   try {
     let result = await callUpstream(
       {
@@ -1144,6 +1197,19 @@ async function handleChat(ctx: HandleContext): Promise<void> {
           entry.accountEmail = account.email
           entry.attempts = attempt
           touchLog(entry, true)
+        },
+        onRequestBytes: (bytes) => {
+          entry.requestBytes = bytes
+        },
+        onEndpoint: (host) => {
+          entry.endpoint = host
+        },
+        // 只记首字之前的：换号重试时以最后一次为准，正好对应最终出字的那次
+        onTiming: (phase) => {
+          if (firstTokenAt) return
+          const ms = Date.now() - startedAtMs
+          if (phase === 'prepared') entry.prepareMs = ms
+          else entry.upstreamHeadersMs = ms
         }
       },
       {
@@ -1427,6 +1493,8 @@ async function handleChat(ctx: HandleContext): Promise<void> {
     }
     if (!res.headersSent) sendError(res, protocol, status === 499 ? 499 : status, message)
     else res.end()
+  } finally {
+    if (heartbeat) clearInterval(heartbeat)
   }
 }
 
@@ -1845,6 +1913,7 @@ export async function applyProxyConfig(next: ProxyConfig): Promise<ProxyStatus> 
   const needRestart =
     server?.listening === true && (next.port !== config.port || next.allowLan !== config.allowLan)
   config = next
+  applyNetworkConfig(next)
   if (needRestart) {
     stopProxy()
     await startProxy()

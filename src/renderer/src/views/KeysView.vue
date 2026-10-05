@@ -3,6 +3,7 @@ import { computed, h, onMounted, onUnmounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { message, Modal } from 'ant-design-vue'
 import {
+  ApiOutlined,
   AppstoreOutlined,
   CheckCircleFilled,
   CopyOutlined,
@@ -52,6 +53,7 @@ import UsageHistoryModal from '@/components/accounts/UsageHistoryModal.vue'
 import GatewayHistoryModal from '@/components/keys/GatewayHistoryModal.vue'
 import ApiKeyDetailDrawer from '@/components/keys/ApiKeyDetailDrawer.vue'
 import ApiKeyTestModal from '@/components/keys/ApiKeyTestModal.vue'
+import KiroCliConnectModal from '@/components/keys/KiroCliConnectModal.vue'
 import ApiKeyBatchTestModal from '@/components/keys/ApiKeyBatchTestModal.vue'
 import ApiKeyFilterPanel from '@/components/keys/ApiKeyFilterPanel.vue'
 import ExportApiKeysModal from '@/components/keys/ExportApiKeysModal.vue'
@@ -907,6 +909,9 @@ function removeSelected(): void {
   })
 }
 
+/** 「连接 Kiro CLI」弹窗对应的 Key */
+const cliTarget = ref<KeyEntry | null>(null)
+
 function copy(entry: KeyEntry): void {
   window.api.writeClipboard(entry.key)
   message.success('完整 API Key 已复制')
@@ -1335,7 +1340,6 @@ onUnmounted(() => store.stopStatsPolling())
           `mode-${displayMode}`,
           { active: entry.id === data.activeKeyId, selected: selectedSet.has(entry.id) }
         ]"
-        hoverable
         @click="toggleSelect(entry.id, !selectedSet.has(entry.id))"
       >
         <div class="key-head">
@@ -1528,6 +1532,11 @@ onUnmounted(() => store.stopStatsPolling())
                 <template #icon><CopyOutlined /></template>
               </a-button>
             </a-tooltip>
+            <a-tooltip title="使用此 API Key 连接 Kiro CLI">
+              <a-button type="text" size="small" class="action-btn" @click.stop="cliTarget = entry">
+                <template #icon><ApiOutlined /></template>
+              </a-button>
+            </a-tooltip>
             <a-tooltip title="修改备注">
               <a-button type="text" size="small" class="action-btn" @click.stop="openEdit(entry)">
                 <template #icon><EditOutlined /></template>
@@ -1544,6 +1553,14 @@ onUnmounted(() => store.stopStatsPolling())
       </template>
     </VirtualGrid>
     <a-empty v-else class="empty" :description="data.keys.length ? '没有匹配的 Key' : '还没有 API Key，请先添加'" />
+
+    <KiroCliConnectModal
+      v-if="cliTarget"
+      :open="!!cliTarget"
+      :api-key="cliTarget.key"
+      :display-key="displayKey(cliTarget.key)"
+      @update:open="(v) => !v && (cliTarget = null)"
+    />
 
     <a-modal
       v-if="addOpen"
@@ -1815,7 +1832,22 @@ onUnmounted(() => store.stopStatsPolling())
 .spacer { flex: 1 1 auto; }
 .key-grid { flex: 1 1 auto; min-height: 0; }
 /* 整卡可点选；连着点几十张卡时不留下一片蓝色选中文字，要复制走详情抽屉或复制按钮 */
-.key-card { width: 100%; border: 1px solid var(--kal-border); overflow: hidden; cursor: pointer; user-select: none; }
+.key-card {
+  width: 100%;
+  border: 1px solid var(--kal-border);
+  overflow: hidden;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+}
+/*
+ * 悬停反馈与账号卡片（AccountCard）一致：浅阴影 + 上浮 1px。
+ * 不用 a-card 的 hoverable，它的默认阴影明显更深，两页放在一起看很不统一。
+ * 写在 selected / active 之前：同优先级时后者覆盖，选中态的描边阴影不被悬停冲掉。
+ */
+.key-card:hover { box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08); transform: translateY(-1px); }
+/* 列表模式不上浮：几十行同时排着，逐行抬起会显得很闹 */
+.key-card.mode-list:hover { transform: none; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06); }
 /* 用 padding 简写覆盖 antd 默认的 24px：左右也要收，不然横向留白比纵向大一截 */
 .key-card :deep(.ant-card-body) { padding: 6px 14px; }
 /*

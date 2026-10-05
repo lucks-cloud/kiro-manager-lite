@@ -1,5 +1,42 @@
 // 网络层：统一 fetch + 可选代理
-import { ProxyAgent, fetch as undiciFetch, type Dispatcher, type RequestInit as UndiciRequestInit } from 'undici'
+import { Agent, ProxyAgent, fetch as undiciFetch, type Dispatcher, type RequestInit as UndiciRequestInit } from 'undici'
+
+/**
+ * 连接保持时间，由反代参数「上游连接保持」设置，默认 60 秒。
+ *
+ * undici 默认空闲 4 秒就关掉连接，而 agent 两次请求之间（用户在读回复、客户端在执行工具）
+ * 通常远不止 4 秒，于是几乎每个请求都要重新走一遍 TCP + TLS（走代理时还要重建 CONNECT 隧道），
+ * 实测重连一次多花约 0.6 秒，全部算进「上游接收」。服务端给了更短的 keep-alive 提示时仍以服务端为准。
+ */
+const DEFAULT_KEEP_ALIVE_MS = 60_000
+let keepAliveMs = DEFAULT_KEEP_ALIVE_MS
+
+function keepAliveOptions(): { keepAliveTimeout: number; keepAliveMaxTimeout: number } {
+  // 上限至少 10 分钟，且不小于用户设的值，否则 undici 会把服务端提示夹到更短
+  return { keepAliveTimeout: keepAliveMs, keepAliveMaxTimeout: Math.max(10 * 60_000, keepAliveMs) }
+}
+
+/** 不走代理时用的连接池：同样按设置放宽保持时间（全局默认的那个是 4 秒） */
+let directAgent = new Agent(keepAliveOptions())
+
+/** 丢掉现有连接池，下一次请求按当前设置重建 */
+function resetAgents(): void {
+  for (const agent of agentCache.values()) void agent?.close?.()
+  agentCache.clear()
+  const old = directAgent
+  directAgent = new Agent(keepAliveOptions())
+  // 正在进行的流式请求还在用旧池，等它们自然结束再关，不能 destroy
+  void old.close().catch(() => undefined)
+}
+
+/** 设置上游连接保持时间（秒）；非法值回落默认 60 秒，值没变不重建连接池 */
+export function setKeepAlive(seconds: number): void {
+  const ms = Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : DEFAULT_KEEP_ALIVE_MS
+  if (ms === keepAliveMs) return
+  keepAliveMs = ms
+  resetAgents()
+  console.log(`[Net] keep-alive → ${ms / 1000}s`)
+}
 
 let proxyEnabled = false
 let proxyUrl = ''
@@ -43,7 +80,7 @@ function agentFor(target: string): Dispatcher | undefined {
   if (cached !== undefined) return cached ?? undefined
 
   try {
-    const agent = new ProxyAgent(target)
+    const agent = new ProxyAgent({ uri: target, ...keepAliveOptions() })
     agentCache.set(target, agent)
     return agent
   } catch (e) {
@@ -83,8 +120,7 @@ function buildInit(
     body: body as UndiciRequestInit['body'],
     signal
   }
-  const agent = currentAgent()
-  if (agent) init.dispatcher = agent
+  init.dispatcher = currentAgent() ?? directAgent
   return init
 }
 

@@ -53,6 +53,15 @@ export interface ProxyClientBackupFile {
   content: string
 }
 
+/** 本应用写过 KIRO_API_KEY 的记录，移除时据此还原 */
+export interface KiroCliEnvBackup {
+  writtenAt: number
+  /** macOS / Linux：写过的启动文件；created 表示文件是我们新建的，移除后为空就删掉 */
+  files: { path: string; created: boolean }[]
+  /** Windows：第一次写入前用户原有的值（没有则为 null），移除时写回 */
+  previousWindowsValue: string | null
+}
+
 export interface ProxyClientBackup {
   savedAt: number
   files: ProxyClientBackupFile[]
@@ -85,6 +94,8 @@ interface Schema {
   proxyPayloadDefault153600: boolean
   /** 一次性迁移标记：强制校验 API Key 统一打开，见 migratePayloadDefault */
   proxyRequireKeyDefault: boolean
+  /** 写入 Kiro CLI 环境变量的记录，见 kiroCliEnv */
+  kiroCliEnvBackup: KiroCliEnvBackup | null
 }
 
 const EMPTY_DATA: AccountStoreData = { version: 1, accounts: [], activeAccountId: null }
@@ -107,7 +118,8 @@ const store = new Store<Schema>({
     proxyApiKeys: [],
     proxyKeyUsage: {},
     proxyPayloadDefault153600: false,
-    proxyRequireKeyDefault: false
+    proxyRequireKeyDefault: false,
+    kiroCliEnvBackup: null
   }
 })
 
@@ -299,6 +311,16 @@ export function setProxyClientBackup(target: string, backup: ProxyClientBackup |
   if (backup) all[target] = backup
   else delete all[target]
   write('proxyClientBackups', all)
+}
+
+export function getKiroCliEnvBackup(): KiroCliEnvBackup | null {
+  const raw = read('kiroCliEnvBackup') as KiroCliEnvBackup | null | undefined
+  if (!raw || typeof raw !== 'object' || !Array.isArray(raw.files)) return null
+  return raw
+}
+
+export function setKiroCliEnvBackup(backup: KiroCliEnvBackup | null): void {
+  write('kiroCliEnvBackup', backup)
 }
 
 export function getMachineIdBackup(): MachineIdBackup | null {

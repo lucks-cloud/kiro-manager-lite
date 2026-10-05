@@ -29,7 +29,15 @@ import ClientIcon from '@/components/proxy/ClientIcon.vue'
 import PathMenu from '@/components/common/PathMenu.vue'
 import ProxyKeysModal from '@/components/proxy/ProxyKeysModal.vue'
 import ProxyEndpointsModal from '@/components/proxy/ProxyEndpointsModal.vue'
-import { PAYLOAD_LIMIT_MAX_KB, PAYLOAD_LIMIT_MIN_KB } from '@shared/types'
+import {
+  DEFAULT_PROXY_CONFIG,
+  HEARTBEAT_MAX_SEC,
+  HEARTBEAT_MIN_SEC,
+  KEEP_ALIVE_MAX_SEC,
+  KEEP_ALIVE_MIN_SEC,
+  PAYLOAD_LIMIT_MAX_KB,
+  PAYLOAD_LIMIT_MIN_KB
+} from '@shared/types'
 import { FALLBACK_MODEL_IDS } from '@shared/proxyModels'
 import type {
   ProxyClientTarget,
@@ -682,6 +690,95 @@ async function runClientAction(): Promise<void> {
 }
 
 /**
+ * 首字耗时拆成三段：准备账号 → 上游接收（发出请求到返回响应头）→ 模型出字（响应头到第一个事件）。
+ * 主进程记的 prepareMs / upstreamHeadersMs 是从请求开始的累计时间点，直接并列展示会让人误以为能相加。
+ */
+function firstTokenSegments(entry: ProxyLogEntry): string {
+  const { prepareMs, upstreamHeadersMs, firstTokenMs } = entry
+  if (prepareMs == null || upstreamHeadersMs == null || firstTokenMs == null) return ''
+  return [
+    `准备账号 ${prepareMs}ms`,
+    `上游接收 ${Math.max(0, upstreamHeadersMs - prepareMs)}ms`,
+    `模型出字 ${Math.max(0, firstTokenMs - upstreamHeadersMs)}ms`
+  ].join(' · ')
+}
+
+/**
+ * 成功率的颜色，和账号卡片用量条同一套绿 / 橙 / 红：
+ *  - ≥ 95%：绿，偶发失败（客户端断开、个别限流）属正常
+ *  - 80% ～ 95%：橙，有成批失败，值得看一眼日志
+ *  - < 80%：红，账号池或上游有明显问题
+ * 阈值与 API Key 管理、网关历史里的成功率一致。还没有请求时不上色。
+ */
+const successRateColor = computed(() => {
+  if (!store.status.requests) return 'inherit'
+  const rate = store.successRate
+  if (rate >= 95) return '#52c41a'
+  if (rate >= 80) return '#faad14'
+  return '#ff4d4f'
+})
+
+/** 端点主机名对应的叫法，和参数里「上游端点」的选项名一致 */
+function endpointName(host: string): string {
+  if (host.startsWith('q.') || host.startsWith('q-fips.')) return 'Amazon Q'
+  if (host.startsWith('codewhisperer.')) return 'CodeWhisperer'
+  if (host.startsWith('runtime.') && host.endsWith('.kiro.dev')) return 'Kiro Runtime（API Key）'
+  return host
+}
+
+/** 流详情：上游各类事件块数 + 请求体大小；老日志没有这些字段时不显示这一行 */
+function streamDetail(entry: ProxyLogEntry): string {
+  const ev = entry.streamEvents
+  if (!ev && entry.requestBytes == null) return ''
+  const parts: string[] = []
+  if (ev) {
+    parts.push(
+      `文本块 ${ev.text}`,
+      `推理块 ${ev.thinking}`,
+      `工具调用 ${ev.toolCalls}`,
+      `托管搜索 ${ev.searchCalls}`
+    )
+  }
+  if (entry.requestBytes != null) {
+    const kb = entry.requestBytes / 1024
+    parts.push(`请求体 ${kb >= 1024 ? `${(kb / 1024).toFixed(1)}MB` : `${Math.max(1, Math.round(kb))}KB`}`)
+  }
+  return parts.join(' · ')
+}
+
+/**
+ * 秒数输入框的统一处理：清空或输错时回落默认值，不让「没填」变成 0 或 NaN 存下去。
+ * 合法值夹到范围内并取整。
+ */
+function secondsOr(v: unknown, min: number, max: number, fallback: number): number {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return fallback
+  return Math.min(max, Math.max(min, Math.round(v)))
+}
+
+/** 当前弹窗对应客户端的进度日志 */
+const failLogLines = computed(() => {
+  const prompt = clientPrompt.value
+  const progress = applyProgress.value
+  return prompt && progress && progress.target === prompt.target ? progress.lines : []
+})
+
+/** 复制写入/还原失败的完整日志，方便用户反馈排查 */
+function copyFailLog(): void {
+  const prompt = clientPrompt.value
+  if (!prompt) return
+  const parts: string[] = [
+    `[${clientMeta[prompt.target].name}] 配置${prompt.action === 'apply' ? '写入' : '还原'}失败`,
+    `时间：${new Date().toLocaleString()}`,
+    `平台：${navigator.userAgent}`
+  ]
+  if (prompt.error) parts.push(`错误：${prompt.error}`)
+  // 只取这次操作的进度：别的客户端的日志混进来会误导排查
+  const lines = failLogLines.value
+  if (lines.length) parts.push('', '--- 详细日志 ---', ...lines)
+  copyText(parts.join('\n'), '日志已复制')
+}
+
+/**
  * 客户端分两组展示。
  *
  * Codex / Claude 的命令行版与桌面版是两件不同的事：前者各自读自己的配置文件，
@@ -869,7 +966,8 @@ function logState(entry: ProxyLogEntry): { color: string; text: string } {
  * 流式期间日志每 150ms 刷一次，a-table 会把它们当成 props 变化重新处理一遍。
  */
 const LOG_PAGINATION = { pageSize: 20, size: 'small', showSizeChanger: false, hideOnSinglePage: true } as const
-const LOG_SCROLL = { x: 1184, y: 420 }
+// x 等于各列宽之和：小于它时固定列会和普通列重叠
+const LOG_SCROLL = { x: 1252, y: 420 }
 function logRowProps(record: ProxyLogEntry): { onClick: () => void } {
   return { onClick: () => (logDetail.value = record) }
 }
@@ -886,8 +984,10 @@ const logColumns = [
   { title: '账号', key: 'account', width: 168, ellipsis: true },
   { title: '输入 Tokens', key: 'inputTokens', width: 110, align: 'right' as const },
   { title: '输出 Tokens', key: 'outputTokens', width: 110, align: 'right' as const },
-  { title: '耗时', key: 'duration', width: 132 },
-  { title: '积分', key: 'credits', width: 84 }
+  // 「7825ms（首字 5796ms）」约 20 个字符，按五位数毫秒留足，单元格禁止换行
+  { title: '耗时', key: 'duration', width: 200, className: 'log-duration' },
+  // 固定在右侧：表格横向滚动时积分始终可见
+  { title: '积分', key: 'credits', width: 84, fixed: 'right' as const }
 ]
 
 const INPUT_LABEL: Record<ProxyInputType, string> = {
@@ -1241,10 +1341,10 @@ onUnmounted(() => stop?.())
             @change="(e: any) => patch({ endpoint: e.target.value })"
           >
             <a-radio value="auto">自动</a-radio>
-            <a-radio value="codewhisperer">CodeWhisperer</a-radio>
             <a-radio value="amazonq">Amazon Q</a-radio>
+            <a-radio value="codewhisperer">CodeWhisperer</a-radio>
           </a-radio-group>
-          <span class="field-hint muted">自动 = 先 CodeWhisperer，失败再试 Amazon Q</span>
+          <span class="field-hint muted">推荐自动 = 先 Amazon Q，失败再试 CodeWhisperer（与 Kiro IDE 一致）</span>
         </div>
 
         <div class="field">
@@ -1293,9 +1393,87 @@ onUnmounted(() => stop?.())
           </span>
         </div>
 
+        <!-- 网络：连接保持与心跳。两项都可留空，留空按默认值 -->
+        <div class="field">
+          <span class="field-label">连接保持</span>
+          <!--
+            控件直接跟在标签后面，和「载荷」一样。别包 field-sub：它占满整行（flex-basis 100%），
+            会把输入框挤到第二行，标签那一行就只剩一个字，空出一大块。
+          -->
+          <span class="muted">上游连接空闲</span>
+          <a-input-number
+              :value="config.upstreamKeepAliveSec"
+              :min="KEEP_ALIVE_MIN_SEC"
+              :max="KEEP_ALIVE_MAX_SEC"
+              :placeholder="String(DEFAULT_PROXY_CONFIG.upstreamKeepAliveSec)"
+              style="width: 120px"
+              @change="
+                (v: any) =>
+                  patch({
+                    upstreamKeepAliveSec: secondsOr(
+                      v,
+                      KEEP_ALIVE_MIN_SEC,
+                      KEEP_ALIVE_MAX_SEC,
+                      DEFAULT_PROXY_CONFIG.upstreamKeepAliveSec
+                    )
+                  })
+              "
+            />
+          <span class="muted">秒后断开</span>
+          <span class="field-hint muted">
+            两次请求间隔在这个时间内会复用已有连接，省掉重新握手（实测约 0.6 秒）。网络库默认只保持 4 秒，
+            agent 两轮之间通常更久；服务端要求更短时以服务端为准。留空按默认 {{ DEFAULT_PROXY_CONFIG.upstreamKeepAliveSec }} 秒
+          </span>
+        </div>
+
+        <div class="field">
+          <span class="field-label">心跳保活</span>
+          <span class="switch-item">
+            <a-switch
+              size="small"
+              :checked="config.heartbeatEnabled"
+              @change="(v: any) => patch({ heartbeatEnabled: !!v })"
+            />
+            <a-tooltip
+              title="流式回复开始后，如果长时间没有新内容（写大文件、模型在思考、托管搜索），就补一条不带内容的保活消息，避免客户端当成断线。Anthropic 协议用官方 ping 事件，其余协议用 SSE 注释，客户端都会忽略。"
+            >
+              <span class="switch-label">流式心跳</span>
+            </a-tooltip>
+          </span>
+          <!-- 间隔只在开启时出现，和自动重试一致 -->
+          <div v-if="config.heartbeatEnabled" class="field-sub">
+            <span class="muted">静默超过</span>
+            <a-input-number
+              :value="config.heartbeatIntervalSec"
+              :min="HEARTBEAT_MIN_SEC"
+              :max="HEARTBEAT_MAX_SEC"
+              :placeholder="String(DEFAULT_PROXY_CONFIG.heartbeatIntervalSec)"
+              style="width: 120px"
+              @change="
+                (v: any) =>
+                  patch({
+                    heartbeatIntervalSec: secondsOr(
+                      v,
+                      HEARTBEAT_MIN_SEC,
+                      HEARTBEAT_MAX_SEC,
+                      DEFAULT_PROXY_CONFIG.heartbeatIntervalSec
+                    )
+                  })
+              "
+            />
+            <span class="muted">秒发一次</span>
+          </div>
+          <span class="field-hint muted">
+            {{
+              config.heartbeatEnabled
+                ? `回复开始后静默超过 ${config.heartbeatIntervalSec} 秒就发一次保活，留空按默认 ${DEFAULT_PROXY_CONFIG.heartbeatIntervalSec} 秒`
+                : '关闭后长时间无输出时不发保活，带空闲超时的客户端可能会断开重连'
+            }}。回复开始前不发：那时发了就只能回 200，限流、鉴权失败的真实状态码就传不出去了
+          </span>
+        </div>
+
         <!--
-          高级：工具、日志、载荷。参考的是 Kiro-account-manager 的同名选项，
-          但每一项都落在我们反代里真实存在的行为上（见 ProxyConfig 各字段的注释）。
+          高级：工具、日志、载荷。每一项都对应反代里真实存在的行为（见 ProxyConfig 各字段的注释）。
         -->
         <div class="field">
           <span class="field-label">工具</span>
@@ -1306,9 +1484,13 @@ onUnmounted(() => stop?.())
               :disabled="config.disableTools"
               @change="(v: any) => patch({ managedToolExecution: !!v })"
             />
-            <a-tooltip
-              title="开：给模型挂上联网搜索，模型要搜时由反代调用 Kiro 自带的搜索并把结果交回（Codex 等客户端联网靠它）。关：反代不注入也不代执行任何工具，全部交给客户端。"
-            >
+            <a-tooltip>
+              <template #title>
+                <div class="switch-tip">
+                  <div><b>开启时：</b>给模型挂上联网搜索，模型要搜时由反代调用 Kiro 自带的搜索并把结果交回（Codex 等客户端联网靠它）</div>
+                  <div><b>关闭时：</b>反代不注入也不代执行任何工具，全部交给客户端</div>
+                </div>
+              </template>
               <span class="switch-label">工具执行模式</span>
             </a-tooltip>
           </span>
@@ -1318,7 +1500,13 @@ onUnmounted(() => stop?.())
               :checked="config.disableTools"
               @change="(v: any) => patch({ disableTools: !!v })"
             />
-            <a-tooltip title="开启后去掉请求里的全部工具定义，模型只能纯文本作答，适合纯聊天">
+            <a-tooltip>
+              <template #title>
+                <div class="switch-tip">
+                  <div><b>开启时：</b>去掉请求里的全部工具，历史里的工具调用也改写成文字，模型只能纯文本作答，适合纯聊天</div>
+                  <div><b>关闭时：</b>客户端声明的工具原样交给模型</div>
+                </div>
+              </template>
               <span class="switch-label">禁用工具调用</span>
             </a-tooltip>
           </span>
@@ -1487,7 +1675,9 @@ onUnmounted(() => stop?.())
           <span class="muted">失败</span>
         </div>
         <div class="stat-cell">
-          <span class="stat-num">{{ store.successRate.toFixed(1) }}<small>%</small></span>
+          <span class="stat-num" :style="{ color: successRateColor }">
+            {{ store.successRate.toFixed(1) }}<small>%</small>
+          </span>
           <span class="muted">成功率</span>
         </div>
         <div class="stat-cell">
@@ -1809,8 +1999,18 @@ onUnmounted(() => stop?.())
             :sub-title="clientPrompt.error"
           >
             <template #extra>
+              <!-- 报错里常写「详见上面的日志」，失败时把最后几行留在屏幕上，完整内容走复制 -->
+              <div v-if="failLogLines.length" class="stage-log fail-log">
+                <div v-for="(line, i) in failLogLines.slice(-8)" :key="i" class="mono">
+                  {{ line }}
+                </div>
+              </div>
               <a-space>
                 <a-button @click="clientPrompt = null">关闭</a-button>
+                <a-button @click="copyFailLog()">
+                  <template #icon><CopyOutlined /></template>
+                  复制日志
+                </a-button>
                 <a-button
                   type="primary"
                   @click="
@@ -1977,12 +2177,13 @@ onUnmounted(() => stop?.())
     <!-- 单条日志详情 -->
     <a-modal
       :open="!!logDetail"
-      :width="720"
+      :width="900"
+      centered
       :footer="null"
       title="请求详情"
       @cancel="logDetail = null"
     >
-      <a-descriptions v-if="logDetail" :column="2" size="small" bordered>
+      <a-descriptions v-if="logDetail" class="log-detail-desc" :column="2" size="small" bordered>
         <a-descriptions-item label="时间">
           {{ formatLogTime(logDetail.at) }}
         </a-descriptions-item>
@@ -2009,6 +2210,11 @@ onUnmounted(() => stop?.())
         </a-descriptions-item>
         <a-descriptions-item label="首字">
           {{ logDetail.firstTokenMs != null ? `${logDetail.firstTokenMs}ms` : '-' }}
+          <!-- 拆开看慢在哪：账号准备（刷 token / 查 profile）、上游接收请求、模型出第一个字 -->
+          <!-- 记录的是从请求开始的时间点，这里换算成三段各自的耗时，相加正好等于首字 -->
+          <span v-if="firstTokenSegments(logDetail)" class="muted num">
+            （{{ firstTokenSegments(logDetail) }}）
+          </span>
         </a-descriptions-item>
         <a-descriptions-item label="输入类型">{{ inputLabel(logDetail) }}</a-descriptions-item>
         <a-descriptions-item label="输出类型">{{ outputLabel(logDetail) }}</a-descriptions-item>
@@ -2017,6 +2223,17 @@ onUnmounted(() => stop?.())
         </a-descriptions-item>
         <a-descriptions-item label="积分">
           {{ logDetail.credits != null ? formatCredits(logDetail.credits, true) : '-' }}
+        </a-descriptions-item>
+        <!-- 和「记录流事件」写进系统日志的汇总同一份数据，不开那个开关也能在这里看到 -->
+        <a-descriptions-item label="上游端点" :span="2">
+          <template v-if="logDetail.endpoint">
+            {{ endpointName(logDetail.endpoint) }}
+            <span class="mono muted">（{{ logDetail.endpoint }}）</span>
+          </template>
+          <span v-else class="muted">-</span>
+        </a-descriptions-item>
+        <a-descriptions-item v-if="streamDetail(logDetail)" label="流详情" :span="2">
+          <span class="num">{{ streamDetail(logDetail) }}</span>
         </a-descriptions-item>
         <!-- 独占最后一行（标签 + 3 格值）：显示完整密钥而不是名称，名称可改、可能重名，认不准；排查时要能直接比对整串 -->
         <a-descriptions-item label="使用 Key" :span="2">
@@ -2164,6 +2381,10 @@ onUnmounted(() => stop?.())
 .stat-num small { font-size: 11px; }
 .stat-num.ok { color: #52c41a; }
 .stat-num.bad { color: #ff4d4f; }
+/* 窄窗口一排六个会把数字挤到换行，改成两排各三个 */
+@media (max-width: 1100px) {
+  .stat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
 
 /* 参数表单：每行一组，标签定宽，控件后跟灰色说明 */
 .form-grid { display: flex; flex-direction: column; gap: 14px; }
@@ -2400,7 +2621,17 @@ onUnmounted(() => stop?.())
   line-height: 1.7;
   color: var(--kal-muted);
 }
+/* 请求详情：标签不换行，值在自己的格子里换行（长邮箱、长模型名、首字耗时分解） */
+.log-detail-desc :deep(.ant-descriptions-item-label) { white-space: nowrap; }
+.log-table :deep(.log-duration) { white-space: nowrap; }
+.log-detail-desc :deep(.ant-descriptions-item-content) { word-break: break-word; overflow-wrap: anywhere; }
+/* 开关的悬停说明：「开启时 / 关闭时」各占一行 */
+.switch-tip { display: flex; flex-direction: column; gap: 4px; line-height: 1.6; }
+.switch-tip b { font-weight: 600; }
 .stage-log .mono { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 失败时的日志是排查依据：左对齐、可滚动、长行换行，不截断 */
+.stage-log.fail-log { margin: 0 auto 16px; overflow-y: auto; text-align: left; }
+.stage-log.fail-log .mono { white-space: pre-wrap; word-break: break-all; }
 .stage :deep(.ant-result) { padding: 0; }
 /* 报错原文可能很长，限宽换行，别把弹窗顶宽 */
 .stage :deep(.ant-result-subtitle) {

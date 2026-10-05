@@ -146,7 +146,7 @@ export function createUsageCollector(
   finish: () => void
   noteEncoding: (encoding: string) => void
 } {
-  let buffer = Buffer.alloc(0)
+  let buffer: Buffer = Buffer.alloc(0)
   let hit = false
   let frameCount = 0
   let byteCount = 0

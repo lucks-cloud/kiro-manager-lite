@@ -28,7 +28,7 @@ import type { KiroModelInfo, ProxyClientState, ProxyClientTarget } from '../shar
  * Codex 里我们用的 provider 与 profile 名，同时决定文件名
  * （Kiro-Manager-Lite.config.toml），用户在目录里一眼能认出是谁写的。
  *
- * 不叫 kiro：市面上几个 Kiro 反代工具的示例配置都用 `kiro` 这个名字，
+ * 不叫 kiro：这个名字太常见，用户自己配过的其他 provider 很可能也叫 `kiro`，
  * 撞名会把用户已有的 provider 定义覆盖掉。
  * TOML 裸键允许字母、数字、短横与下划线，这个名字可以直接当表名。
  */
@@ -649,6 +649,7 @@ const deepseekAppApplied = (info: ProxyTargetInfo): Promise<boolean> =>
 
 /** 桌面版进程名就是 app 名，带空格 */
 async function deepseekAppRunning(): Promise<boolean> {
+  if (process.platform === 'win32') return winAppRunning('deepseekApp')
   if (process.platform !== 'darwin') return false
   try {
     await run('pgrep', ['-x', 'DeepSeek Harness'], 5_000)
@@ -663,8 +664,9 @@ async function deepseekAppRunning(): Promise<boolean> {
  * 热重载已经能让配置生效，这里主要是给「还没开」的情况，以及热重载没赶上时的兜底。
  */
 async function restartDeepseekApp(): Promise<void> {
+  if (process.platform === 'win32') return restartWinApp('DeepSeek Harness', 'deepseekApp')
   if (process.platform !== 'darwin') {
-    throw new Error('代为重启目前只支持 macOS，请手动退出后重新打开 DeepSeek Harness')
+    throw new Error('代为重启目前只支持 macOS 和 Windows，请手动退出后重新打开 DeepSeek Harness')
   }
   const app = await requireApp('deepseekApp')
   if (await deepseekAppRunning()) {
@@ -925,6 +927,7 @@ async function workbuddyApplied(info: ProxyTargetInfo): Promise<boolean> {
  * 只能按 .app 里的路径匹配。
  */
 async function workbuddyRunning(): Promise<boolean> {
+  if (process.platform === 'win32') return winAppRunning('workbuddy')
   if (process.platform !== 'darwin') return false
   try {
     await run('pgrep', ['-f', `${WORKBUDDY_APP_NAME}/Contents/MacOS/`], 5_000)
@@ -1036,6 +1039,7 @@ async function qoderApplied(info: ProxyTargetInfo): Promise<boolean> {
 
 /** 可执行文件名同样没改（Electron 默认名），按 .app 里的路径匹配 */
 async function qoderRunning(): Promise<boolean> {
+  if (process.platform === 'win32') return winAppRunning('qoder')
   if (process.platform !== 'darwin') return false
   try {
     await run('pgrep', ['-f', 'Qoder CN.app/Contents/MacOS/'], 5_000)
@@ -1195,6 +1199,7 @@ async function zcodeApplied(info: ProxyTargetInfo): Promise<boolean> {
 }
 
 async function zcodeRunning(): Promise<boolean> {
+  if (process.platform === 'win32') return winAppRunning('zcode')
   if (process.platform !== 'darwin') return false
   try {
     await run('pgrep', ['-f', 'ZCode.app/Contents/MacOS/ZCode'], 5_000)
@@ -1373,6 +1378,7 @@ async function kimiApplied(info: ProxyTargetInfo): Promise<boolean> {
 }
 
 async function kimiRunning(): Promise<boolean> {
+  if (process.platform === 'win32') return winAppRunning('kimi')
   if (process.platform !== 'darwin') return false
   try {
     // 同一台机器上常常还装着 Kimi.app（聊天版），按完整路径匹配，别认错
@@ -1381,6 +1387,161 @@ async function kimiRunning(): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+// ============ Windows：检测运行状态、正常退出、重新打开 ============
+//
+// macOS 靠 bundle id 和 AppleScript；Windows 没有这一套，按可执行文件的完整路径来认进程：
+// 只按进程名会撞车（Claude 桌面版和 Claude Code CLI 都叫 claude.exe）。
+// Electron 应用一个实例有十来个同名进程（渲染、GPU…），都在同一个安装目录下，按目录前缀一起认。
+
+/** PowerShell 单引号字符串转义：' → '' */
+function psQuote(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`
+}
+
+/**
+ * 安装根目录：同一个应用的所有进程都在它下面。
+ * Squirrel 类（Claude）真正运行的是 app-<版本>\ 里的程序，Qoder 是 .qoder-versions\<版本>\，
+ * 定位到的可能是外层的启动器，所以往上收一层到安装根。
+ */
+function winInstallRoot(exe: string): string {
+  let dir = path.dirname(exe)
+  const base = path.basename(dir).toLowerCase()
+  if (base === 'app' || base.startsWith('app-')) dir = path.dirname(dir)
+  if (path.basename(path.dirname(dir)).toLowerCase() === '.qoder-versions') dir = path.dirname(path.dirname(dir))
+  return dir
+}
+
+/**
+ * 当前所有进程的可执行文件路径。
+ * 一次 PowerShell 查完再在这边逐个比对：刷新客户端列表时九个桌面应用各起一次 PowerShell，
+ * 每次冷启动约一秒，列表要多等近十秒。结果缓存 3 秒，重启后会清掉缓存。
+ */
+let winProcCache: { at: number; paths: string[] } | null = null
+
+async function winProcessPaths(): Promise<string[]> {
+  if (winProcCache && Date.now() - winProcCache.at < 3_000) return winProcCache.paths
+  let paths: string[] = []
+  try {
+    const out = await run(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        // 输出强制 UTF-8：默认走系统代码页（中文系统是 GBK），Node 按 UTF-8 解码，
+        // 用户名带中文时安装路径会乱码，进程永远匹配不上，按钮一直显示「打开」
+        '[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-Process | Where-Object { $_.Path } | ForEach-Object { $_.Path }'
+      ],
+      10_000
+    )
+    // 大小写由 isWinAppProcess 统一处理，这里只去空行
+    paths = out.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+  } catch {
+    paths = []
+  }
+  winProcCache = { at: Date.now(), paths }
+  return paths
+}
+
+/**
+ * 是不是这个应用的进程：同名 exe，且在同一个安装根下。
+ * 两边都转小写再比：Windows 路径不区分大小写，盘符和各级目录的大小写取决于谁给的值
+ * （Get-Process 给的和我们检测到的安装路径经常不一致），不统一会把在跑的进程判成没在跑。
+ */
+function isWinAppProcess(procPath: string, exe: string): boolean {
+  const proc = procPath.toLowerCase()
+  const root = winInstallRoot(exe).replace(/[\\/]+$/, '').toLowerCase() + '\\'
+  return proc.startsWith(root) && path.basename(proc) === path.basename(exe).toLowerCase()
+}
+
+async function winAppRunning(target: ProxyClientTarget): Promise<boolean> {
+  const exe = (await locateClient(target)).path
+  if (!exe) return false
+  return (await winProcessPaths()).some((p) => isWinAppProcess(p, exe))
+}
+
+/**
+ * 跑一段 PowerShell 脚本，经 -EncodedCommand（UTF-16LE base64）传入。
+ *
+ * 多行脚本不能直接走 -Command：Windows 把各个参数拼成一整条命令行，
+ * 里面的换行和引号会被重新解析，脚本容易被截断或改意思。编码后只剩 base64，没有这个问题。
+ */
+function runPowerShell(script: string, timeout: number): Promise<string> {
+  const encoded = Buffer.from(script, 'utf16le').toString('base64')
+  return run('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], timeout)
+}
+
+/**
+ * Windows 上退出一个应用。整套流程放进一次 PowerShell 调用里完成。
+ *
+ * 为什么不在 Node 这边循环轮询：PowerShell 冷启动约一秒，轮询十几次就要等十几秒，
+ * 点「重启」会明显卡住。所以关闭、等待、兜底收尾都交给同一段脚本，只付一次启动开销。
+ *
+ * 为什么先 CloseMainWindow 再兜底 Kill：前者等于点窗口的关闭按钮，应用能正常收尾
+ * （保存会话、落库），有未保存内容时还会自己弹确认框。但 WorkBuddy、Qoder 这些
+ * 关闭按钮是「缩到托盘」的应用，窗口关了进程还在，等下去也不会退出，
+ * 只能在给足收尾时间后结束进程树——配置早在重启之前就写好落盘了，这一步不会丢我们的改动。
+ *
+ * 返回 PowerShell 最后一行的结论：closed（正常退出）/ killed（兜底结束）/ failed（没能结束）。
+ */
+async function quitWinApp(exe: string): Promise<string> {
+  const root = winInstallRoot(exe).replace(/[\\/]+$/, '') + '\\'
+  const name = path.basename(exe, path.extname(exe))
+  const script = [
+    `$root = ${psQuote(root)}`,
+    `$procs = @(Get-Process -Name ${psQuote(name)} -ErrorAction SilentlyContinue |`,
+    '  Where-Object { $_.Path -and $_.Path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) })',
+    "if ($procs.Count -eq 0) { 'closed'; exit }",
+    // 先让有主窗口的那个正常关闭；托盘类应用这一步只会隐藏窗口
+    '$procs | Where-Object { $_.MainWindowHandle -ne 0 } | ForEach-Object { [void]$_.CloseMainWindow() }',
+    // 最多等 6 秒，够它保存会话；期间进程自己退了就直接返回
+    'for ($i = 0; $i -lt 12; $i++) {',
+    '  Start-Sleep -Milliseconds 500',
+    '  $alive = @($procs | Where-Object { -not $_.HasExited })',
+    "  if ($alive.Count -eq 0) { 'closed'; exit }",
+    '}',
+    // 还活着就是缩到托盘了：结束整棵进程树（Electron 一个实例有十来个子进程）
+    '$alive = @($procs | Where-Object { -not $_.HasExited })',
+    '$alive | ForEach-Object { & taskkill.exe /PID $_.Id /T /F 2>&1 | Out-Null }',
+    'Start-Sleep -Milliseconds 500',
+    '$alive = @($alive | Where-Object { -not $_.HasExited })',
+    "if ($alive.Count -eq 0) { 'killed' } else { 'failed' }"
+  ].join('\n')
+  const out = await runPowerShell(script, 20_000).catch(() => 'failed')
+  return out.trim().split(/\r?\n/).pop()?.trim() || 'failed'
+}
+
+/**
+ * Windows 上重启 / 打开桌面应用。
+ * 没在运行就只是打开；在运行先退出（见 quitWinApp），退不掉才报错让用户手动处理。
+ *
+ * 退出检测与关闭合并到 quitWinApp 一次 PowerShell 调用里完成：
+ * 脚本开头如果没有匹配进程就直接返回 'closed'，等效于"没在运行就跳过"。
+ * 避免先查一次进程（winAppRunning）再退一次的两次 PowerShell 冷启动（各约 1 秒），
+ * 省去一半等待时间，点「重启」不会明显卡顿。
+ */
+async function restartWinApp(label: string, target: ProxyClientTarget): Promise<void> {
+  const exe = await requireApp(target)
+  const result = await quitWinApp(exe)
+  if (result === 'failed') {
+    throw new Error(`${label} 没能自动退出，请手动完全退出（含托盘图标）后再打开`)
+  }
+  if (result === 'killed') log('info', `[Proxy] ${label} 关闭窗口后仍在托盘运行，已结束其进程`)
+  // 退出后清除进程缓存，下次查要拿最新的
+  winProcCache = null
+  // 脱离父进程：关掉本应用不会把它带走；环境变量要清掉本应用的 Electron 变量（见 childEnv）
+  // 等 spawn 事件确认真的拉起来了再报成功；ChildProcess 的 error 不监听会变成主进程未捕获异常
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(exe, [], { detached: true, stdio: 'ignore', env: cleanChildEnv(), cwd: path.dirname(exe) })
+    child.once('error', (err) => reject(new Error(`无法启动 ${label}：${err.message}`)))
+    child.once('spawn', () => {
+      child.unref()
+      resolve()
+    })
+  })
+  log('info', `[Proxy] 已重启 ${label}：${exe}`)
 }
 
 /**
@@ -1393,8 +1554,9 @@ async function restartMacApp(
   bundleId: string,
   running: () => Promise<boolean>
 ): Promise<void> {
+  if (process.platform === 'win32') return restartWinApp(label, target)
   if (process.platform !== 'darwin') {
-    throw new Error(`代为重启目前只支持 macOS，请手动退出 ${label} 后重新打开`)
+    throw new Error(`代为重启目前只支持 macOS 和 Windows，请手动退出 ${label} 后重新打开`)
   }
   const app = await requireApp(target)
   if (await running()) {
@@ -1556,6 +1718,7 @@ async function vscodeApplied(info: ProxyTargetInfo): Promise<boolean> {
 const VSCODE_BUNDLE_ID = 'com.microsoft.VSCode'
 
 async function vscodeRunning(): Promise<boolean> {
+  if (process.platform === 'win32') return winAppRunning('vscode')
   if (process.platform !== 'darwin') return false
   try {
     // 主进程名就叫 Code（Electron 的可执行文件名），不是 Visual Studio Code
@@ -1572,8 +1735,9 @@ async function vscodeRunning(): Promise<boolean> {
  * 用 AppleScript 正常退出：有未保存的文件时它会自己弹窗确认，不会丢东西。
  */
 async function restartVscode(): Promise<void> {
+  if (process.platform === 'win32') return restartWinApp('VS Code', 'vscode')
   if (process.platform !== 'darwin') {
-    throw new Error('代为重启目前只支持 macOS，请手动退出 VS Code 后重新打开')
+    throw new Error('代为重启目前只支持 macOS 和 Windows，请手动退出 VS Code 后重新打开')
   }
   const app = await requireApp('vscode')
   if (await vscodeRunning()) {
@@ -1748,6 +1912,7 @@ async function claudeAppApplied(info: ProxyTargetInfo): Promise<boolean> {
 
 /** Claude 桌面版是否在运行 */
 async function claudeAppRunning(): Promise<boolean> {
+  if (process.platform === 'win32') return winAppRunning('claudeApp')
   if (process.platform !== 'darwin') return false
   try {
     await run('pgrep', ['-x', 'Claude'], 5_000)
@@ -1759,8 +1924,9 @@ async function claudeAppRunning(): Promise<boolean> {
 
 /** 退出并重新打开 Claude 桌面版：3P 配置只在启动时读一次 */
 export async function restartClaudeApp(): Promise<void> {
+  if (process.platform === 'win32') return restartWinApp('Claude', 'claudeApp')
   if (process.platform !== 'darwin') {
-    throw new Error('代为重启目前只支持 macOS，请手动完全退出后重新打开 Claude')
+    throw new Error('代为重启目前只支持 macOS 和 Windows，请手动完全退出后重新打开 Claude')
   }
   const app = await requireApp('claudeApp')
   if (await claudeAppRunning()) {
@@ -2055,16 +2221,27 @@ function buildCcursorProviders(info: ProxyTargetInfo): Record<string, unknown> {
   }
 }
 
-/** Cursor 的用户设置文件 */
+/**
+ * Cursor 的用户设置文件，和 VS Code 同一套目录约定（Cursor 是 VS Code 的分支）：
+ *  - macOS：~/Library/Application Support/Cursor/User
+ *  - Windows：%APPDATA%\Cursor\User
+ *  - Linux：~/.config/Cursor/User
+ *
+ * 踩过的坑：早先这里只写了 macOS 的路径，Windows 上拼成了
+ * C:\Users\<用户>\Library\Application Support\Cursor\User\settings.json——一个 Cursor 根本不读的位置。
+ * 关 HTTP/2 的那一项（cursor.general.disableHttp2）于是从没生效，Cursor 照旧用 HTTP/2，
+ * 绕开了 CCursor 只认 HTTP/1.1 的路由器，Agent 一直显示 Reconnecting；
+ * 而 WorkBuddy、VS Code 不经过 CCursor，所以只有 Cursor 连不上。
+ */
 function cursorSettingsPath(): string {
-  return path.join(
-    home(),
-    'Library',
-    'Application Support',
-    'Cursor',
-    'User',
-    'settings.json'
-  )
+  if (process.platform === 'win32') {
+    const roaming = process.env.APPDATA || path.join(home(), 'AppData', 'Roaming')
+    return path.join(roaming, 'Cursor', 'User', 'settings.json')
+  }
+  if (process.platform === 'darwin') {
+    return path.join(home(), 'Library', 'Application Support', 'Cursor', 'User', 'settings.json')
+  }
+  return path.join(process.env.XDG_CONFIG_HOME || path.join(home(), '.config'), 'Cursor', 'User', 'settings.json')
 }
 
 /**
@@ -2202,6 +2379,7 @@ async function restoreCursor(files: ProxyClientBackupFile[], onProgress?: Progre
 const CURSOR_BUNDLE_ID = 'com.todesktop.230313mzl4w4u92'
 
 async function cursorRunning(): Promise<boolean> {
+  if (process.platform === 'win32') return winAppRunning('cursor')
   if (process.platform !== 'darwin') return false
   try {
     await run('pgrep', ['-x', 'Cursor'], 5_000)
@@ -2220,8 +2398,9 @@ async function cursorRunning(): Promise<boolean> {
  * 请求由 CCursor 在进程内接管后转发到本机反代。
  */
 export async function restartCursorApp(): Promise<void> {
+  if (process.platform === 'win32') return restartWinApp('Cursor', 'cursor')
   if (process.platform !== 'darwin') {
-    throw new Error('代为重启目前只支持 macOS，请手动完全退出 Cursor 后重新打开')
+    throw new Error('代为重启目前只支持 macOS 和 Windows，请手动完全退出 Cursor 后重新打开')
   }
   const app = await requireApp('cursor')
 
@@ -2878,6 +3057,7 @@ function run(command: string, args: string[], timeout = 15_000): Promise<string>
 
 /** 桌面版是否在跑 */
 async function codexAppRunning(): Promise<boolean> {
+  if (process.platform === 'win32') return winAppRunning('codexApp')
   if (process.platform !== 'darwin') return false
   try {
     // -x 精确匹配进程名，避免把我们自己或别的 helper 算进来

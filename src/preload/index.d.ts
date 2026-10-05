@@ -41,6 +41,7 @@ import type {
   ProxyAccountUsage,
   ProxyApiKeyView,
   ProxyClientState,
+  KiroCliEnvStatus,
   ProxyClientTarget,
   ProxyConfig,
   ProxyKeyUsage,
@@ -330,6 +331,10 @@ export interface Api {
   pickProxyClientPath: (target: ProxyClientTarget) => Promise<IpcResult<ProxyClientState[] | null>>
   /** 清掉手动指定的安装位置，回到自动检测 */
   clearProxyClientPath: (target: ProxyClientTarget) => Promise<IpcResult<ProxyClientState[]>>
+  /** Kiro CLI 的 KIRO_API_KEY：读当前状态 / 写入（新开的终端生效）/ 移除本应用写的 */
+  getKiroCliEnv: () => Promise<IpcResult<KiroCliEnvStatus>>
+  writeKiroCliEnv: (key: string) => Promise<IpcResult<KiroCliEnvStatus>>
+  removeKiroCliEnv: () => Promise<IpcResult<KiroCliEnvStatus>>
   /** 写入客户端配置时的进度回调（Cursor 首次要装 CCursor，过程较慢） */
   onProxyClientProgress: (
     handler: (payload: { target: ProxyClientTarget; line: string }) => void

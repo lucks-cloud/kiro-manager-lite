@@ -108,6 +108,7 @@ import {
 import { clearCustomPath, pickDialogOptions, resetInstallCache, saveCustomPath } from './proxyClientInstall'
 import { FALLBACK_MODEL_IDS } from '../shared/proxyModels'
 import { clearLogs, exportLogs, getLogDir, log, queryLogs } from './logger'
+import { kiroCliEnvStatus, kiroCliEnvWritten, removeKiroCliEnv, writeKiroCliEnv } from './kiroCliEnv'
 import { buildXlsx, buildZip } from './xlsxWriter'
 import {
   addKey,
@@ -772,22 +773,32 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     if (fresh) resetInstallCache()
     return ok(await proxyClientStates(clientInfo()))
   })
-  handle('proxy:client-apply', async (e, target: ProxyClientTarget) =>
-    // Cursor 首次写入要先装 CCursor，把过程逐行推给界面，别让用户干等
-    ok(
-      await applyProxyClient(target, clientInfo(), (line) => {
-        if (!e.sender.isDestroyed()) e.sender.send('proxy:client-progress', { target, line })
-      })
-    )
-  )
-  handle('proxy:client-restore', async (e, target: ProxyClientTarget) =>
-    // Cursor 还原要卸 CCursor 补丁，和写入一样把过程推给界面
-    ok(
-      await restoreProxyClient(target, clientInfo(), (line) => {
-        if (!e.sender.isDestroyed()) e.sender.send('proxy:client-progress', { target, line })
-      })
-    )
-  )
+  /**
+   * 写入 / 还原的过程逐行推给界面，同时记进系统日志：
+   * 弹窗关掉后进度就没了，用户反馈问题时只能靠系统日志里的这份留底。
+   * 失败也单独记一条 error，handle 只会把异常转成返回值，不会自己记日志。
+   */
+  const clientAction = async (
+    e: IpcMainInvokeEvent,
+    target: ProxyClientTarget,
+    action: 'apply' | 'restore'
+  ): Promise<IpcResult<unknown>> => {
+    const verb = action === 'apply' ? '写入' : '还原'
+    const progress = (line: string): void => {
+      log('info', `[Proxy] ${target} ${verb}：${line}`)
+      if (!e.sender.isDestroyed()) e.sender.send('proxy:client-progress', { target, line })
+    }
+    try {
+      const run = action === 'apply' ? applyProxyClient : restoreProxyClient
+      return ok(await run(target, clientInfo(), progress))
+    } catch (err) {
+      log('error', `[Proxy] ${target} 配置${verb}失败：${errorMessage(err)}`)
+      throw err
+    }
+  }
+  // Cursor 首次写入要先装 CCursor，还原要卸补丁，过程都较慢
+  handle('proxy:client-apply', (e, target: ProxyClientTarget) => clientAction(e, target, 'apply'))
+  handle('proxy:client-restore', (e, target: ProxyClientTarget) => clientAction(e, target, 'restore'))
   /** 代为打开 / 重启客户端：图形界面的退出再拉起，命令行的开一个新终端 */
   handle('proxy:client-open', async (_e, target: ProxyClientTarget) => {
     await openProxyClient(target)
@@ -968,6 +979,10 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
         log('warn', `[Backup] 还原 ${target} 配置失败：${errorMessage(e)}`)
       )
     }
+    // 写进终端启动文件 / 用户环境变量的 KIRO_API_KEY 也拿掉，否则清完数据 Key 还留在系统里
+    if (kiroCliEnvWritten() || process.platform !== 'win32') {
+      await removeKiroCliEnv().catch((e) => log('warn', `[Backup] 移除 KIRO_API_KEY 失败：${errorMessage(e)}`))
+    }
     await clearLogs()
     await clearRendererStorage().catch(() => undefined)
     stopServicesForRelaunch()
@@ -976,6 +991,11 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     relaunchNow()
     return ok()
   })
+
+  // ============ Kiro CLI 环境变量 ============
+  handle('kiroCli:env-status', async () => ok(await kiroCliEnvStatus()))
+  handle('kiroCli:env-write', async (_e, key: string) => ok(await writeKiroCliEnv(String(key ?? ''))))
+  handle('kiroCli:env-remove', async () => ok(await removeKiroCliEnv()))
 
   // ============ 系统日志 ============
   handle('log:query', (_e, query: LogQuery) => ok(queryLogs(query)))

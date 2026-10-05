@@ -9,8 +9,6 @@
 //   用标准 JSON-RPC 的 tools/call 调，工具名就叫 web_search。
 //   这样搜索走的还是用户自己的 Kiro 账号，不用配任何外部 API key，
 //   也不用担心 DuckDuckGo 之类的站点在部分网络环境下不可达。
-//
-// 参考实现：Kiro-Go 的 proxy/websearch.go 与 kiro.rs 的 src/anthropic/websearch.rs
 import { randomUUID } from 'crypto'
 import { qEndpoint } from './kiroEndpoints'
 import { apiKeyHeaders, authHeaders } from './kiroChat'

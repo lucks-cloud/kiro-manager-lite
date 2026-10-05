@@ -191,6 +191,9 @@ const api = {
   openProxyClient: (target: string) => invoke('proxy:client-open', target),
   pickProxyClientPath: (target: string) => invoke('proxy:client-pick-path', target),
   clearProxyClientPath: (target: string) => invoke('proxy:client-clear-path', target),
+  getKiroCliEnv: () => invoke('kiroCli:env-status'),
+  writeKiroCliEnv: (key: string) => invoke('kiroCli:env-write', key),
+  removeKiroCliEnv: () => invoke('kiroCli:env-remove'),
   /** 写入客户端配置时的进度（Cursor 首次要装 CCursor） */
   onProxyClientProgress: (cb: (payload: unknown) => void) =>
     subscribe('proxy:client-progress', cb),

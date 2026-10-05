@@ -740,7 +740,7 @@ export type ProxyAccountSource = 'account' | 'apiKey'
  *  - selected：指定的那几个（可多选）
  */
 export type ProxyAccountMode = 'roundRobin' | 'group' | 'selected'
-/** 上游端点：auto 先 CodeWhisperer 失败再 Amazon Q */
+/** 上游端点：auto 先 Amazon Q（与官方 IDE 一致）失败再 CodeWhisperer */
 export type ProxyEndpoint = 'auto' | 'codewhisperer' | 'amazonq'
 /**
  * 模型策略：client 用客户端请求的模型（按映射表转换）。
@@ -810,6 +810,18 @@ export interface ProxyConfig {
   maxRetries: number
   /** 每次重发前的等待（ms） */
   retryDelayMs: number
+  /**
+   * 上游连接空闲多久才关闭（秒）。网络库默认 4 秒，agent 两次请求之间往往更久，
+   * 几乎每次都要重新握手；放宽后能复用连接。服务端要求更短时以服务端为准。
+   */
+  upstreamKeepAliveSec: number
+  /**
+   * 流式心跳开关：流已开始后静默太久就补一条保活（Anthropic 用 ping 事件，其余用 SSE 注释），
+   * 避免带空闲超时的客户端把长时间生成（写大文件、思考、托管搜索）当成断线。
+   */
+  heartbeatEnabled: boolean
+  /** 静默超过这么多秒才发心跳 */
+  heartbeatIntervalSec: number
   /** 应用启动时自动启动反代 */
   autoStart: boolean
 }
@@ -836,7 +848,7 @@ export const DEFAULT_PROXY_CONFIG: ProxyConfig = {
   logRequests: true,
   logStreamEvents: false,
   /*
-   * 150MB，和 Kiro-account-manager 代码里实际生效的默认值一致（它的界面默认值也是这个）。
+   * 150MB。
    * 这么大基本不会触发裁剪，大图片、长上下文原样发给上游；
    * 真遇到上游因体积 400，再调小（900KB 是实测一直稳定的保守值）。
    */
@@ -844,8 +856,28 @@ export const DEFAULT_PROXY_CONFIG: ProxyConfig = {
   retryEnabled: true,
   maxRetries: 3,
   retryDelayMs: 500,
+  upstreamKeepAliveSec: 60,
+  heartbeatEnabled: true,
+  heartbeatIntervalSec: 15,
   autoStart: false
 }
+
+/** Kiro CLI 环境变量 KIRO_API_KEY 的当前状态 */
+export interface KiroCliEnvStatus {
+  /** 当前写在启动文件 / 用户环境变量里的值；没有为 null */
+  value: string | null
+  /** 写在了哪些位置，给界面展示 */
+  locations: string[]
+  /** 是否由本应用写入（可以一键移除） */
+  managed: boolean
+}
+
+/** 上游连接保持时间的可调范围（秒） */
+export const KEEP_ALIVE_MIN_SEC = 1
+export const KEEP_ALIVE_MAX_SEC = 600
+/** 心跳间隔的可调范围（秒）：太短刷屏，太长起不到保活作用 */
+export const HEARTBEAT_MIN_SEC = 5
+export const HEARTBEAT_MAX_SEC = 120
 
 /** 载荷上限的可调范围（KB）：太小连系统提示都放不下，太大上游一样会拒 */
 export const PAYLOAD_LIMIT_MIN_KB = 256
@@ -900,6 +932,15 @@ export interface ProxyLogEntry {
   attempts: number
   durationMs?: number
   firstTokenMs?: number
+  /** 首字前的耗时分解（都从请求开始算起）：账号就绪、上游返回响应头 */
+  prepareMs?: number
+  upstreamHeadersMs?: number
+  /** 流详情：上游各类事件的块数，与「记录流事件」写进系统日志的汇总同一份数据 */
+  streamEvents?: { text: number; thinking: number; toolCalls: number; searchCalls: number }
+  /** 发给上游的请求体大小（字节，最后一次尝试） */
+  requestBytes?: number
+  /** 实际处理这次请求的上游端点主机名（如 q.us-east-1.amazonaws.com） */
+  endpoint?: string
   inputTokens?: number
   outputTokens?: number
   /** 服务端 meteringEvent 给出的积分消耗 */
