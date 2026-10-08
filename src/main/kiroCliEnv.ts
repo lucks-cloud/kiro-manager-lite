@@ -81,7 +81,7 @@ async function writeUnix(key: string): Promise<KiroCliEnvBackup['files']> {
     const base = stripBlock(content)
     const next = base ? `${base.replace(/\n*$/, '\n')}\n${block}` : block
     await fs.writeFile(file, next, 'utf-8')
-    // 之前就是我们新建的文件，覆盖写入后仍算「我们建的」，移除时才会删掉
+    // 上次记录为我们新建的文件，覆盖写入后仍算「我们建的」，移除时才会删掉
     const createdBefore = previous.find((f) => f.path === file)?.created
     files.push({ path: file, created: createdBefore ?? !existed })
   }

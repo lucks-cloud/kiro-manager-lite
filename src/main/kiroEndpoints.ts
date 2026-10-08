@@ -17,7 +17,7 @@ import * as path from 'path'
  * 实测同一个 Builder ID token，UA 报 KiroIDE-0.6.18 / aws-sdk-js/1.0.18 时
  * ListAvailableModels 与 generateAssistantResponse 一律回
  * 403 "User is not authorized to make this call."；换成新版本即 200。
- * 社交账号（Github / Google）不受该门槛影响——所以这个坑只在 Builder ID / IdC 上暴露。
+ * 社交账号（Github / Google）不受该门槛影响——所以该 403 只出现在 Builder ID / IdC 上。
  *
  * 两个值都读自本机安装的 Kiro 0.12.333：kiro-agent 扩展里打包的
  * @aws/codewhisperer-streaming-client 是 1.0.39（0.12.155 那一代是 1.0.34）。

@@ -514,7 +514,7 @@ export function refreshAccountToken(account: Account): Promise<RefreshTokenResul
 /**
  * 把账号写入 Kiro IDE 的凭证文件。
  *
- * 关键点，逐条都对应过实际会踩的坑：
+ * 关键点：
  *  1. 写盘前强制 refresh：OIDC 的 refreshToken 是轮换式的，只更新 accessToken 的话
  *     IDE 一小时后会拿作废的旧 refreshToken 去刷新并被强制登出。refresh 失败直接中止。
  *  2. profileArn 逐个试：写错 ARN 是 IDE 报 “Unable to fetch account usage data:

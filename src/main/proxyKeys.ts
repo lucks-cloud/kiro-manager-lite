@@ -4,14 +4,8 @@
 // 这里把它合成进列表（id 固定为 PROXY_DEFAULT_KEY_ID），不另存一份，
 // 免得两处明文对不上。自定义 Key 用来分给别的工具或别人，各自限额、各自统计。
 import { randomBytes, randomUUID, timingSafeEqual } from 'crypto'
-import {
-  getProxyApiKeys,
-  getProxyConfig,
-  getProxyKeyUsage,
-  saveProxyConfig,
-  setProxyApiKeys,
-  setProxyKeyUsage
-} from './store'
+import { getProxyApiKeys, getProxyConfig, saveProxyConfig, setProxyApiKeys } from './store'
+import { flushUsage, keyUsage, scheduleUsageFlush } from './proxyUsageStore'
 import {
   PROXY_DEFAULT_KEY_ID,
   type ProxyApiKey,
@@ -39,34 +33,12 @@ function emptyUsage(keyId: string): ProxyKeyUsage {
   return { keyId, total: emptyStats(), byModel: {}, byDay: {}, recent: [] }
 }
 
-// ============ 用量缓存 ============
+// ============ 用量 ============
 //
-// 每个请求都整份写一次加密的 electron-store 太重（明细加起来几百 KB），
-// 所以先在内存里累加，1.5 秒内的变更合成一次落盘。
-// 代价是应用被强杀时可能丢最后 1.5 秒的统计，停止反代与正常退出都会先 flush。
-
-let usageCache: Record<string, ProxyKeyUsage> | null = null
-let flushTimer: NodeJS.Timeout | null = null
+// 存在 proxyUsageStore：内存累加，和按账号的用量合并成一次落盘。
 
 function usageMap(): Record<string, ProxyKeyUsage> {
-  if (!usageCache) usageCache = getProxyKeyUsage()
-  return usageCache
-}
-
-function scheduleFlush(): void {
-  if (flushTimer) return
-  flushTimer = setTimeout(() => {
-    flushTimer = null
-    flushProxyKeyUsage()
-  }, 1_500)
-}
-
-export function flushProxyKeyUsage(): void {
-  if (flushTimer) {
-    clearTimeout(flushTimer)
-    flushTimer = null
-  }
-  if (usageCache) setProxyKeyUsage(usageCache)
+  return keyUsage()
 }
 
 function statsOf(keyId: string): ProxyKeyStats {
@@ -107,7 +79,7 @@ export function recordKeyUsage(keyId: string, record: ProxyKeyUsageRecord): void
   }
 
   usage.lastUsedAt = record.at
-  scheduleFlush()
+  scheduleUsageFlush()
 }
 
 export function proxyKeyUsage(keyId: string): ProxyKeyUsage {
@@ -116,7 +88,7 @@ export function proxyKeyUsage(keyId: string): ProxyKeyUsage {
 
 export function resetProxyKeyUsage(keyId: string): void {
   delete usageMap()[keyId]
-  flushProxyKeyUsage()
+  flushUsage()
 }
 
 // ============ Key 列表 ============
@@ -253,7 +225,7 @@ export function setDefaultProxyKey(id: string): void {
     defaultKeyName: target.name,
     defaultKeyCreditLimit: normalizeLimit(target.creditLimit)
   })
-  flushProxyKeyUsage()
+  flushUsage()
 }
 
 // ============ 鉴权 ============

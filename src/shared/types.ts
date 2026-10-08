@@ -512,13 +512,59 @@ export interface ChatTestInput {
   additionalModelRequestFields?: Record<string, unknown>
 }
 
+/** 官方响应流里的一帧：事件类型 + 原样的负载 */
+export interface ChatRawFrame {
+  /** :event-type；异常帧是 :exception-type */
+  type: string
+  /** 负载（JSON 能解析就是对象，否则是原文字符串） */
+  payload: unknown
+}
+
+/**
+ * 测活时向官方发的一次请求及其原样返回，供界面「查看完整响应」展示。
+ * 不含请求头与 token；响应头去掉了 set-cookie 与 authorization。
+ */
+export interface ChatRawAttempt {
+  /** 请求地址 */
+  url: string
+  /** 这次带的 profileArn；null 表示没带。API Key 测活不涉及这一项，省略 */
+  profileArn?: string | null
+  /** HTTP 状态；连接都没建立（网络错误、超时）时没有 */
+  status?: number
+  headers: Record<string, string>
+  /** 事件帧，按到达顺序；非 2xx 时为空 */
+  frames: ChatRawFrame[]
+  /** 非 2xx 时的响应体原文 */
+  body?: string
+  /** success：出了正文；error：失败；cancelled：用户中止 */
+  outcome: 'success' | 'error' | 'cancelled'
+  /** 失败原因（我们的判断或上游原文） */
+  error?: string
+  durationMs: number
+  /** 帧太多或体积太大时只留了前面一部分 */
+  truncated: boolean
+}
+
+/**
+ * 一次测活的全部尝试：账号测活会依次换 profileArn 候选、换端点，每一次都留底，
+ * 最后一条就是给出结论的那次。
+ */
+export interface ChatRawTrace {
+  attempts: ChatRawAttempt[]
+}
+
+/** 测活接口的返回：失败时 data 为空，原始返回放在 raw 里 */
+export type ChatTestResponse = IpcResult<ChatTestResult> & { raw?: ChatRawTrace }
+
 export interface ChatTestResult {
   endpoint: string
   text: string
+  /** 官方原始返回（全部尝试） */
+  raw?: ChatRawTrace
   /** 首字延迟（毫秒） */
   firstByteMs: number
   totalMs: number
-  /** 后端回报的实际模型，选 auto 时可看到真正被选中的那个 */
+  /** 后端在流里回报的模型。实测 Kiro 对 auto 不回具体模型（不回或原样回 "auto"），只有点名模型时才回那个模型 */
   modelId?: string
   /** 思考内容字数，推理型模型才有 */
   thinkingChars?: number
@@ -745,7 +791,7 @@ export type ProxyEndpoint = 'auto' | 'codewhisperer' | 'amazonq'
 /**
  * 模型策略：client 用客户端请求的模型（按映射表转换）。
  * force（一律用默认模型）界面上不提供，读取配置时会被归一成 client，
- * 类型里保留只是为了能读懂旧版本存下的值。
+ * 类型里保留它，是因为已存配置里可能还有这个值。
  */
 export type ProxyModelMode = 'client' | 'force'
 
@@ -941,6 +987,12 @@ export interface ProxyLogEntry {
   requestBytes?: number
   /** 实际处理这次请求的上游端点主机名（如 q.us-east-1.amazonaws.com） */
   endpoint?: string
+  /**
+   * 上游在响应里回报的模型 id；上游没回报为空。
+   * 实测 Kiro 对 auto 不回具体模型（不回或原样回 "auto"），只有点名模型时才回那个模型；
+   * 留着这个字段是为了官方以后开始回报时界面能直接显示。
+   */
+  upstreamModel?: string
   inputTokens?: number
   outputTokens?: number
   /** 服务端 meteringEvent 给出的积分消耗 */
@@ -1033,7 +1085,7 @@ export interface ProxyAccountUsage {
   failed: number
   credits: number
   lastUsedAt: number
-  /** 以下三项可选：旧版本存下的用量没有它们，读的时候按 0 算 */
+  /** 以下三项可选：已存的用量记录可能没有它们，读的时候按 0 算 */
   inputTokens?: number
   outputTokens?: number
   /** 所有请求的耗时之和，/admin/stats 用它算平均响应时间 */
@@ -1171,13 +1223,13 @@ export interface AppSettings {
   /** 主题色，十六进制色值 */
   primaryColor: string
   /**
-   * 主题风格。取代旧版的 darkMode 开关：旧数据里只有 darkMode 时，
-   * 主进程读设置时按它换算成 light / dark（见 store.getSettings），老用户升级后观感不变。
+   * 主题风格。已存设置里只有 darkMode 字段而没有它时，
+   * 主进程读设置时按 darkMode 换算成 light / dark（见 store.getSettings），保持原有明暗。
    */
   themeMode: ThemeMode
   /**
    * 全局控件尺寸。
-   * large 是本应用一直以来的默认观感（按钮、输入框都偏大，信息密度低但好点）；
+   * large 是本应用的默认观感（按钮、输入框都偏大，信息密度低但好点）；
    * default 是 Ant Design 原生尺寸，一屏能放下更多内容。
    */
   componentSize: 'default' | 'large'
@@ -1187,7 +1239,7 @@ export interface AppSettings {
   keyDisplayMode: AccountDisplayMode
   /**
    * 导出账号时上次选择的格式，下次打开导出弹窗默认选中它。
-   * 取值不在当前支持列表里（旧版本遗留）时回落到第一项。
+   * 取值不在当前支持列表里时回落到第一项。
    */
   accountExportFormat: AccountExportFormat
   /** 侧栏折叠 */

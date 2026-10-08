@@ -14,11 +14,12 @@ import {
 import { useSettingsStore } from '@/stores/settings'
 import { useAccountsStore } from '@/stores/accounts'
 import ModelCascader from '@/components/common/ModelCascader.vue'
+import TestOutputPanel from '@/components/common/TestOutputPanel.vue'
 import { withDefaultEffort, type CascaderModel } from '@/utils/models'
 import { displayEmail } from '@/utils/display'
 import { errorMessage } from '@shared/errors'
 import { buildModelRequestFields } from '@shared/modelSchema'
-import type { Account, ChatTestResult, KiroModelInfo } from '@shared/types'
+import type { Account, ChatRawTrace, ChatTestResult, KiroModelInfo } from '@shared/types'
 
 const props = defineProps<{ account: Account | null }>()
 const emit = defineEmits<{ close: [] }>()
@@ -36,6 +37,8 @@ const input = ref(DEFAULT_MESSAGE)
 const running = ref(false)
 const output = ref('')
 const result = ref<ChatTestResult | null>(null)
+/** 官方原始返回：成功、失败、中止都有，和 result 分开存 */
+const rawTrace = ref<ChatRawTrace | null>(null)
 const error = ref('')
 const requestId = ref('')
 
@@ -157,6 +160,7 @@ watch(
     if (!id) return
     output.value = ''
     result.value = null
+    rawTrace.value = null
     error.value = ''
     input.value = DEFAULT_MESSAGE
     selection.value = []
@@ -175,6 +179,7 @@ async function start(): Promise<void> {
   running.value = true
   output.value = ''
   result.value = null
+  rawTrace.value = null
   error.value = ''
   requestId.value = `${account.id}-${Date.now()}`
 
@@ -192,6 +197,7 @@ async function start(): Promise<void> {
       authMethod: account.credentials.authMethod,
       additionalModelRequestFields: requestFields.value
     })
+    rawTrace.value = res.data?.raw ?? res.raw ?? null
     if (res.success && res.data) result.value = res.data
     else error.value = res.error || '测试失败'
   } catch (e) {
@@ -288,13 +294,18 @@ function close(): void {
         </a-form-item>
       </a-form>
 
-      <div class="output-box">
-        <div v-if="output" class="output-text">{{ output }}</div>
-        <div v-else-if="refreshingToken" class="muted">正在为该账号续期 Token…</div>
-        <div v-else-if="running" class="muted">等待模型返回…</div>
-        <div v-else class="muted">点击「开始测试」后这里会实时显示流式回复</div>
-        <span v-if="running" class="cursor" />
-      </div>
+      <TestOutputPanel
+        :output="output"
+        :running="running"
+        :raw="rawTrace"
+        :hint="
+          refreshingToken
+            ? '正在为该账号续期 Token…'
+            : running
+              ? '等待模型返回…'
+              : '点击「开始测试」后这里会实时显示流式回复'
+        "
+      />
 
       <a-alert
         v-if="result"
@@ -358,35 +369,4 @@ function close(): void {
   padding: 0;
 }
 
-.output-box {
-  min-height: 120px;
-  max-height: 260px;
-  overflow: auto;
-  padding: 10px 12px;
-  border-radius: 10px;
-  background: var(--kal-block-bg);
-  font-size: 13px;
-  line-height: 1.8;
-}
-
-.output-text {
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-/* 流式进行中的光标 */
-.cursor {
-  display: inline-block;
-  width: 7px;
-  height: 14px;
-  vertical-align: text-bottom;
-  background: var(--kal-primary);
-  animation: blink 1s steps(2, start) infinite;
-}
-
-@keyframes blink {
-  to {
-    visibility: hidden;
-  }
-}
 </style>

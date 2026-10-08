@@ -231,7 +231,7 @@ function keyItemExtra(entry: KeyEntry): number {
 
 /**
  * 订阅档位：直接从上游返回的标题算，与账号管理共用同一个判定口径。
- * 不读历史的 tier 字段——那套小写分层没有 Pro Max，且早前把 pro max 并进了 pro+。
+ * 不读历史的 tier 字段——那套小写分层没有 Pro Max，存量数据里 Pro Max 记成了 pro+。
  */
 function keyTier(entry: KeyEntry): SubscriptionType {
   return normalizeSubscriptionType(entry.subscription || '')
@@ -1481,9 +1481,8 @@ onUnmounted(() => store.stopStatsPolling())
         </div>
 
         <!--
-          报错行只在真有问题时渲染。原先这里是个恒定 27px 的占位块（为了让所有卡片等高），
-          现在改由虚拟滚动的 itemExtra 只给「同一行里真有报错」的那一行加高，
-          没报错的行不必再白留一条。
+          报错行只在真有问题时渲染。卡片等高由虚拟滚动的 itemExtra 保证：
+          只给「同一行里真有报错」的那一行加高，没报错的行不留空白。
         -->
         <a-tooltip v-if="keyIssue(entry)" placement="topLeft">
           <template #title>

@@ -192,7 +192,7 @@ export const SUBSCRIPTION_META: Record<SubscriptionType, { text: string; color: 
  * 取订阅档位的展示元数据。
  *
  * 各处都要走这里，不要直接索引 SUBSCRIPTION_META：磁盘上可能留着已废弃的档位值
- * （例如早前把 Power 存成的 'Enterprise'），直接索引会得到 undefined，
+ * （例如旧数据里 Power 账号存成的 'Enterprise'），直接索引会得到 undefined，
  * 紧接着取 .color / .text 就会让整张卡片渲染失败。
  */
 export function subscriptionMeta(type: SubscriptionType): { text: string; color: string } {

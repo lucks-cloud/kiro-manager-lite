@@ -33,9 +33,8 @@ export const useSettingsStore = defineStore('settings', () => {
   /**
    * 列表页工具栏（筛选 / 分组 / 排序 / 刷新 / 批量操作那一排）的控件尺寸。
    *
-   * 这一排原先写死 small：默认尺寸下正合适，但选了大尺寸后它和上方的
-   * 添加 / 导入 / 导出按钮差了两档，看着像另一个页面的东西。
-   * 所以大尺寸时给它标准尺寸（middle），默认尺寸时仍用 small。
+   * 默认尺寸下用 small；大尺寸时用标准尺寸（middle），
+   * 否则它和上方的添加 / 导入 / 导出按钮差两档，看着像另一个页面的东西。
    */
   const toolbarSize = computed<'small' | 'middle'>(() =>
     settings.value.componentSize === 'large' ? 'middle' : 'small'

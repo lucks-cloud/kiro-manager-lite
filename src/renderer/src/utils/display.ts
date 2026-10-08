@@ -63,3 +63,20 @@ export function displayName(account: NamedAccount, privacy: boolean): string {
   if (privacy) return maskNickname(account.email)
   return account.nickname || account.email.split('@')[0]
 }
+
+/**
+ * Kiro 上游端点的叫法，和反代参数里「上游端点」的选项名一致。
+ * 传主机名或完整地址都行；认不出的原样返回主机名。
+ */
+export function endpointName(hostOrUrl: string): string {
+  let host = hostOrUrl
+  try {
+    if (hostOrUrl.includes('://')) host = new URL(hostOrUrl).host
+  } catch {
+    // 不是合法地址就按主机名处理
+  }
+  if (host.startsWith('q.') || host.startsWith('q-fips.')) return 'Amazon Q'
+  if (host.startsWith('codewhisperer.')) return 'CodeWhisperer'
+  if (host.startsWith('runtime.') && host.endsWith('.kiro.dev')) return 'Kiro Runtime（API Key）'
+  return host
+}

@@ -43,7 +43,7 @@ const SCHEMA_VERSION = 1
 const USAGE_HISTORY_STORE = 'kiro-usage-history'
 const GATEWAY_HISTORY_STORE = 'kiro-gateway-history'
 /** 初始化时一并清掉的辅助库（含反代请求日志，它不导出） */
-const AUX_STORES = [USAGE_HISTORY_STORE, GATEWAY_HISTORY_STORE, 'kiro-proxy-logs'] as const
+const AUX_STORES = [USAGE_HISTORY_STORE, GATEWAY_HISTORY_STORE, 'kiro-proxy-logs', 'kiro-proxy-usage'] as const
 
 type Json = Record<string, unknown>
 

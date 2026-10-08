@@ -282,10 +282,6 @@ const SPECS: Record<ProxyClientTarget, ClientSpec> = {
   }
 }
 
-export function isCliTarget(target: ProxyClientTarget): boolean {
-  return SPECS[target].kind === 'cli'
-}
-
 /** 界面上的叫法：没找到时告诉用户缺的是哪个文件 */
 export function installLabel(target: ProxyClientTarget): string {
   const spec = SPECS[target]

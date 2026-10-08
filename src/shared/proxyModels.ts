@@ -144,7 +144,7 @@ const EFFORT_ORDER = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'
  * Anthropic thinking.budget_tokens → 档位。
  * Claude Code 旧版只发预算不发档位，按预算大小折算，分界与 Claude 官方文档的推荐预算大致对齐。
  */
-export function effortFromBudget(budget: number): string {
+function effortFromBudget(budget: number): string {
   if (budget <= 4_000) return 'low'
   if (budget <= 16_000) return 'medium'
   if (budget <= 32_000) return 'high'
@@ -209,14 +209,27 @@ export function resolveEffort(input: EffortInput): string | undefined {
 
 export { CURSOR_PREFIX }
 
-/** 粗略估算 token 数：中日韩按 1 字 ≈ 1.5 token，其余按 4 字 ≈ 1 token */
+/**
+ * 粗略估算 token 数：中日韩按 1 字 ≈ 1.5 token，其余按 4 字 ≈ 1 token。
+ * 每个请求都要扫一遍完整历史（agent 场景常有几 MB），所以按码元比较数值范围，
+ * 不逐字跑正则；代理对（emoji 等）合起来算一个字符。
+ */
 export function estimateTokens(text: string): number {
   if (!text) return 0
   let cjk = 0
   let rest = 0
-  for (const ch of text) {
-    if (/[\u3000-\u9fff\uac00-\ud7af\uff00-\uffef]/.test(ch)) cjk++
-    else rest++
+  const n = text.length
+  for (let i = 0; i < n; i++) {
+    const c = text.charCodeAt(i)
+    if ((c >= 0x3000 && c <= 0x9fff) || (c >= 0xac00 && c <= 0xd7af) || (c >= 0xff00 && c <= 0xffef)) {
+      cjk++
+      continue
+    }
+    rest++
+    if (c >= 0xd800 && c <= 0xdbff && i + 1 < n) {
+      const next = text.charCodeAt(i + 1)
+      if (next >= 0xdc00 && next <= 0xdfff) i++
+    }
   }
   return Math.ceil(cjk * 1.5 + rest / 4)
 }

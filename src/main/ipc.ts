@@ -16,7 +16,7 @@ import { openAccountPortal, openInAppUrl } from './kiroPortal'
 import { createSubscriptionCheckout, getSubscriptionEntry } from './kiroSubscription'
 import { clearKiroSsoCache, readKiroAuthToken, readLocalKiroCredentials } from './kiroAuth'
 import { restartKiroIde } from './kiroProcess'
-import { listKiroModels, streamApiKeyChat, streamKiroChat } from './kiroChat'
+import { chatTraceOf, listKiroModels, streamApiKeyChat, streamKiroChat } from './kiroChat'
 import {
   cancelLogin,
   shutdownLoginServers,
@@ -136,7 +136,7 @@ import {
 import { errorMessage } from '../shared/errors'
 import {
   deleteAccountData,
-  getAccountData,
+  viewAccountData,
   getBackupDir,
   ensureBackupDir,
   getKeyData,
@@ -220,7 +220,8 @@ export function applyRuntimeSettings(settings: AppSettings): void {
 
 export function registerIpc(getWindow: () => BrowserWindow | null): void {
   // ============ 数据持久化 ============
-  handle('accounts:load', () => ok(getAccountData()))
+  // 返回值经 IPC 序列化后渲染进程拿到的就是副本，这里不必再深拷贝一次
+  handle('accounts:load', () => ok(viewAccountData()))
 
   handle('accounts:save', async (_e, data: AccountStoreData) => {
     await setAccountData(data)
@@ -436,6 +437,9 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
         controller.signal
       )
       return ok(result)
+    } catch (error) {
+      // 失败也把官方原始返回带回去：空响应、异常帧、403 这些最需要看原文的恰恰是失败的情况
+      return { ...fail(error), raw: chatTraceOf(error) }
     } finally {
       if (accountChatAborters.get(requestId) === controller) accountChatAborters.delete(requestId)
     }
@@ -479,7 +483,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
       if (!controller.signal.aborted) {
         recordChatTestResult(entry.id, errorMessage(error))
       }
-      throw error
+      return { ...fail(error), raw: chatTraceOf(error) }
     } finally {
       if (keyChatAborters.get(requestId) === controller) keyChatAborters.delete(requestId)
     }

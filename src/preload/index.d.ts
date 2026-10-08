@@ -16,6 +16,7 @@ import type {
   ChatTestChunk,
   ChatTestInput,
   ChatTestResult,
+  ChatTestResponse,
   CreateApiKeyResult,
   DeleteApiKeyResult,
   ExportBundle,
@@ -184,13 +185,13 @@ export interface Api {
     idp?: string
     authMethod?: AuthMethod
   }) => Promise<IpcResult<KiroModelInfo[]>>
-  chatTest: (requestId: string, input: ChatTestInput) => Promise<IpcResult<ChatTestResult>>
+  chatTest: (requestId: string, input: ChatTestInput) => Promise<ChatTestResponse>
   cancelChatTest: (requestId: string) => Promise<IpcResult>
   onChatChunk: (handler: (payload: ChatTestChunk) => void) => () => void
   keyChatTest: (
     requestId: string,
     input: ApiKeyChatTestInput
-  ) => Promise<IpcResult<ChatTestResult>>
+  ) => Promise<ChatTestResponse>
   cancelKeyChatTest: (requestId: string) => Promise<IpcResult>
   onKeyChatChunk: (handler: (payload: ChatTestChunk) => void) => () => void
 

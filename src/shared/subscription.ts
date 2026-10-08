@@ -10,8 +10,7 @@ import type { SubscriptionType } from './types'
  * - POWER 不含 "PRO"，位置不敏感
  *
  * 这里没有 Enterprise：它是登录方式（IdpType），不是订阅档位。
- * 早前把标题里的 ENTERPRISE 判成订阅档位，同时又把 POWER 并进同一档，
- * 导致 Power 账号既显示不出自己的档位、也无法单独筛选。
+ * POWER 单独成档、不与其它档位合并，Power 账号才能显示自己的档位并单独筛选。
  */
 export function normalizeSubscriptionType(title: string): SubscriptionType {
   const t = String(title || '').toUpperCase()

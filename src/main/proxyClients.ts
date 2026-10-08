@@ -14,6 +14,7 @@ import * as os from 'os'
 import * as path from 'path'
 import { log } from './logger'
 import { cleanChildEnv } from './childEnv'
+import { sleep } from './utils'
 import { findBinary, installLabel, locateCliSync, locateClient } from './proxyClientInstall'
 import {
   getProxyClientBackup,
@@ -58,7 +59,7 @@ function cliInvoke(target: ProxyClientTarget, name: string): string {
   return located.custom && located.path ? `"${located.path}"` : name
 }
 
-/** Claude Code 的配置文件；老版本用 claude.json */
+/** Claude Code 的配置文件：默认 settings.json；它不存在而老版本的 claude.json 存在时用后者 */
 function claudeSettingsPath(): string {
   const settings = path.join(home(), '.claude', 'settings.json')
   const legacy = path.join(home(), '.claude', 'claude.json')
@@ -87,7 +88,7 @@ function codexProfilePath(): string {
  * Kiro 模型的目录文件。
  * 反代的 /v1/models 在 Codex 来要目录时直接返回这份内容，见 proxyServer。
  */
-export function codexCatalogPath(): string {
+function codexCatalogPath(): string {
   return path.join(codexHome(), `${CODEX_PROVIDER}.models.json`)
 }
 
@@ -98,7 +99,7 @@ function legacyCodexFiles(): string[] {
   ])
 }
 
-export function clientFiles(target: ProxyClientTarget): string[] {
+function clientFiles(target: ProxyClientTarget): string[] {
   /*
    * 各目标要备份的文件：
    *  - claudeCode：settings.json
@@ -420,7 +421,7 @@ function yamlString(value: string): string {
 /**
  * dsh 认的推理档位键，是一个**闭集**（schemastery 的字典键枚举）。
  *
- * 踩过的坑：Kiro 的 gpt-5.6 系列档位里有 none，不在这个集合里。直接写进去
+ * Kiro 的 gpt-5.6 系列档位里有 none，不在这个集合里。直接写进去
  * 整个 llm-pi-ai 插件会校验失败：
  *   ValidationError: $.providers.x.models[4].reasoningEfforts expected
  *   false | { [key: "off" | "minimal" | ... ] } but got {"none":"none",...}
@@ -502,8 +503,7 @@ function dshRowId(row: string): string | null {
 }
 
 function buildDshConfig(info: ProxyTargetInfo, profile: string, existing?: string | null): string {
-  const models = (info.models.length ? info.models : [{ modelId: info.model }])
-    .filter((m) => m.modelId !== 'auto')
+  const models = orderedModels(info)
 
   const modelLines = models.flatMap((m) => {
     const lines = [
@@ -675,7 +675,7 @@ async function restartDeepseekApp(): Promise<void> {
     )
     for (let i = 0; i < 24; i++) {
       if (!(await deepseekAppRunning())) break
-      await new Promise((r) => setTimeout(r, 500))
+      await sleep(500)
     }
     if (await deepseekAppRunning()) {
       throw new Error('DeepSeek Harness 没能自动退出，请手动退出后再打开')
@@ -727,18 +727,25 @@ async function dshCommand(): Promise<string> {
 // 参考：claude.com/docs/third-party/claude-desktop/gateway
 
 /**
- * 桌面应用写模型列表时共用：跳过 auto（那是上游的路由档，不是一个真实模型），
- * 界面里设的默认模型排第一个——这几个客户端的选择器都按写入顺序列。
+ * 桌面应用写模型列表时共用。
+ *
+ * 界面里设的默认模型排第一个——这几个客户端的选择器都按写入顺序列，有的还把首项当默认模型。
+ * auto（由 Kiro 按任务选模型）紧跟在默认模型后面，让用户在选择器里能直接选到它；
+ * 它不是真实模型，所以不能因为上游把它排在列表最前，就让它抢走默认位：
+ * 只有用户自己把默认模型设成 auto，它才排第一。
  * 还没刷新过模型列表时，至少把默认模型写进去。
  */
 function orderedModels(info: ProxyTargetInfo): KiroModelInfo[] {
-  const list = (info.models.length ? info.models : [{ modelId: info.model }]).filter(
-    (m) => m.modelId !== 'auto'
-  )
-  return [
-    ...list.filter((m) => m.modelId === info.model),
-    ...list.filter((m) => m.modelId !== info.model)
+  const list: KiroModelInfo[] = info.models.length ? info.models : [{ modelId: info.model }]
+  const auto = list.filter((m) => m.modelId === 'auto')
+  const real = list.filter((m) => m.modelId !== 'auto')
+  const ordered = [
+    ...real.filter((m) => m.modelId === info.model),
+    ...real.filter((m) => m.modelId !== info.model)
   ]
+  if (!auto.length) return ordered
+  if (info.model === 'auto') return [...auto, ...ordered]
+  return [...ordered.slice(0, 1), ...auto, ...ordered.slice(1)]
 }
 
 /**
@@ -975,7 +982,7 @@ function qoderModels(info: ProxyTargetInfo): Record<string, unknown>[] {
         vision: modelTakesImages(m),
         /*
          * 思考模式写 adaptive（按档位自适应），不能只写 enabled。
-         * 踩过的坑（读自 Qoder 的 worker runtime）：modes 含 enabled 时 requiresBudgetForEnabled 默认为 true，
+         * 读自 Qoder 的 worker runtime：modes 含 enabled 时 requiresBudgetForEnabled 默认为 true，
          * 它会要求每次请求带固定的 budgetTokens，没有就在本地直接拒绝——
          * 「Invalid Anthropic thinking configuration … requires an explicit fixed budget」，
          * 请求根本没发到反代，界面只显示「系统发生异常」。
@@ -1563,7 +1570,7 @@ async function restartMacApp(
     await run('osascript', ['-e', `tell application id "${bundleId}" to quit`]).catch(() => undefined)
     for (let i = 0; i < 24; i++) {
       if (!(await running())) break
-      await new Promise((r) => setTimeout(r, 500))
+      await sleep(500)
     }
     if (await running()) throw new Error(`${label} 没能自动退出，请手动退出后再打开`)
   }
@@ -1635,15 +1642,8 @@ async function writeVscodeGroups(groups: Record<string, unknown>[]): Promise<voi
 
 /** 我们那一组的模型条目：字段名与取值范围照 customendpoint 的 JSON Schema */
 function vscodeModels(info: ProxyTargetInfo): Record<string, unknown>[] {
-  const list = (info.models.length ? info.models : [{ modelId: info.model }]).filter(
-    (m) => m.modelId !== 'auto'
-  )
-  // 界面里设的默认模型放第一个：VS Code 选择器里同组按配置顺序列
-  const ordered = [
-    ...list.filter((m) => m.modelId === info.model),
-    ...list.filter((m) => m.modelId !== info.model)
-  ]
-  return ordered.map((m) => {
+  // 默认模型在前、auto 紧随其后：VS Code 选择器里同组按配置顺序列
+  return orderedModels(info).map((m) => {
     const efforts = 'effort' in m ? (m.effort?.options ?? []) : []
     const inputTypes = 'inputTypes' in m ? m.inputTypes : undefined
     return {
@@ -1744,7 +1744,7 @@ async function restartVscode(): Promise<void> {
     await run('osascript', ['-e', `tell application id "${VSCODE_BUNDLE_ID}" to quit`]).catch(() => undefined)
     for (let i = 0; i < 24; i++) {
       if (!(await vscodeRunning())) break
-      await new Promise((r) => setTimeout(r, 500))
+      await sleep(500)
     }
     if (await vscodeRunning()) {
       throw new Error('VS Code 没能自动退出（可能有未保存的文件在等你确认），请手动退出后再打开')
@@ -1814,7 +1814,7 @@ function claudeMaxEffort(options: string[] | undefined): string | undefined {
 /**
  * 写给 Claude 桌面版的模型名：Claude 系把版本号的点换成短横（claude-opus-5.5 → claude-opus-5-5）。
  *
- * 踩过的坑：桌面版的档位选择器不看我们给的 maxEffort 有没有，而是先拿模型名去它的模型目录
+ * 桌面版的档位选择器不看我们给的 maxEffort 有没有，而是先拿模型名去它的模型目录
  * （model-catalog/published.json，和内置的兜底表）里查这个模型支持哪些档位，查不到就不显示档位菜单；
  * maxEffort 只能在查到的档位里再封顶。目录里的 id 全是短横写法，比较时只做小写和去日期，
  * 所以 Kiro 的点号写法除了恰好没有小版本号的（claude-opus-5）以外全都查不到。
@@ -1834,17 +1834,12 @@ async function applyClaudeApp(info: ProxyTargetInfo): Promise<void> {
    * 2. 网关配置。auth scheme 用 bearer（默认），和我们反代的鉴权方式一致。
    *    显式给 inferenceModels：自动发现只认 ID 像 Claude 的模型，会漏掉 gpt-* 那些。
    */
-  const listed = (info.models.length ? info.models : [{ modelId: info.model }]).filter(
-    (m) => m.modelId !== 'auto'
-  )
   /*
    * 界面里设的默认模型必须排在第一个：桌面版把 inferenceModels 的首项当默认模型，
    * defaultModelEffort 也只作用在它身上。按账号返回的顺序写，默认模型大概率不在首位。
+   * auto 紧随其后，见 orderedModels。
    */
-  const ordered = [
-    ...listed.filter((m) => m.modelId === info.model),
-    ...listed.filter((m) => m.modelId !== info.model)
-  ]
+  const ordered = orderedModels(info)
 
   const models = ordered.map((m, index) => {
     const supports1m = modelInputTokens(m) >= 1_000_000
@@ -1923,7 +1918,7 @@ async function claudeAppRunning(): Promise<boolean> {
 }
 
 /** 退出并重新打开 Claude 桌面版：3P 配置只在启动时读一次 */
-export async function restartClaudeApp(): Promise<void> {
+async function restartClaudeApp(): Promise<void> {
   if (process.platform === 'win32') return restartWinApp('Claude', 'claudeApp')
   if (process.platform !== 'darwin') {
     throw new Error('代为重启目前只支持 macOS 和 Windows，请手动完全退出后重新打开 Claude')
@@ -1933,7 +1928,7 @@ export async function restartClaudeApp(): Promise<void> {
     await run('osascript', ['-e', 'tell application "Claude" to quit']).catch(() => undefined)
     for (let i = 0; i < 24; i++) {
       if (!(await claudeAppRunning())) break
-      await new Promise((r) => setTimeout(r, 500))
+      await sleep(500)
     }
     if (await claudeAppRunning()) {
       throw new Error('Claude 没能自动退出，请手动退出后再打开')
@@ -1977,8 +1972,8 @@ const CCURSOR_HOOK_MARKER = '/* CURSOR-BYOK-HOOK-START */'
  * Cursor 本体当前是否打着 CCursor 的补丁。
  *
  * 不能拿 ~/.ccursor/routes.json 判断：那是 CCursor 的配置，Cursor 自动更新会整份替换程序文件、
- * 把补丁冲掉，配置却还在。踩过的坑就是这样：更新后界面照样显示「已指向本反代」，
- * 一键写入也因为「已安装」跳过了重新打补丁，Cursor 里只剩官方模型。
+ * 把补丁冲掉，配置却还在。按它判断的话，更新后界面照样显示「已指向本反代」，
+ * 一键写入也会因为「已安装」跳过重新打补丁，Cursor 里只剩官方模型。
  * 这里按 CCursor 自己 status 命令的口径查：扩展目录在，且 workbench 头部有注入标记。
  * 标记只会出现在文件开头（它只扫前 12 万字符），所以只读这一段，不把 38MB 的文件整个读进来。
  */
@@ -2012,8 +2007,8 @@ const findNodeBin = (name: 'node' | 'npx'): string | null => findBinary(name)
 /**
  * 把「可执行文件 + 参数」换成 Windows 上能直接 spawn 的形式。
  *
- * 踩过的坑（Win11 用户报「写入失败 spawn EINVAL」）：Node 18.20.2 / 20.12.2 起修了 CVE-2024-27980，
- * 不带 shell 直接 spawn / execFile 一个 .cmd / .bat 会立刻抛 EINVAL。npm 装的 npx、codex、claude
+ * Node 18.20.2 / 20.12.2 起（CVE-2024-27980 的修复），
+ * 不带 shell 直接 spawn / execFile 一个 .cmd / .bat 会立刻抛 EINVAL（界面上是「写入失败 spawn EINVAL」）。npm 装的 npx、codex、claude
  * 在 Windows 上都是 .cmd，Electron 自带的 Node 也在这个版本之后，所以只要碰到它们就必挂。
  * 解法是交给 cmd.exe 去跑：/d 不读 AutoRun，/s 配合外层引号原样保留命令行；
  * 参数逐个加引号并原样拼接（windowsVerbatimArguments），不走 Node 那套 \" 转义——cmd 不认那个。
@@ -2125,6 +2120,7 @@ async function ensureCcursorCatalog(models: KiroModelInfo[]): Promise<void> {
     let changed = false
 
     for (const m of models) {
+      // auto 不属于任何厂商的模型目录，目录只喂面板的名称补全，跳过即可
       if (m.modelId === 'auto') continue
       const ccId = kiroIdToCcursorId(m.modelId)
 
@@ -2177,10 +2173,13 @@ function ccursorEffort(m: KiroModelInfo): Record<string, unknown> {
 }
 
 function buildCcursorProviders(info: ProxyTargetInfo): Record<string, unknown> {
-  const models = (info.models.length ? info.models : [{ modelId: info.model }])
-    .filter((m) => m.modelId !== 'auto')
+  const models = orderedModels(info)
     .map((m) => ({
-      id: kiroIdToCcursorId(m.modelId),
+      /*
+       * auto 的 id 带 kiro- 前缀：Cursor 自己有一个叫 Auto 的内置选项，
+       * 裸的 auto 可能和它混在一起；apiModel 仍是 auto，反代按它交给 Kiro 选模型。
+       */
+      id: m.modelId === 'auto' ? 'kiro-auto' : kiroIdToCcursorId(m.modelId),
       apiModel: m.modelId, // 发给反代的真实名字，mapProxyModel 会处理
       // 统一加 Kiro 前缀：Cursor 的模型选择器里混着官方模型，一眼能分出哪些走反代
       displayName: kiroLabel(m),
@@ -2227,10 +2226,10 @@ function buildCcursorProviders(info: ProxyTargetInfo): Record<string, unknown> {
  *  - Windows：%APPDATA%\Cursor\User
  *  - Linux：~/.config/Cursor/User
  *
- * 踩过的坑：早先这里只写了 macOS 的路径，Windows 上拼成了
+ * 必须按平台区分：在 Windows 上套用 macOS 的路径会拼成
  * C:\Users\<用户>\Library\Application Support\Cursor\User\settings.json——一个 Cursor 根本不读的位置。
- * 关 HTTP/2 的那一项（cursor.general.disableHttp2）于是从没生效，Cursor 照旧用 HTTP/2，
- * 绕开了 CCursor 只认 HTTP/1.1 的路由器，Agent 一直显示 Reconnecting；
+ * 关 HTTP/2 的那一项（cursor.general.disableHttp2）就不生效，Cursor 照旧用 HTTP/2，
+ * 绕开 CCursor 只认 HTTP/1.1 的路由器，Agent 一直显示 Reconnecting；
  * 而 WorkBuddy、VS Code 不经过 CCursor，所以只有 Cursor 连不上。
  */
 function cursorSettingsPath(): string {
@@ -2397,7 +2396,7 @@ async function cursorRunning(): Promise<boolean> {
  *
  * 请求由 CCursor 在进程内接管后转发到本机反代。
  */
-export async function restartCursorApp(): Promise<void> {
+async function restartCursorApp(): Promise<void> {
   if (process.platform === 'win32') return restartWinApp('Cursor', 'cursor')
   if (process.platform !== 'darwin') {
     throw new Error('代为重启目前只支持 macOS 和 Windows，请手动完全退出 Cursor 后重新打开')
@@ -2411,7 +2410,7 @@ export async function restartCursorApp(): Promise<void> {
     )
     for (let i = 0; i < 24; i++) {
       if (!(await cursorRunning())) break
-      await new Promise((r) => setTimeout(r, 500))
+      await sleep(500)
     }
     if (await cursorRunning()) {
       throw new Error('Cursor 没能自动退出（可能有未保存的文件在等你确认），请手动退出后再打开')
@@ -2462,12 +2461,12 @@ function tomlString(value: string): string {
 }
 
 /*
- * 两个 Codex 目标共同的硬约束，都是踩出来的：
+ * 两个 Codex 目标共同的硬约束（均为实测）：
  *
  *  1. **Key 只能写进 provider 的 `http_headers`**。
  *     `env_key` 指向的环境变量没设置时，Codex 加载 config.toml 直接失败——
  *     桌面版启动时会拉起内置 codex 读启动策略，于是弹「无法加载登录要求」。
- *     这一条曾被误判成「不能改全局 provider」，实际改全局是安全的（见 applyCodexApp）。
+ *     这个报错与改全局 provider 无关，改全局是安全的（见 applyCodexApp）。
  *
  *  2. **不动 auth.json**。那里面是 ChatGPT 桌面客户端的 OAuth 登录态
  *     （auth_mode / tokens / last_refresh），往 OPENAI_API_KEY 里塞我们的 Key
@@ -3085,7 +3084,7 @@ async function quitCodexApp(): Promise<boolean> {
   )
   for (let i = 0; i < 24; i++) {
     if (!(await codexAppRunning())) return true
-    await new Promise((r) => setTimeout(r, 500))
+    await sleep(500)
   }
   throw new Error('Codex 桌面版没能自动退出，请手动完全退出（Cmd+Q）后重试')
 }
@@ -3100,7 +3099,7 @@ async function quitCodexApp(): Promise<boolean> {
  * 我们注入的环境变量就白费了。用 AppleScript 正常退出（而不是 kill），
  * 让它有机会存盘。
  */
-export async function launchCodexApp(): Promise<void> {
+async function launchCodexApp(): Promise<void> {
   const binary = await codexAppBinary()
   if (!binary) {
     throw new Error(
@@ -3211,7 +3210,7 @@ const LOOPBACK_CACHE_MS = 30_000
  * 给界面用的系统代理结论。
  * 返回 undefined 表示没问题（没开代理、反代没在跑，或者开了代理但回环能直连）。
  *
- * 踩过的坑：反代没启动时经代理去连回环，代理那头连不上会等到超时（Clash 约 3 秒）再回 502，
+ * 反代没启动时经代理去连回环，代理那头连不上会等到超时（Clash 约 3 秒）再回 502，
  * 每张卡片各探一次就是十几次串行等待，刷新一次客户端列表要半分钟，
  * 界面上「重新生成 Key」之类会顺带刷新列表的按钮就一直转圈；而且这时报「被代理拦了」也是误判。
  * 所以先不经代理直连一次：反代都没在跑就不用查代理；查出的结论缓存 30 秒。

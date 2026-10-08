@@ -21,7 +21,7 @@ import { useAccountsStore } from '@/stores/accounts'
 import { useSettingsStore } from '@/stores/settings'
 import { useKeysStore } from '@/stores/keys'
 import { confirmDanger, copyText } from '@/utils/ui'
-import { displayEmail, displayKey, maskKey } from '@/utils/display'
+import { displayEmail, displayKey, endpointName, maskKey } from '@/utils/display'
 import { formatCheckedAt, formatCredits, formatLogTime, maskEmail } from '@/utils/format'
 import { withDefaultEffort, type CascaderModel } from '@/utils/models'
 import ModelCascader from '@/components/common/ModelCascader.vue'
@@ -718,12 +718,14 @@ const successRateColor = computed(() => {
   return '#ff4d4f'
 })
 
-/** 端点主机名对应的叫法，和参数里「上游端点」的选项名一致 */
-function endpointName(host: string): string {
-  if (host.startsWith('q.') || host.startsWith('q-fips.')) return 'Amazon Q'
-  if (host.startsWith('codewhisperer.')) return 'CodeWhisperer'
-  if (host.startsWith('runtime.') && host.endsWith('.kiro.dev')) return 'Kiro Runtime（API Key）'
-  return host
+/**
+ * auto 的请求里，上游回报的实际模型；其余请求（本来就点名了模型）不重复显示。
+ * 回报值是 auto 本身时也不显示，免得出现 auto → auto。
+ * 实测官方目前对 auto 不回具体模型，这里平时不会出现；留着是为了官方以后回报时直接可见。
+ */
+function routedTo(entry: ProxyLogEntry): string {
+  if (entry.kiroModel !== 'auto') return ''
+  return entry.upstreamModel && entry.upstreamModel !== 'auto' ? entry.upstreamModel : ''
 }
 
 /** 流详情：上游各类事件块数 + 请求体大小；老日志没有这些字段时不显示这一行 */
@@ -1720,6 +1722,8 @@ onUnmounted(() => stop?.())
           </template>
           <template v-else-if="column.key === 'model'">
             <span class="mono log-model">{{ record.kiroModel }}</span>
+            <!-- auto 时把 Kiro 实际路由到的模型跟在后面，一眼看出这条请求用了谁 -->
+            <span v-if="routedTo(record)" class="log-effort mono"> → {{ routedTo(record) }}</span>
             <span v-if="record.effort" class="log-effort mono"> · {{ record.effort }}</span>
           </template>
           <template v-else-if="column.key === 'account'">{{ accountLabel(record) }}</template>
@@ -2224,7 +2228,17 @@ onUnmounted(() => stop?.())
         <a-descriptions-item label="积分">
           {{ logDetail.credits != null ? formatCredits(logDetail.credits, true) : '-' }}
         </a-descriptions-item>
-        <!-- 和「记录流事件」写进系统日志的汇总同一份数据，不开那个开关也能在这里看到 -->
+        <!-- 只看成功的：进行中还没收完事件，失败的没有完整响应，都不能下「没回报」的结论 -->
+        <a-descriptions-item v-if="logDetail.state === 'success'" label="上游回报模型" :span="2">
+          <template v-if="logDetail.upstreamModel && logDetail.upstreamModel !== 'auto'">
+            <span class="mono">{{ logDetail.upstreamModel }}</span>
+            <span v-if="logDetail.kiroModel === 'auto'" class="muted">（auto 实际路由到的模型）</span>
+          </template>
+          <!-- 实测 Kiro 对 auto 要么不回 modelId，要么原样回一个 "auto"，都拿不到具体模型 -->
+          <span v-else class="muted">
+            {{ logDetail.upstreamModel ? '上游只回报了 auto，没有给出具体模型' : '上游没有回报具体模型' }}
+          </span>
+        </a-descriptions-item>
         <a-descriptions-item label="上游端点" :span="2">
           <template v-if="logDetail.endpoint">
             {{ endpointName(logDetail.endpoint) }}
@@ -2232,6 +2246,7 @@ onUnmounted(() => stop?.())
           </template>
           <span v-else class="muted">-</span>
         </a-descriptions-item>
+        <!-- 和「记录流事件」写进系统日志的汇总同一份数据，不开那个开关也能在这里看到 -->
         <a-descriptions-item v-if="streamDetail(logDetail)" label="流详情" :span="2">
           <span class="num">{{ streamDetail(logDetail) }}</span>
         </a-descriptions-item>
@@ -2381,7 +2396,7 @@ onUnmounted(() => stop?.())
 .stat-num small { font-size: 11px; }
 .stat-num.ok { color: #52c41a; }
 .stat-num.bad { color: #ff4d4f; }
-/* 窄窗口一排六个会把数字挤到换行，改成两排各三个 */
+/* 窄窗口下排成两排各三个，一排六个会把数字挤到换行 */
 @media (max-width: 1100px) {
   .stat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }

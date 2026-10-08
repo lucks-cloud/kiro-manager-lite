@@ -52,7 +52,8 @@ import {
 import { formatSearchResults, kiroWebSearch, type WebSearchResult } from './kiroWebSearch'
 import { randomUUID } from 'crypto'
 import { listRawApiKeyModels, listRawKiroModels } from './kiroChat'
-import { checkProxyKey, flushProxyKeyUsage, recordKeyUsage, type KeyCheck } from './proxyKeys'
+import { checkProxyKey, recordKeyUsage, type KeyCheck } from './proxyKeys'
+import { accountUsage, clearAccountUsage, flushUsage, scheduleUsageFlush } from './proxyUsageStore'
 import {
   LOG_CAPACITY,
   bindProxyLogSource,
@@ -62,7 +63,7 @@ import {
   scheduleProxyLogFlush,
   type ProxyStats
 } from './proxyLogStore'
-import { getAccountData, getProxyConfig, getProxyModels, getProxyUsage, setProxyUsage } from './store'
+import { getProxyConfig, getProxyModels, viewAccountData } from './store'
 import type {
   Account,
   KiroModelInfo,
@@ -274,33 +275,11 @@ export function resetProxyStats(): void {
 }
 
 // ============ 按账号累计用量 ============
-
-/*
- * 和按 Key 的用量一样先在内存里累加、1.5 秒内的变更合成一次落盘：
- * 主 store 是加密的整份文件（含全部账号），每个请求都写一次会反复做 pbkdf2 与整份重写。
- * 停止反代与退出应用时都会 flush，只有被强杀才可能丢最后 1.5 秒的统计。
- */
-let usageCache: ProxyAccountUsage[] | null = null
-let usageFlushTimer: NodeJS.Timeout | null = null
+//
+// 存在 proxyUsageStore：内存累加，和按 Key 的用量合并成一次落盘。
 
 function usageList(): ProxyAccountUsage[] {
-  return (usageCache ??= getProxyUsage())
-}
-
-function flushAccountUsage(): void {
-  if (usageFlushTimer) {
-    clearTimeout(usageFlushTimer)
-    usageFlushTimer = null
-  }
-  if (usageCache) setProxyUsage(usageCache)
-}
-
-function scheduleUsageFlush(): void {
-  if (usageFlushTimer) return
-  usageFlushTimer = setTimeout(() => {
-    usageFlushTimer = null
-    flushAccountUsage()
-  }, 1_500)
+  return accountUsage()
 }
 
 /**
@@ -337,8 +316,7 @@ export function proxyUsage(): ProxyAccountUsage[] {
 }
 
 export function clearProxyUsage(): void {
-  usageCache = []
-  flushAccountUsage()
+  clearAccountUsage()
 }
 
 // ============ 模型列表 ============
@@ -577,9 +555,9 @@ function modelEntry(model: KiroModelInfo, created: number): Record<string, unkno
   const context = model.maxInputTokens ?? 200_000
   const output = model.maxOutputTokens ?? 64_000
   /*
-   * 没有这个字段 ≠ 只支持文本：旧版本缓存的模型列表里压根没存它。
+   * 没有这个字段 ≠ 只支持文本：已缓存的模型列表里可能没存它。
    * Kiro 的对话模型全都收图片，缺省按「文本 + 图片」给，
-   * 否则升级后没点「刷新模型」的用户，客户端会以为所有模型都不能传图。
+   * 否则缓存列表没刷新过的用户，客户端会以为所有模型都不能传图。
    */
   const inputTypes = model.inputTypes?.length ? model.inputTypes : ['TEXT', 'IMAGE']
   const image = inputTypes.includes('IMAGE')
@@ -703,7 +681,7 @@ function healthPayload(): Record<string, unknown> {
     running: true,
     // accounts 是账号总数、availableAccounts 是此刻会被选中的，
     // 一个号失效时两个数一对比就能看出来
-    accounts: getAccountData().accounts.length,
+    accounts: viewAccountData().accounts.length,
     availableAccounts: poolIds().size,
     stats: {
       totalRequests: stats.requests,
@@ -805,7 +783,7 @@ function adminRoute(path: string, url: URL): unknown {
   if (path === '/admin/accounts') {
     const pool = poolIds()
     const usage = new Map(usageList().map((item) => [item.accountId, item]))
-    const accounts = getAccountData().accounts.map((account) => {
+    const accounts = viewAccountData().accounts.map((account) => {
       const used = usage.get(account.id)
       return {
         id: account.id,
@@ -1129,7 +1107,8 @@ async function handleChat(ctx: HandleContext): Promise<void> {
         // 都是从请求开始的累计时间点（@ 表示「在第几毫秒」），不是各段耗时
         `托管搜索 ${events.searchCalls} · 账号就绪 @${entry.prepareMs ?? '-'}ms · ` +
         `上游响应头 @${entry.upstreamHeadersMs ?? '-'}ms · 首字 @${entry.firstTokenMs ?? '-'}ms · ` +
-        `请求体 ${entry.requestBytes != null ? Math.round(entry.requestBytes / 1024) : '-'}KB`
+        `请求体 ${entry.requestBytes != null ? Math.round(entry.requestBytes / 1024) : '-'}KB` +
+        ` · 上游回报模型 ${entry.upstreamModel ?? '无'}`
     )
   }
 
@@ -1435,6 +1414,7 @@ async function handleChat(ctx: HandleContext): Promise<void> {
     entry.inputTokens = collected.usage.inputTokens
     entry.outputTokens = collected.usage.outputTokens
     entry.toolCalls = result.toolCalls
+    entry.upstreamModel = result.reportedModel
     entry.durationMs = Date.now() - startedAtMs
     touchLog(entry, true)
     pushStatus()
@@ -1893,8 +1873,7 @@ export async function startProxy(): Promise<ProxyStatus> {
 
 export function stopProxy(): ProxyStatus {
   // 用量和请求日志都是攒着批量落盘的，停服务时把没写的写掉
-  flushProxyKeyUsage()
-  flushAccountUsage()
+  flushUsage()
   flushProxyLogs()
   if (server) {
     server.close()
@@ -1924,15 +1903,13 @@ export async function applyProxyConfig(next: ProxyConfig): Promise<ProxyStatus> 
 
 /** 把内存里还没落盘的用量与日志立即写盘（导出备份前调用，保证备份是最新的） */
 export function flushProxyData(): void {
-  flushProxyKeyUsage()
-  flushAccountUsage()
+  flushUsage()
   flushProxyLogs()
 }
 
 export function shutdownProxySync(): void {
   // 放在 server 判断前：服务已停但还有没落盘的用量 / 日志时也要写
-  flushProxyKeyUsage()
-  flushAccountUsage()
+  flushUsage()
   flushProxyLogs()
   if (!server) return
   try {

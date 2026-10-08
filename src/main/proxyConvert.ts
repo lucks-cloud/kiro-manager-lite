@@ -246,9 +246,9 @@ export function normalizeAnthropicRequest(body: Record<string, unknown>): Normal
             break
           /*
            * 历史里的思考内容不带回去（官方 API 对往轮的 thinking 也是直接丢弃）。
-           * 早先按 <thinking>…</thinking> 文本塞进助手消息，Kiro 那边没有结构化思考块，
-           * 模型就把它当成自己说过的正文、照着这个格式往下写，
-           * Claude Code 里于是出现正文开头一段「<thinking>Now search…</thinking>」。
+           * Kiro 那边没有结构化思考块，若按 <thinking>…</thinking> 文本塞进助手消息，
+           * 模型会把它当成自己说过的正文、照着这个格式往下写，
+           * Claude Code 里就会出现正文开头一段「<thinking>Now search…</thinking>」。
            */
           case 'thinking':
           case 'redacted_thinking':
@@ -723,7 +723,7 @@ export function buildKiroPayload(
  * 上游对体积有硬限制，超了直接 400，裁历史比整轮失败好。
  * 系统提示那一对和最后 4 条始终保留，当前这一轮不动。
  */
-export function truncateHistory(payload: Record<string, unknown>, maxBytes: number): void {
+function truncateHistory(payload: Record<string, unknown>, maxBytes: number): void {
   const state = asRecord(payload.conversationState)
   if (!state) return
   const history = Array.isArray(state.history) ? (state.history as Record<string, unknown>[]) : []
@@ -1070,7 +1070,7 @@ export function normalizeStopReason(raw: string, hasToolCalls: boolean): string 
   return 'end_turn'
 }
 
-export function openAiFinishReason(stopReason: string): string {
+function openAiFinishReason(stopReason: string): string {
   if (stopReason === 'tool_use') return 'tool_calls'
   if (stopReason === 'max_tokens') return 'length'
   return 'stop'

@@ -21,9 +21,10 @@ import {
 } from './kiroEndpoints'
 import { httpRequest, httpStream } from './net'
 import { pushUnique } from './utils'
-import { jsonOf, takeFrames } from './eventStream'
+import { jsonOf, takeFrames, type EventFrame } from './eventStream'
 import { parseModelEffort } from '../shared/modelSchema'
-import type { ChatTestInput, KiroModelInfo } from '../shared/types'
+import type { ChatRawAttempt, ChatRawTrace, ChatTestInput, KiroModelInfo } from '../shared/types'
+import type { HttpHeaders } from './net'
 
 /**
  * 对话端点：主用 Amazon Q，失败回退 CodeWhisperer，两者请求体一致（固定 us-east-1）。
@@ -127,12 +128,17 @@ export async function arnCandidatesFor(
     // IdC / Enterprise：问后端要这个账号自己的 profile
     const key = tokenKey(accessToken)
     const cached = profileArnCache.get(key)
+    /*
+     * 查不到时不能把 undefined 推进来：它会排在占位符前面，变成「先不带 profileArn 试一次」，
+     * 而不带必然 400（见上）——Builder ID 查 profile 永远是空的，每次测活都白打一轮。
+     * 「不带」的兜底统一放在列表末尾。
+     */
     if (cached && Date.now() - cached.at < PROFILE_ARN_TTL) {
-      pushUnique(out, cached.arn)
+      if (cached.arn) pushUnique(out, cached.arn)
     } else {
       const arns = await listAvailableProfiles(accessToken, identity.region)
       profileArnCache.set(key, { arn: arns[0], at: Date.now() })
-      pushUnique(out, arns[0])
+      if (arns[0]) pushUnique(out, arns[0])
     }
     /*
      * BuilderId 占位符必须作为候选：ListAvailableModels 把 profileArn 当必填，
@@ -324,7 +330,101 @@ export interface ChatStreamCallbacks {
   onDelta: (text: string) => void
 }
 
+/** 原始返回最多留这么多帧 / 字节：长回答每个字都是一帧，不设上限会把内存和 IPC 撑大 */
+const RAW_MAX_FRAMES = 4000
+const RAW_MAX_BYTES = 3 * 1024 * 1024
+/** 非 2xx 的响应体一般就是一句 JSON 报错，留 20KB 足够 */
+const RAW_MAX_BODY = 20 * 1024
+
+/**
+ * 记录一次请求的原样返回（一个端点 × 一个 profileArn 算一次），测活结束后随结果或错误交给界面。
+ * 只记响应，不记请求：请求头里有 token，不能下发到渲染层。
+ * 尝试一开始就放进 trace，所以网络错误、超时、用户中止这些「没拿到响应」的情况也有记录。
+ */
+class RawRecorder {
+  readonly raw: ChatRawAttempt
+  private bytes = 0
+  private readonly startedAt = Date.now()
+
+  constructor(trace: ChatRawAttempt[], url: string, profileArn?: string | null) {
+    this.raw = {
+      url,
+      ...(profileArn !== undefined ? { profileArn } : {}),
+      headers: {},
+      frames: [],
+      outcome: 'error',
+      durationMs: 0,
+      truncated: false
+    }
+    trace.push(this.raw)
+  }
+
+  response(status: number, headers: HttpHeaders): void {
+    this.raw.status = status
+    headers.forEach((value, name) => {
+      if (!/^(set-cookie|authorization)$/i.test(name)) this.raw.headers[name] = value
+    })
+  }
+
+  /** 非 2xx 的响应体原文 */
+  body(text: string): void {
+    this.raw.body = text.length > RAW_MAX_BODY ? `${text.slice(0, RAW_MAX_BODY)}…（已截断）` : text
+  }
+
+  /** 结束这次尝试：成功、失败（带原因）或用户中止 */
+  finish(outcome: ChatRawAttempt['outcome'], error?: string): void {
+    this.raw.outcome = outcome
+    if (error) this.raw.error = error
+    this.raw.durationMs = Date.now() - this.startedAt
+  }
+
+  /** data 是调用方已经解析好的负载，免得每帧解析两遍 */
+  add(frame: EventFrame, data: Record<string, unknown>): void {
+    if (this.raw.truncated) return
+    const type =
+      frame.headers[':event-type'] ??
+      frame.headers[':exception-type'] ??
+      frame.headers[':message-type'] ??
+      '?'
+    let payload: unknown = data
+    /*
+     * jsonOf 解析失败也返回空对象，和真正的 {} 分不开。只有拿到空对象时才再试一次：
+     * 真是 {} 就保留，解析不了就改存原文，免得信息丢了。
+     */
+    if (frame.payload.length && !Object.keys(data).length) {
+      try {
+        JSON.parse(frame.payload.toString('utf8'))
+      } catch {
+        payload = frame.payload.toString('utf8')
+      }
+    }
+    this.bytes += frame.payload.length
+    if (this.raw.frames.length >= RAW_MAX_FRAMES || this.bytes > RAW_MAX_BYTES) {
+      this.raw.truncated = true
+      return
+    }
+    this.raw.frames.push({ type, payload })
+  }
+}
+
+/** 测活失败时带着全部尝试的原始返回抛出，IPC 层取出来交给界面 */
+export class ChatTestError extends Error {
+  constructor(
+    message: string,
+    readonly trace: ChatRawTrace
+  ) {
+    super(message)
+  }
+}
+
+/** 从任意错误里取原始返回；不是测活抛出的就没有 */
+export function chatTraceOf(error: unknown): ChatRawTrace | undefined {
+  return error instanceof ChatTestError ? error.trace : undefined
+}
+
 export interface ChatStreamResult {
+  /** 官方原始返回（全部尝试） */
+  raw?: ChatRawTrace
   /** 实际用上的端点名，便于界面提示走的是哪条链路 */
   endpoint: string
   /** 完整回复文本 */
@@ -332,7 +432,7 @@ export interface ChatStreamResult {
   /** 首个字符到达耗时（毫秒） */
   firstByteMs: number
   totalMs: number
-  /** 后端在流里回报的模型（选 auto 时能看到真正被选中的那个；部分模型不回该字段） */
+  /** 后端在流里回报的模型。实测 Kiro 对 auto 不回具体模型（不回或原样回 "auto"），只有点名模型时才回那个模型 */
   modelId?: string
   /** 思考内容字数，走推理链路的模型才有 */
   thinkingChars?: number
@@ -401,11 +501,73 @@ function buildPayload(input: ChatTestInput, profileArn: string | undefined): Rec
   return payload
 }
 
-/** 用一个确定的 profileArn 跑一遍端点列表 */
+/** 读完一次对话的事件流得到的结果 */
+interface ChatStreamRead {
+  text: string
+  firstByteMs: number
+  modelId?: string
+  thinkingChars: number
+}
+
+/**
+ * 读完 generateAssistantResponse 的事件流：正文增量实时回调给界面，思考内容只计数，
+ * 每一帧都记进 recorder。流里出现异常帧就取消读取并抛出上游给的原因。
+ * 账号测活与 API Key 测活的响应格式完全一致，共用这一份。
+ */
+async function readChatStream(
+  body: ReadableStream<Uint8Array>,
+  recorder: RawRecorder,
+  startedAt: number,
+  onDelta: (text: string) => void
+): Promise<ChatStreamRead> {
+  const reader = body.getReader()
+  const out: ChatStreamRead = { text: '', firstByteMs: 0, thinkingChars: 0 }
+  let buffer: Buffer = Buffer.alloc(0)
+
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer = Buffer.concat([buffer, Buffer.from(value)])
+    const { frames, rest } = takeFrames(buffer)
+    buffer = rest
+
+    for (const frame of frames) {
+      const eventType = frame.headers[':event-type']
+      const data = jsonOf(frame.payload)
+      recorder.add(frame, data)
+
+      if (frame.headers[':message-type'] === 'exception' || frame.headers[':exception-type']) {
+        const kind = frame.headers[':exception-type'] || 'Exception'
+        const msg = typeof data.message === 'string' ? data.message : ''
+        await reader.cancel().catch(() => undefined)
+        throw new Error(`${kind}${msg ? `: ${msg}` : ''}`)
+      }
+
+      // 后端只在点名模型时回 modelId，抓到就用于界面回显
+      if (typeof data.modelId === 'string' && data.modelId) out.modelId = data.modelId
+
+      if (eventType === 'assistantResponseEvent' && typeof data.content === 'string') {
+        if (!out.firstByteMs) out.firstByteMs = Date.now() - startedAt
+        out.text += data.content
+        onDelta(data.content)
+      }
+
+      // 推理型模型（opus-5 等）会先推一段 thinking，只计数不混进正文
+      if (eventType === 'reasoningContentEvent') {
+        const reasoning = (data.reasoningContentEvent ?? data) as { text?: unknown }
+        if (typeof reasoning.text === 'string') out.thinkingChars += reasoning.text.length
+      }
+    }
+  }
+  return out
+}
+
+/** 用一个确定的 profileArn 跑一遍端点列表；每个端点的请求都记进 trace */
 async function streamWithArn(
   input: ChatTestInput,
   profileArn: string | undefined,
   callbacks: ChatStreamCallbacks,
+  trace: ChatRawAttempt[],
   signal?: AbortSignal
 ): Promise<ChatStreamResult> {
   const body = JSON.stringify(buildPayload(input, profileArn))
@@ -414,12 +576,18 @@ async function streamWithArn(
   let lastError = ''
   for (const [index, url] of CHAT_ENDPOINTS.entries()) {
     const startedAt = Date.now()
+    const recorder = new RawRecorder(trace, url, profileArn ?? null)
+    // 这个端点上是否已经往界面推过字：推过之后再失败不能换端点重发，否则回复会拼成两段
+    let emitted = false
     try {
       const res = await httpStream(url, { method: 'POST', headers, body, signal })
+      recorder.response(res.status, res.headers)
 
       if (!res.ok || !res.body) {
         const raw = await res.text().catch(() => '')
+        recorder.body(raw)
         lastError = `HTTP ${res.status}: ${raw.slice(0, 300) || '没有响应体'}`
+        recorder.finish('error', lastError)
         // 凭证 / 权限问题换端点没有意义，交给上层换 profileArn 候选
         if (isAuthStatus(res.status) || res.status === 423) {
           const err = new Error(lastError) as Error & { status?: number }
@@ -429,68 +597,39 @@ async function streamWithArn(
         continue
       }
 
-      const reader = res.body.getReader()
-      let buffer: Buffer = Buffer.alloc(0)
-      let text = ''
-      let firstByteMs = 0
-      let modelId: string | undefined
-      let thinkingChars = 0
+      const read = await readChatStream(res.body, recorder, startedAt, (delta) => {
+        emitted = true
+        callbacks.onDelta(delta)
+      })
 
-      for (;;) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer = Buffer.concat([buffer, Buffer.from(value)])
-        const { frames, rest } = takeFrames(buffer)
-        buffer = rest
-
-        for (const frame of frames) {
-          const messageType = frame.headers[':message-type']
-          const eventType = frame.headers[':event-type']
-          const data = jsonOf(frame.payload)
-
-          if (messageType === 'exception' || frame.headers[':exception-type']) {
-            const kind = frame.headers[':exception-type'] || 'Exception'
-            const msg = typeof data.message === 'string' ? data.message : ''
-            await reader.cancel().catch(() => undefined)
-            throw new Error(`${kind}${msg ? `: ${msg}` : ''}`)
-          }
-
-          // 后端只在部分模型的响应里回 modelId，抓到就用于界面回显
-          if (typeof data.modelId === 'string' && data.modelId) modelId = data.modelId
-
-          if (eventType === 'assistantResponseEvent' && typeof data.content === 'string') {
-            if (!firstByteMs) firstByteMs = Date.now() - startedAt
-            text += data.content
-            callbacks.onDelta(data.content)
-          }
-
-          // 推理型模型（opus-5 等）会先推一段 thinking，只计数不混进正文
-          if (eventType === 'reasoningContentEvent') {
-            const reasoning = (data.reasoningContentEvent ?? data) as { text?: unknown }
-            if (typeof reasoning.text === 'string') thinkingChars += reasoning.text.length
-          }
-        }
-      }
-
-      if (!text) {
-        lastError = thinkingChars
-          ? `只返回了 ${thinkingChars} 字思考内容，没有正文`
+      if (!read.text) {
+        lastError = read.thinkingChars
+          ? `只返回了 ${read.thinkingChars} 字思考内容，没有正文`
           : '接口返回了空响应，账号可能没有该模型的调用权限'
+        recorder.finish('error', lastError)
         if (index < CHAT_ENDPOINTS.length - 1) continue
         throw new Error(lastError)
       }
 
+      recorder.finish('success')
       return {
         endpoint: new URL(url).host,
-        text,
-        firstByteMs,
+        text: read.text,
+        firstByteMs: read.firstByteMs,
         totalMs: Date.now() - startedAt,
-        modelId,
-        thinkingChars: thinkingChars || undefined
+        modelId: read.modelId,
+        thinkingChars: read.thinkingChars || undefined
       }
     } catch (e) {
       lastError = errorMessage(e)
-      if (signal?.aborted) throw new Error('已取消')
+      if (signal?.aborted) {
+        recorder.finish('cancelled', '已取消')
+        throw new Error('已取消')
+      }
+      // 网络错误、超时、异常帧：前面没 finish 过的在这里补上原因
+      if (!recorder.raw.error) recorder.finish('error', lastError)
+      // 已经出过字：只能就此报错，换端点重发会让界面出现两段拼起来的回复
+      if (emitted) throw e
       // 授权类错误不再试下一个端点，直接冒泡让上层换 profileArn
       const status = (e as { status?: number }).status
       if (status !== undefined && (isAuthStatus(status) || status === 423)) throw e
@@ -507,19 +646,31 @@ async function streamWithArn(
  *
  * profileArn 按候选逐个实测（账号自己的真实 ARN → 不带），只要有一个能出字就算通。
  * 已经开始出字之后不再重试，避免界面上出现两段拼在一起的回复。
+ *
+ * 每一次尝试（profileArn × 端点）都留下原始返回：成功时放进结果的 raw，
+ * 失败时随 ChatTestError 抛出，界面两种情况都能查看。
  */
 export async function streamKiroChat(
   input: ChatTestInput,
   callbacks: ChatStreamCallbacks,
   signal?: AbortSignal
 ): Promise<ChatStreamResult> {
-  const candidates = await arnCandidatesFor(input.accessToken, input)
+  const trace: ChatRawAttempt[] = []
+  const fail = (e: unknown): ChatTestError => new ChatTestError(errorMessage(e), { attempts: trace })
+
+  let candidates: (string | undefined)[]
+  try {
+    candidates = await arnCandidatesFor(input.accessToken, input)
+  } catch (e) {
+    // 还没向对话接口发请求（查 profile 失败）：trace 为空，界面不显示查看按钮
+    throw fail(e)
+  }
   let lastError: unknown
 
   for (const [index, candidate] of candidates.entries()) {
     let started = false
     try {
-      return await streamWithArn(
+      const result = await streamWithArn(
         input,
         candidate,
         {
@@ -528,18 +679,19 @@ export async function streamKiroChat(
             callbacks.onDelta(delta)
           }
         },
+        trace,
         signal
       )
+      return { ...result, raw: { attempts: trace } }
     } catch (e) {
       lastError = e
-      if (signal?.aborted) throw new Error('已取消')
-      if (started || index === candidates.length - 1) throw e
+      if (signal?.aborted) throw fail(new Error('已取消'))
+      if (started || index === candidates.length - 1) throw fail(e)
     }
   }
 
-  throw lastError instanceof Error ? lastError : new Error('对话测试失败')
+  throw fail(lastError instanceof Error ? lastError : new Error('对话测试失败'))
 }
-
 
 // ============ API Key（ksk_）真实对话测活 ============
 
@@ -573,6 +725,9 @@ export async function streamApiKeyChat(
   const body = JSON.stringify(buildPayload(chatInput, undefined))
   const url = apiKeyChatEndpoint(region)
   const startedAt = Date.now()
+  // API Key 只有一个端点、不带 profileArn，trace 里就这一次
+  const trace: ChatRawAttempt[] = []
+  const recorder = new RawRecorder(trace, url)
 
   try {
     const res = await httpStream(url, {
@@ -581,69 +736,40 @@ export async function streamApiKeyChat(
       body,
       signal
     })
+    recorder.response(res.status, res.headers)
 
     if (!res.ok || !res.body) {
       const raw = await res.text().catch(() => '')
+      recorder.body(raw)
       throw new Error(`HTTP ${res.status}: ${raw.slice(0, 300) || '没有响应体'}`)
     }
 
-    const reader = res.body.getReader()
-    let buffer: Buffer = Buffer.alloc(0)
-    let text = ''
-    let firstByteMs = 0
-    let modelId: string | undefined
-    let thinkingChars = 0
+    const read = await readChatStream(res.body, recorder, startedAt, callbacks.onDelta)
 
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer = Buffer.concat([buffer, Buffer.from(value)])
-      const parsed = takeFrames(buffer)
-      buffer = parsed.rest
-
-      for (const frame of parsed.frames) {
-        const messageType = frame.headers[':message-type']
-        const eventType = frame.headers[':event-type']
-        const data = jsonOf(frame.payload)
-
-        if (messageType === 'exception' || frame.headers[':exception-type']) {
-          const kind = frame.headers[':exception-type'] || 'Exception'
-          const msg = typeof data.message === 'string' ? data.message : ''
-          await reader.cancel().catch(() => undefined)
-          throw new Error(`${kind}${msg ? `: ${msg}` : ''}`)
-        }
-
-        if (typeof data.modelId === 'string' && data.modelId) modelId = data.modelId
-        if (eventType === 'assistantResponseEvent' && typeof data.content === 'string') {
-          if (!firstByteMs) firstByteMs = Date.now() - startedAt
-          text += data.content
-          callbacks.onDelta(data.content)
-        }
-        if (eventType === 'reasoningContentEvent') {
-          const reasoning = (data.reasoningContentEvent ?? data) as { text?: unknown }
-          if (typeof reasoning.text === 'string') thinkingChars += reasoning.text.length
-        }
-      }
-    }
-
-    if (!text) {
+    if (!read.text) {
       throw new Error(
-        thinkingChars
-          ? `只返回了 ${thinkingChars} 字思考内容，没有正文`
+        read.thinkingChars
+          ? `只返回了 ${read.thinkingChars} 字思考内容，没有正文`
           : '接口返回了空响应，Key 可能没有该模型的调用权限或额度已用尽'
       )
     }
 
+    recorder.finish('success')
     return {
       endpoint: new URL(url).host,
-      text,
-      firstByteMs,
+      text: read.text,
+      firstByteMs: read.firstByteMs,
       totalMs: Date.now() - startedAt,
-      modelId,
-      thinkingChars: thinkingChars || undefined
+      modelId: read.modelId,
+      thinkingChars: read.thinkingChars || undefined,
+      raw: { attempts: trace }
     }
   } catch (error) {
-    if (signal?.aborted) throw new Error('已取消')
-    throw error
+    if (signal?.aborted) {
+      recorder.finish('cancelled', '已取消')
+      throw new ChatTestError('已取消', { attempts: trace })
+    }
+    recorder.finish('error', errorMessage(error))
+    throw new ChatTestError(errorMessage(error), { attempts: trace })
   }
 }

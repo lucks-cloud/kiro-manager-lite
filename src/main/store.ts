@@ -76,8 +76,8 @@ interface Schema {
   machineIdBackup: MachineIdBackup | null
   /** 本地反代配置 */
   proxyConfig: ProxyConfig
-  /** 本地反代按账号累计的用量 */
-  proxyUsage: ProxyAccountUsage[]
+  /** 升级前的反代按账号用量；现存于 proxyUsageStore，这里只在迁移时读一次 */
+  proxyUsage?: ProxyAccountUsage[]
   /** 从账号拉回的模型列表 */
   proxyModels: ProxyModelCache | null
   /** Codex 模型目录的模板条目（取自本机 Codex 自带目录） */
@@ -88,8 +88,8 @@ interface Schema {
   proxyClientPaths: Record<string, string>
   /** 自定义的反代 API Key（默认 Key 仍在 proxyConfig.apiKey） */
   proxyApiKeys: ProxyApiKey[]
-  /** 按 Key 的用量，键是 Key 的 id */
-  proxyKeyUsage: Record<string, ProxyKeyUsage>
+  /** 升级前的反代按 Key 用量；现存于 proxyUsageStore，这里只在迁移时读一次 */
+  proxyKeyUsage?: Record<string, ProxyKeyUsage>
   /** 一次性迁移标记：载荷上限默认值 900 → 153600，见 migratePayloadDefault */
   proxyPayloadDefault153600: boolean
   /** 一次性迁移标记：强制校验 API Key 统一打开，见 migratePayloadDefault */
@@ -110,13 +110,11 @@ const store = new Store<Schema>({
     shellApproveBackup: null,
     machineIdBackup: null,
     proxyConfig: DEFAULT_PROXY_CONFIG,
-    proxyUsage: [],
     proxyModels: null,
     proxyCodexTemplate: null,
     proxyClientBackups: {},
     proxyClientPaths: {},
     proxyApiKeys: [],
-    proxyKeyUsage: {},
     proxyPayloadDefault153600: false,
     proxyRequireKeyDefault: false,
     kiroCliEnvBackup: null
@@ -138,6 +136,16 @@ let snapshot: Schema | null = null
 function read<K extends keyof Schema>(key: K): Schema[K] {
   snapshot ??= store.store
   return structuredClone(snapshot[key])
+}
+
+/**
+ * 不拷贝，直接返回快照里的对象，只给只读调用方用。
+ * 账号数据约 2MB，深拷贝一次在主线程上要 1ms 多；反代每个请求选号都要读一遍，
+ * 走这条路省掉这次拷贝。返回值不能修改，要改的调用方用 read（经 write 才生效）。
+ */
+function peek<K extends keyof Schema>(key: K): Readonly<Schema[K]> {
+  snapshot ??= store.store
+  return snapshot[key]
 }
 
 function write<K extends keyof Schema>(key: K, value: Schema[K]): void {
@@ -169,14 +177,6 @@ export function setProxyApiKeys(keys: ProxyApiKey[]): void {
   write('proxyApiKeys', keys)
 }
 
-export function getProxyKeyUsage(): Record<string, ProxyKeyUsage> {
-  const raw = read('proxyKeyUsage') as Record<string, ProxyKeyUsage> | undefined
-  return raw && typeof raw === 'object' ? raw : {}
-}
-
-export function setProxyKeyUsage(usage: Record<string, ProxyKeyUsage>): void {
-  write('proxyKeyUsage', usage)
-}
 
 export function getProxyCodexTemplate(): Record<string, unknown> | null {
   const raw = read('proxyCodexTemplate') as Record<string, unknown> | null | undefined
@@ -199,11 +199,11 @@ export function setProxyModels(cache: ProxyModelCache): void {
 // ============ 本地反代 ============
 
 /**
- * 一次性迁移：把旧版本落盘的载荷上限默认值 900 迁到当前默认值 153600。
+ * 一次性迁移：磁盘上存的载荷上限若是旧默认值 900，迁到当前默认值 153600。
  *
  * 只靠 DEFAULT_PROXY_CONFIG 不够：saveProxyConfig 每次都把「默认值 + 改动」整份写回，
- * 所以旧版本里只要保存过任何一项参数，900 就已经作为实值落了盘，新默认值永远盖不上去。
- * 这里把「恰好等于旧默认值」的存值当成没设置过，删掉让它回落到新默认。
+ * 只要保存过任何一项参数，900 就已经作为实值落了盘，默认值盖不上去。
+ * 这里把「恰好等于旧默认值」的存值当成没设置过，删掉让它回落到当前默认。
  *
  * 只跑一次（用标记记住）：迁移之后用户如果自己把它设成 900，那是有意的，不能再被改掉。
  */
@@ -226,7 +226,7 @@ function migratePayloadDefault(): void {
 
 /**
  * 一次性迁移：强制校验 API Key 默认打开。
- * 与载荷上限同理，旧版本保存过任何参数后 requireApiKey 已作为实值落盘，新默认值盖不上去，
+ * 与载荷上限同理，保存过任何参数后 requireApiKey 已作为实值落盘，默认值盖不上去，
  * 所以对已有配置统一打开一次。之后用户自己关掉是有意的，不再改回来。
  */
 function migrateRequireKeyDefault(): void {
@@ -241,7 +241,7 @@ export function getProxyConfig(): ProxyConfig {
   const merged = { ...DEFAULT_PROXY_CONFIG, ...(read('proxyConfig') as Partial<ProxyConfig>) }
   /*
    * 界面上没有「一律用默认模型」这个选项，模型一律跟随客户端。
-   * 旧版本存过 force 的用户没有地方能改回来，所以在唯一的读取入口上归一掉，
+   * 配置里存着 force 的用户没有地方能改回来，所以在唯一的读取入口上归一掉，
    * 否则他们会一直被锁在默认模型上，客户端里怎么切都没用。
    */
   merged.modelMode = 'client'
@@ -249,9 +249,9 @@ export function getProxyConfig(): ProxyConfig {
 }
 
 /**
- * 旧版本的调度字段换算成现在的策略，保证升级后选号结果不变：
+ * 已存配置里的旧调度字段换算成当前策略，保证选号结果不变：
  *  - single + accountId      → selected + [accountId]
- *  - roundRobin + poolIds 非空 → selected + poolIds（原来就是在这几个号里轮询）
+ *  - roundRobin + poolIds 非空 → selected + poolIds（旧字段的含义就是在这几个号里轮询）
  * 换算后删掉旧字段；下次保存时写回的就是新形状，这里不会再命中。
  */
 function normalizeAccountStrategy(config: ProxyConfig): ProxyConfig {
@@ -278,13 +278,26 @@ export function saveProxyConfig(patch: Partial<ProxyConfig>): ProxyConfig {
   return merged
 }
 
-export function getProxyUsage(): ProxyAccountUsage[] {
-  const raw = read('proxyUsage') as ProxyAccountUsage[] | undefined
-  return Array.isArray(raw) ? raw : []
-}
-
-export function setProxyUsage(usage: ProxyAccountUsage[]): void {
-  write('proxyUsage', usage)
+/**
+ * 取出主库里残留的反代用量统计并从主库删掉。
+ * 统计存在单独的 kiro-proxy-usage 文件（见 proxyUsageStore），这里只在首次载入时调一次，
+ * 把主库里残留的数据交过去。
+ */
+export function takeLegacyProxyUsage(): {
+  accounts: ProxyAccountUsage[]
+  keys: Record<string, ProxyKeyUsage>
+} {
+  const accounts = read('proxyUsage') as ProxyAccountUsage[] | undefined
+  const keys = read('proxyKeyUsage') as Record<string, ProxyKeyUsage> | undefined
+  if (store.has('proxyUsage') || store.has('proxyKeyUsage')) {
+    store.delete('proxyUsage')
+    store.delete('proxyKeyUsage')
+    snapshot = null
+  }
+  return {
+    accounts: Array.isArray(accounts) ? accounts : [],
+    keys: keys && typeof keys === 'object' ? keys : {}
+  }
 }
 
 export function getProxyClientBackup(target: string): ProxyClientBackup | null {
@@ -338,7 +351,7 @@ export function getShellApproveBackup(): ShellApproveBackup | null {
   const raw = read('shellApproveBackup') as Record<string, unknown> | null | undefined
   if (!raw || typeof raw !== 'object') return null
 
-  // 1.0.4 之前只备份 permissions.yaml，字段平铺在顶层，这里做一次形状升级
+  // 1.0.4 以下版本写的备份只含 permissions.yaml、字段平铺在顶层，读取时换算成当前形状
   if (typeof raw.content === 'string' && !raw.yaml && !raw.settings) {
     return {
       savedAt: Number(raw.savedAt) || Date.now(),
@@ -367,10 +380,9 @@ const VALID_SUBSCRIPTION_TYPES = new Set<string>([
 /**
  * 按 title 重新对齐订阅档位，就地改写并落盘。
  *
- * subscription.type 是从 title 派生出来的持久化值。早前的判定把 POWER 并进了
- * 'Enterprise'，而 Enterprise 根本不是订阅档位（它是登录方式），于是磁盘上一大批
- * Power 账号至今存着 'Enterprise'。只改判定逻辑不会动到已存的值，
- * 筛选面板里的 Power 会一直是 0，除非把每个账号的用量都重新刷一遍。
+ * subscription.type 是从 title 派生出来的持久化值。磁盘上可能有 Power 账号存着
+ * 'Enterprise'，而 Enterprise 不是订阅档位（它是登录方式）。判定逻辑只作用于新算出的值，
+ * 不重新对齐的话已存的值不会变，筛选面板里的 Power 会一直是 0，除非把每个账号的用量都重新刷一遍。
  *
  * 放在这个唯一读取入口上做，比放在渲染进程的 store.load() 里可靠：后者只在 load
  * 时跑一次，热重载或 store 状态被保留时根本不会执行。
@@ -397,8 +409,19 @@ function alignSubscriptionTypes(data: AccountStoreData): AccountStoreData {
   return data
 }
 
+/** 账号数据的独立副本：调用方可以修改，改完经 setAccountData 落盘 */
 export function getAccountData(): AccountStoreData {
   const data = read('accountData') as AccountStoreData | undefined
+  if (!data || !Array.isArray(data.accounts)) return EMPTY_DATA
+  return alignSubscriptionTypes(data)
+}
+
+/**
+ * 账号数据的只读视图（不拷贝），给反代选号、健康检查、IPC 下发这类只读不写的场景。
+ * 订阅档位同样会对齐：对齐是在快照上就地改写并落盘，和走 getAccountData 结果一致。
+ */
+export function viewAccountData(): Readonly<AccountStoreData> {
+  const data = peek('accountData') as AccountStoreData | undefined
   if (!data || !Array.isArray(data.accounts)) return EMPTY_DATA
   return alignSubscriptionTypes(data)
 }
@@ -436,14 +459,14 @@ export function getSettings(): AppSettings {
   const { darkMode, ...rest } = raw
   const merged: AppSettings = { ...DEFAULT_SETTINGS, ...rest }
   /*
-   * 旧版只有一个 darkMode 开关。没选过主题风格的老用户按它换算，升级后明暗不变；
-   * 不能直接落到新默认的「自动」，否则开着浅色的人会在系统深色时突然变黑。
+   * 已存设置里可能只有 darkMode 开关而没有 themeMode，此时按 darkMode 换算，明暗保持不变；
+   * 不能直接落到默认的「自动」，否则开着浅色的人会在系统深色时突然变黑。
    * 旧键在下一次保存时自然被丢掉（rest 里已经没有它）。
    */
   if (rest.themeMode === undefined && typeof darkMode === 'boolean') {
     merged.themeMode = darkMode ? 'dark' : 'light'
   }
-  // 开发期间有过「跟随系统强调色」，存的是 system 这个非色值，回到默认紫
+  // 存值不是十六进制色值（如 system）时回到默认紫
   if (!/^#[0-9a-f]{6}$/i.test(merged.primaryColor)) merged.primaryColor = DEFAULT_PRIMARY_COLOR
   return merged
 }
@@ -468,13 +491,13 @@ export function getKeyData(): KeyGatewayData {
   if (!merged.ports || typeof merged.ports.krs !== 'number' || typeof merged.ports.cps !== 'number') {
     merged.ports = { ...DEFAULT_KEY_GATEWAY_DATA.ports }
   }
-  // 1.0.6 之前区域是全局一个，迁移到每个 Key 自带：旧 Key 沿用当时的全局值
+  // 区域按 Key 各存一份；没有 region 的 Key（1.0.6 以下版本写入）沿用顶层的全局区域
   const fallbackRegion = String(merged.region || DEFAULT_KEY_GATEWAY_DATA.region).trim()
   merged.region = fallbackRegion || DEFAULT_KEY_GATEWAY_DATA.region
   merged.keys = merged.keys.map((entry) =>
     entry.region ? entry : { ...entry, region: merged.region }
   )
-  // 当前 Key 只属于已开启的网关；兼容旧版本关闭后仍保留 activeKeyId 的数据。
+  // 当前 Key 只属于已开启的网关；网关关闭或 activeKeyId 指向不存在的 Key 时清空。
   if (!merged.enabled || !merged.keys.some((entry) => entry.id === merged.activeKeyId)) {
     merged.activeKeyId = null
   }

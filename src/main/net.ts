@@ -131,6 +131,7 @@ function buildInit(
  */
 export interface HttpHeaders {
   get: (name: string) => string | null
+  forEach: (callback: (value: string, name: string) => void) => void
   /** 多条 set-cookie 必须分开取，get('set-cookie') 会拼成一串没法可靠切分 */
   getSetCookie: () => string[]
 }
@@ -149,6 +150,7 @@ export interface HttpResponse {
 export interface HttpStreamResponse {
   ok: boolean
   status: number
+  headers: HttpHeaders
   /** 响应体的字节流，调用方自己按协议解析（如 AWS event-stream） */
   body: ReadableStream<Uint8Array> | null
   text: () => Promise<string>
@@ -185,6 +187,7 @@ export async function httpStream(
     return {
       ok: res.ok,
       status: res.status,
+      headers: res.headers,
       body: res.body as ReadableStream<Uint8Array> | null,
       text: () => res.text()
     }

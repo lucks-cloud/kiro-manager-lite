@@ -19,7 +19,7 @@ import { httpStream } from './net'
 import { log } from './logger'
 import { refreshAccountToken } from './accountService'
 import { sleep } from './utils'
-import { getAccountData, getKeyData, getProxyModels, setAccountData, setProxyModels } from './store'
+import { getAccountData, getKeyData, getProxyModels, setAccountData, setProxyModels, viewAccountData } from './store'
 import type {
   Account,
   KeyEntry,
@@ -70,6 +70,8 @@ export interface UpstreamResult {
   attempts: number
   /** 每次失败的说明，用于日志里展示重试过程 */
   retries: string[]
+  /** 上游回报的模型 id；上游没回报为空。实测 Kiro 对 auto 不回具体模型（不回或原样回 "auto"），只有点名模型时才回那个模型 */
+  reportedModel?: string
 }
 
 /** 上游返回的错误，带状态码便于分类 */
@@ -190,7 +192,8 @@ export function poolMembers(options: AccountPoolOptions): PoolMember[] {
     ).map((key) => ({ kind: 'apiKey', id: key.id, email: keyLabel(key), key }))
   }
 
-  const scoped = inScope(getAccountData().accounts, options)
+  // 只读视图：选号只筛选、不改账号，省掉每个请求一次 2MB 的深拷贝
+  const scoped = inScope(viewAccountData().accounts as Account[], options)
   const usable = scoped.filter(
     (account) =>
       !!account.credentials.refreshToken && account.status !== 'banned' && account.status !== 'expired'
@@ -399,9 +402,15 @@ class ToolAssembler {
   }
 }
 
-/** 模型上下文窗口，用于把 contextUsagePercentage 换算成 token 数 */
+/**
+ * 模型上下文窗口，用于把 contextUsagePercentage 换算成 token 数。
+ * 优先用账号拉回的模型列表里的真实上限；列表里没有（还没刷新、auto）才按名字猜：
+ * 4.6 / 4.7 / 4.8 以及 5、5.1、5.5、5.6 这几代都是 1M。
+ */
 function contextWindow(modelId: string): number {
-  return /4\.6|4\.7|4\.8|-5$/.test(modelId) ? 1_000_000 : 200_000
+  const known = getProxyModels()?.models.find((m) => m.modelId === modelId)?.maxInputTokens
+  if (known && known > 0) return known
+  return /4\.[678]|-5(\.\d+)?$/.test(modelId) ? 1_000_000 : 200_000
 }
 
 interface ParseOutcome {
@@ -411,6 +420,23 @@ interface ParseOutcome {
   toolCalls: number
   /** 收到过任何输出（正文 / 思考 / 工具） */
   sawOutput: boolean
+  /** 上游在事件里回报的模型 id；上游不回这个字段时为空。实测 Kiro 对 auto 不回具体模型（不回或原样回 "auto"），只有点名模型时才回那个模型 */
+  reportedModel?: string
+}
+
+/**
+ * 在事件载荷里找上游回报的模型 id：顶层的 modelId，或往下一层对象里的 modelId。
+ * 官方 SDK 的文本事件（AssistantResponseEvent）定义了这个字段，其余事件是否带取决于后端，所以都看一眼。
+ */
+function findReportedModel(data: Record<string, unknown>): string | undefined {
+  if (typeof data.modelId === 'string' && data.modelId) return data.modelId
+  for (const value of Object.values(data)) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      const inner = (value as Record<string, unknown>).modelId
+      if (typeof inner === 'string' && inner) return inner
+    }
+  }
+  return undefined
 }
 
 async function parseStream(
@@ -427,6 +453,7 @@ async function parseStream(
   let contextPercent = 0
   let toolCalls = 0
   let sawOutput = false
+  let reportedModel: string | undefined
 
   const assembler = new ToolAssembler(
     (name) => toolNameMap.get(name) ?? name,
@@ -456,6 +483,9 @@ async function parseStream(
         await reader.cancel().catch(() => undefined)
         throw new UpstreamError(`${kind}${detail ? `: ${detail}` : ''}`)
       }
+
+      // 以最后一次回报为准：同一个请求里各事件报的应当一致，这样即使只有个别事件带它也能拿到
+      reportedModel = findReportedModel(data) ?? reportedModel
 
       switch (eventType) {
         case 'assistantResponseEvent':
@@ -500,9 +530,21 @@ async function parseStream(
   return {
     stopReason,
     credits,
-    inputTokens: contextPercent ? Math.round((contextPercent * contextWindow(modelId)) / 100) : 0,
+    /*
+     * contextUsagePercentage 是相对实际模型的窗口算的，所以要按实际模型换算。
+     * 上游回报了具体模型就用它（以后官方若对 auto 回报，换算也跟着对）；
+     * 否则用请求的模型，auto 拿不到实际模型只能按 200K 保守估。
+     */
+    inputTokens: contextPercent
+      ? Math.round(
+          (contextPercent *
+            contextWindow(reportedModel && reportedModel !== 'auto' ? reportedModel : modelId)) /
+            100
+        )
+      : 0,
     toolCalls,
-    sawOutput
+    sawOutput,
+    reportedModel
   }
 }
 
@@ -548,7 +590,7 @@ function withProfileArn(payload: Record<string, unknown>, arn?: string): Record<
  * 每个账号的 profileArn 候选缓存，避免每次请求都问一遍上游。
  *
  * 按账号而不是按 accessToken 存：profileArn 属于账号，不随 token 轮换而变。
- * 早先按 token 哈希存，token 大约每小时换一次，换完后的第一个请求必定缓存不命中，
+ * 若按 token 存，token 大约每小时换一次，换完后的第一个请求必定缓存不命中，
  * 要先多打一次 ListAvailableProfiles（Builder ID / IdC 都会走这一步），首字因此多等几百毫秒。
  * sig 记下会影响候选的字段，账号重新登录、换了 profile 时自动失效；
  * 用这份候选全部被拒（授权类错误）时由 dropArnCache 清掉，下次重新问。
@@ -765,6 +807,7 @@ export async function callUpstream(
           endpoint: result.endpoint,
           stopReason: outcome.stopReason || (outcome.toolCalls ? 'tool_use' : 'end_turn'),
           credits: outcome.credits,
+          reportedModel: outcome.reportedModel,
           inputTokens: outcome.inputTokens,
           toolCalls: outcome.toolCalls,
           attempts,

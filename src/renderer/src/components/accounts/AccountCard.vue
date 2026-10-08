@@ -794,7 +794,7 @@ function onCardClick(): void {
  * 而 auto 会把新腾出来的空间照单全收，所以「加空间再抵掉」也没用 ——
  * 想缩小按钮上方的间距，只能真的把 gap 调小。
  *
- * 顺带一提：AccountsView 的行高计算按形态取这个 gap，改这里要同步改那边。
+ * AccountsView 的行高计算按形态取这个 gap，改这里要同步改那边。
  */
 .account-card.mode-compact {
   gap: 8px;

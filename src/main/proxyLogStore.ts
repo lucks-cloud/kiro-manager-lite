@@ -47,12 +47,12 @@ export function bindProxyLogSource(
  * 读回上次的日志。
  *
  * 上次退出时还在排队或输出中的请求，连接早就没了，永远不会再有结果；
- * 原样显示成「输出中」会让人以为它还在跑，所以改成失败并说明原因。
+ * 原样显示成「输出中」会让人以为它还在跑，所以读回时标成失败并说明原因。
  */
 export function loadProxyLogs(): { logs: ProxyLogEntry[]; stats: ProxyStats } {
   const raw = store.get('logs') as ProxyLogEntry[] | undefined
   const logs = (Array.isArray(raw) ? raw : []).slice(0, LOG_CAPACITY).map((entry) => {
-    // 旧版本的日志没有这两个字段，补上免得界面取 .length 时报错
+    // 已存日志可能缺这两个字段，补上免得界面取 .length 时报错
     const fixed: ProxyLogEntry = {
       ...entry,
       inputTypes: entry.inputTypes ?? [],
