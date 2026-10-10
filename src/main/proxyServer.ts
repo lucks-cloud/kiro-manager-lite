@@ -86,6 +86,7 @@ import {
   PAYLOAD_LIMIT_MIN_KB
 } from '../shared/types'
 import { setKeepAlive } from './net'
+import { rememberSearch, restoreSearchResults, searchMarker } from './searchMemory'
 
 /** 配置里的数值夹到可用范围；缺失或非数字（旧配置、手改配置文件）回落默认值 */
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
@@ -1038,16 +1039,25 @@ async function handleChat(ctx: HandleContext): Promise<void> {
      */
     // 名字以 websearch / web_search 结尾的都算（VS Code 扩展的工具名形如 xxx_webSearch）
     const clientSearch = request.tools.some(
-      (tool) => tool.name !== WEB_SEARCH_TOOL && /(^|[_\-.])web_?search$/i.test(tool.name)
+      (tool) => !tool.managed && /(^|[_\-.])web_?search$/i.test(tool.name)
     )
-    if (!clientSearch && !request.tools.some((tool) => tool.name === WEB_SEARCH_TOOL)) {
+    if (!clientSearch && !request.tools.some((tool) => tool.managed)) {
       request.tools.push(webSearchToolSpec())
     }
-    request.webSearch = { maxUses: MAX_WEB_SEARCH_ROUNDS }
+    /*
+     * 客户端自己声明了同名 web_search（DeepSeek Harness 等，参数形如 queries 数组）时，
+     * 这是客户端执行的普通工具，反代不拦截，调用原样交回客户端。
+     */
+    const clientOwnsName = request.tools.some((tool) => !tool.managed && tool.name === WEB_SEARCH_TOOL)
+    request.webSearch = clientOwnsName ? undefined : { maxUses: MAX_WEB_SEARCH_ROUNDS }
   } else {
     // 纯客户端执行：反代不注入、不拦截任何工具，模型发出的调用原样交给客户端
     request.webSearch = undefined
   }
+
+  // 历史里反代做过的搜索，把当时的结果补回去，原因见 searchMemory
+  const restoredSearches = restoreSearchResults(request.messages)
+  if (restoredSearches) log('debug', `[Proxy] 已为历史补回 ${restoredSearches} 次联网搜索的结果`)
 
   const payloadLimit = payloadLimitBytes()
   const { payload, toolNameMap, estimatedInputTokens } = buildKiroPayload(
@@ -1258,6 +1268,8 @@ async function handleChat(ctx: HandleContext): Promise<void> {
           const results = await searchWithPool(query)
           searchesDone++
           text = formatSearchResults(query, results)
+          // 结果留给后续请求：模型搜完接着调客户端工具时，客户端历史里没有这些结果
+          rememberSearch(query, text)
           /*
            * 客户端能认出原生搜索项的，把这次搜索按它的格式补上（其余客户端照旧只看到最终回答）：
            *  - Anthropic 且声明了服务端搜索（Claude 桌面版）：server_tool_use + web_search_tool_result，显示来源
@@ -1274,6 +1286,16 @@ async function handleChat(ctx: HandleContext): Promise<void> {
           } else if (writer instanceof ResponsesSseWriter) {
             ensureStreamStarted()
             writer.webSearchCall(query)
+          } else {
+            /*
+             * 其余客户端没有原生搜索项，在正文里写一行搜索标记：用户能看到搜了什么，
+             * 客户端也会把这行带回历史，下次请求据此补回结果（见 searchMemory）。
+             */
+            const marker = `${collected.text && !collected.text.endsWith('\n') ? '\n\n' : ''}${searchMarker(query)}\n\n`
+            collected.text += marker
+            markOutput(entry, 'text')
+            ensureStreamStarted()
+            writer?.text(marker)
           }
         } catch (error) {
           // 搜失败就把失败原因作为工具结果交回模型，让它自己决定怎么办，

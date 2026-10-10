@@ -30,7 +30,7 @@ import type {
   ProxyEndpoint,
   ProxyModelCache
 } from '../shared/types'
-import type { StreamToolCall } from './proxyConvert'
+import { repairPatchCall, type StreamToolCall } from './proxyConvert'
 
 /** 上游端点候选 */
 interface EndpointSpec {
@@ -461,7 +461,7 @@ async function parseStream(
       toolCalls++
       sawOutput = true
       onFlush()
-      callbacks.onToolCall(call)
+      callbacks.onToolCall(repairPatchCall(call))
     }
   )
 

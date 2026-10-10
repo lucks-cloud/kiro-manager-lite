@@ -17,6 +17,15 @@ const KIRO_AUTH_TOKEN_FILE = 'kiro-auth-token.json'
 const KIRO_AUTH_TOKEN_PATH = path.join(KIRO_SSO_CACHE_DIR, KIRO_AUTH_TOKEN_FILE)
 
 /**
+ * 渲染层传来的凭证文件路径只认 SSO 缓存目录下直属的 .json 文件，
+ * 其余一律返回 undefined，避免借此在文件管理器里定位任意路径。
+ */
+export function ssoCacheFile(target: string): string | undefined {
+  const file = path.resolve(String(target ?? ''))
+  return path.dirname(file) === KIRO_SSO_CACHE_DIR && file.endsWith('.json') ? file : undefined
+}
+
+/**
  * Kiro IDE 源码里给 BuilderId 硬编码的占位符 ARN。
  *
  * 两个用途，别混：IDE 内部逻辑依赖 token 文件里存在该字段；

@@ -271,7 +271,20 @@ function claudeBehavesAs(m: KiroModelInfo): string | undefined {
  * 默认按 200K 算、过早压缩；带上后缀它按 1M 算，发请求前会自己去掉后缀，反代收到的还是原名。
  */
 function claudeCodeModel(m: KiroModelInfo): string {
-  return modelInputTokens(m) >= 1_000_000 ? `${m.modelId}[1m]` : m.modelId
+  const id = claudeCodeId(m.modelId)
+  return modelInputTokens(m) >= 1_000_000 ? `${id}[1m]` : id
+}
+
+/**
+ * Claude 系模型在 Claude Code 里改名为 kiro-<家族>-<版本>（claude-sonnet-4.5 → kiro-sonnet-4.5）。
+ *
+ * Claude Code 内置一张官方模型的退役表：ID 里能认出已退役的官方型号（claude-sonnet-4.5、
+ * claude-sonnet-4，加前缀也一样认得出），/model 选择器就直接不列这一行。
+ * Kiro 还在提供这些模型，去掉 claude- 后它不再当成官方型号，行照常显示；
+ * 能力仍由 behavesAs 借（见 claudeBehavesAs），反代收到 kiro- 开头的名字会还原成真实 ID。
+ */
+function claudeCodeId(modelId: string): string {
+  return modelId.startsWith('claude-') ? `kiro-${modelId.slice('claude-'.length)}` : modelId
 }
 
 /** 固定档位（opus / sonnet / haiku 别名）的能力声明，Claude Code 认不出 Kiro 的 ID 时靠它开档位 */
@@ -462,7 +475,67 @@ function dshEfforts(options: string[] | undefined): { key: string; wire: string 
  * （实测已经出现过 ui-settings-general 的 welcomeNoticeVersion）。
  * 所以不能整份覆盖，否则每次重新写入都会把用户在 dsh 里的设置清掉。
  */
-const DSH_OWNED_IDS = ['agent-default-model', 'llm-pi-ai']
+const DSH_OWNED_IDS = ['agent-default-model', 'llm-pi-ai', 'web-search-deepseek']
+
+/**
+ * dsh 的 web_search 由它自己执行：内置搜索后端向 `<baseURL>/messages` 发一个只挂
+ * Anthropic 服务端搜索工具（web_search_20250305）的请求，从返回的
+ * web_search_tool_result 块里取来源。默认打到 DeepSeek 官方，要 DEEPSEEK_API_KEY。
+ * 把它的 baseURL 指到反代，反代用 Kiro 的搜索按同样的格式回，dsh 的搜索就能直接用，
+ * 界面里也照常显示来源卡片。
+ *
+ * 这个后端只认凭证引用（apiKeyEnv），值从 dsh 的凭证文件取，
+ * 所以 Key 另写进 $DSH_HOME/.credentials.yaml 的 refs 里，引用名用下面这个。
+ */
+const DSH_SEARCH_KEY_REF = 'KIRO_MANAGER_LITE_API_KEY'
+
+function dshCredentialsPath(): string {
+  return path.join(dshHome(), '.credentials.yaml')
+}
+
+/**
+ * 在凭证文件的 refs 段里写入 / 删除我们那一个引用，其余内容逐行原样保留。
+ *
+ * 文件结构固定：顶层只有 version、refs、records 三段，refs 下每行一个 `NAME: value`。
+ * dsh 加载时会严格校验，所以只做按行的最小改动；文件不存在时按它的格式新建。
+ * dsh 拒绝加载其他用户可读的凭证文件，写完固定成 600。
+ */
+async function setDshSearchKey(value: string | null): Promise<void> {
+  const file = dshCredentialsPath()
+  const existing = await readTextIfExists(file)
+  if (existing === null && value === null) return
+  const keyLine = (line: string): boolean => new RegExp(`^\\s+${DSH_SEARCH_KEY_REF}\\s*:`).test(line)
+
+  const lines = (existing ?? 'version: 1\n').split(/\r?\n/).filter((line) => !keyLine(line))
+  const refsIndex = lines.findIndex((line) => /^refs:\s*(\{\s*\})?\s*$/.test(line))
+
+  if (value !== null) {
+    const entry = `  ${DSH_SEARCH_KEY_REF}: ${yamlString(value)}`
+    if (refsIndex === -1) {
+      const versionIndex = lines.findIndex((line) => /^version:/.test(line))
+      const at = versionIndex === -1 ? 0 : versionIndex + 1
+      lines.splice(at, 0, 'refs:', entry)
+    } else {
+      lines[refsIndex] = 'refs:'
+      lines.splice(refsIndex + 1, 0, entry)
+    }
+  } else if (refsIndex !== -1) {
+    // refs 段被摘空时连段名一起去掉：空的 `refs:` 是 null，dsh 会判为类型错误
+    const next = lines[refsIndex + 1]
+    if (next === undefined || !/^\s+\S/.test(next)) lines.splice(refsIndex, 1)
+  }
+
+  const content = lines.join('\n').replace(/\n*$/, '\n')
+  await writeFileAtomic(file, content)
+  await fs.chmod(file, 0o600).catch(() => undefined)
+}
+
+/** 两个 dsh 目标共用这一个引用：另一个还处于写入状态时还原不能删 */
+async function releaseDshSearchKey(target: ProxyClientTarget): Promise<void> {
+  const other: ProxyClientTarget = target === 'deepseek' ? 'deepseekApp' : 'deepseek'
+  if (getProxyClientBackup(other) !== null) return
+  await setDshSearchKey(null)
+}
 
 /**
  * 把 patch 文件拆成顶层行。
@@ -516,7 +589,9 @@ function buildDshConfig(info: ProxyTargetInfo, profile: string, existing?: strin
        * 值直接来自上游 tokenLimits.maxOutputTokens，就是这个模型的真实能力。
        */
       `            contextWindow: ${modelInputTokens(m)}`,
-      `            maxTokens: ${modelOutputTokens(m)}`
+      `            maxTokens: ${modelOutputTokens(m)}`,
+      // 输入类型按上游报的来：不写时 dsh 只当纯文本模型，界面里不能发图片
+      `            input: [${modelTakesImages(m) ? '"text", "image"' : '"text"'}]`
     ]
     /*
      * 手写的模型默认不声明档位，Effort 菜单就不出现。
@@ -591,6 +666,11 @@ function buildDshConfig(info: ProxyTargetInfo, profile: string, existing?: strin
     `        defaultMaxTokens: ${FALLBACK_OUTPUT_TOKENS}`,
     '        models:',
     ...modelLines,
+    // 联网搜索后端指到反代，原因见 DSH_SEARCH_KEY_REF
+    '- id: web-search-deepseek',
+    '  config:',
+    `    apiKeyEnv: ${DSH_SEARCH_KEY_REF}`,
+    `    baseURL: ${yamlString(`${info.baseUrl}/v1`)}`,
     // dsh 自己写进来的行原样接在后面，不能整份覆盖掉用户在它界面里改的设置
     ...foreignDshRows(existing ?? ''),
     ''
@@ -618,6 +698,8 @@ async function applyDeepseek(info: ProxyTargetInfo): Promise<void> {
 async function writeDshProfile(info: ProxyTargetInfo, profile: string): Promise<void> {
   const file = dshProfilePath(profile)
   const existing = await readTextIfExists(file)
+  // 先写凭证再写 profile：profile 一落地就热重载，那时引用要已经能解析
+  await setDshSearchKey(info.apiKey)
   await writeFileAtomic(file, buildDshConfig(info, profile, existing))
 }
 
@@ -2695,6 +2777,11 @@ export function buildCodexCatalog(
        *  - 服务档位、套餐可见性、升级提示：都是 OpenAI 账号体系里的东西
        */
       prefer_websockets: false,
+      /*
+       * Responses Lite 会把工具定义挪进 input 里的 additional_tools 项并省略顶层 tools，
+       * 关掉后 Codex 每轮都在顶层 tools 里带完整工具，反代按标准 Responses 转换即可。
+       */
+      use_responses_lite: false,
       supports_reasoning_summaries: false,
       supports_reasoning_summary_parameter: false,
       default_reasoning_summary: 'none',
@@ -2744,7 +2831,18 @@ async function writeCodexCatalog(
   )
   try {
     const rendered = JSON.parse(
-      await runCodex(found.binary, ['debug', 'models', '-c', `model_catalog_json="${tomlString(file)}"`])
+      await runCodex(found.binary, [
+        'debug',
+        'models',
+        '-c',
+        `model_catalog_json="${tomlString(file)}"`,
+        /*
+         * 校验只看目录本身：把 provider 固定成内置的 openai，
+         * config.toml 根级的 model_provider 指向哪里（甚至指向一个不存在的表）都不影响结果
+         */
+        '-c',
+        'model_provider="openai"'
+      ])
     ) as { models?: { slug?: string }[] }
     if (rendered.models?.some((m) => m.slug === models[0]?.modelId)) {
       setProxyCodexTemplate(found.model)
@@ -2811,8 +2909,19 @@ function stripManagedBlock(content: string): string {
     `\\n*${escapeRegExp(MANAGED_BEGIN)}[\\s\\S]*?${escapeRegExp(MANAGED_END)}[^\\n]*\\n?`,
     'g'
   )
-  return content.replace(pattern, '\n')
+  const stripped = content.replace(pattern, '\n')
+  // 结束标记丢了（被别的程序改过）时，标记块认不全，至少把开头标记和我们的两行说明摘掉
+  return stripped
+    .split(/\r?\n/)
+    .filter((line) => line !== MANAGED_BEGIN && !MANAGED_COMMENTS.includes(line))
+    .join(content.includes('\r\n') ? '\r\n' : '\n')
 }
+
+/** 标记块开头的两行说明，与 applyCodexApp 写入的保持一致 */
+const MANAGED_COMMENTS = [
+  '# 桌面版只认全局默认 provider，所以这几行是全局生效的；',
+  '# 命令行版可以用 --profile 覆盖。在「本地反代」页面点「还原」即可撤销。'
+]
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -2850,8 +2959,7 @@ async function applyCodexApp(info: ProxyTargetInfo): Promise<void> {
 
   const block = [
     MANAGED_BEGIN,
-    '# 桌面版只认全局默认 provider，所以这几行是全局生效的；',
-    '# 命令行版可以用 --profile 覆盖。在「本地反代」页面点「还原」即可撤销。',
+    ...MANAGED_COMMENTS,
     `model = "${tomlString(info.model)}"`,
     `model_provider = "${CODEX_PROVIDER}"`,
     /*
@@ -2952,8 +3060,18 @@ async function applyCodex(info: ProxyTargetInfo): Promise<void> {
   const existing = await readTextIfExists(configFile)
   if (existing !== null) {
     let cleaned = existing.replace(LEGACY_MARKER, '')
+    /*
+     * 桌面版处于写入状态时，config.toml 根级的 model_provider 指着我们，
+     * 同名 provider 表是桌面版那段的一部分，删了它桌面版和 `codex` 都会报
+     * 「Model provider not found」起不来，所以这时只清 profiles 与旧名字。
+     */
+    const desktopOwned = new RegExp(
+      `^\\s*model_provider\\s*=\\s*"${escapeRegExp(CODEX_PROVIDER)}"`,
+      'm'
+    ).test(stripSections(existing))
     for (const name of [CODEX_PROVIDER, ...LEGACY_CODEX_NAMES]) {
       cleaned = removeSection(cleaned, `profiles.${name}`)
+      if (name === CODEX_PROVIDER && desktopOwned) continue
       cleaned = removeSection(cleaned, `model_providers.${name}`)
     }
     const newline = existing.includes('\r\n') ? '\r\n' : '\n'
@@ -3458,6 +3576,7 @@ export async function restoreProxyClient(
       })
     }
   }
+  if (target === 'deepseek' || target === 'deepseekApp') await releaseDshSearchKey(target)
   setProxyClientBackup(target, null)
   log('info', `[Proxy] 已还原 ${target} 写入前的配置`)
 

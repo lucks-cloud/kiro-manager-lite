@@ -6,7 +6,9 @@ import {
   ExclamationCircleFilled,
   ReloadOutlined
 } from '@ant-design/icons-vue'
+import PathMenu from '@/components/common/PathMenu.vue'
 import { useAccountsStore } from '@/stores/accounts'
+import { copyText } from '@/utils/ui'
 import type { SwitchAccountResult } from '@shared/types'
 
 const props = defineProps<{
@@ -39,6 +41,11 @@ watch(
   }
 )
 
+async function reveal(path: string): Promise<void> {
+  const res = await window.api.revealSsoCacheFile(path)
+  if (!res.success) message.error(res.error || '打开目录失败')
+}
+
 function close(): void {
   emit('update:open', false)
 }
@@ -60,7 +67,7 @@ async function restart(): Promise<void> {
 </script>
 
 <template>
-  <a-modal :open="props.open" width="520px" :footer="null" @cancel="close">
+  <a-modal :open="props.open" width="760px" centered :footer="null" @cancel="close">
     <template #title>
       <span class="title">
         <CheckCircleFilled v-if="verifyState === 'ok'" style="color: #52c41a" />
@@ -105,13 +112,29 @@ async function restart(): Promise<void> {
 
     <a-descriptions :column="1" size="small" class="detail">
       <a-descriptions-item label="Token 文件">
-        <span class="mono">{{ props.result?.tokenPath || '-' }}</span>
+        <PathMenu
+          v-if="props.result?.tokenPath"
+          :path="props.result.tokenPath"
+          @reveal="reveal(props.result.tokenPath)"
+        />
+        <span v-else class="mono">-</span>
       </a-descriptions-item>
       <a-descriptions-item v-if="props.result?.clientRegPath" label="客户端注册">
-        <span class="mono">{{ props.result.clientRegPath }}</span>
+        <PathMenu
+          :path="props.result.clientRegPath"
+          @reveal="reveal(props.result.clientRegPath!)"
+        />
       </a-descriptions-item>
       <a-descriptions-item label="profileArn">
-        <span class="mono">{{ props.result?.profileArn || '(未写入)' }}</span>
+        <a-tooltip v-if="props.result?.profileArn" title="点击复制">
+          <a
+            class="copy-value mono"
+            role="button"
+            tabindex="0"
+            @click="copyText(props.result.profileArn, 'profileArn 已复制')"
+          >{{ props.result.profileArn }}</a>
+        </a-tooltip>
+        <span v-else class="mono">(未写入)</span>
       </a-descriptions-item>
     </a-descriptions>
 
@@ -146,6 +169,21 @@ async function restart(): Promise<void> {
 
 .detail {
   margin-bottom: 4px;
+}
+
+/* 可点击复制的值：与 PathMenu 同一套浅色虚线，悬停变主题色 */
+.copy-value {
+  color: inherit;
+  word-break: break-all;
+  cursor: pointer;
+  border-bottom: 1px dashed var(--kal-muted);
+  transition: color 0.15s, border-color 0.15s;
+}
+.copy-value:hover,
+.copy-value:focus-visible {
+  color: var(--kal-primary);
+  border-bottom-color: var(--kal-primary);
+  outline: none;
 }
 
 .notes {

@@ -108,6 +108,12 @@ export function mapProxyModel(
   const exact = known.get(stripped)
   if (exact) return { modelId: exact, thinking, fallback: false }
 
+  // Claude Code 里的改名写法：kiro-sonnet-4.5 → claude-sonnet-4.5（原因见 proxyClients 的 claudeCodeId）
+  if (base.startsWith(CURSOR_PREFIX)) {
+    const claudeHit = known.get(`claude-${stripped}`)
+    if (claudeHit) return { modelId: claudeHit, thinking, fallback: false }
+  }
+
   /*
    * claude-sonnet-4-5 → claude-sonnet-4.5；只转 1~2 位的 minor，避免误伤日期。
    * 家族名不写死成 sonnet/haiku/opus：Claude 桌面版按它目录里的短横写法发 claude-fable-5-1 这类新家族，

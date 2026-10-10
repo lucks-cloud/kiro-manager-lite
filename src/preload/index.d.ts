@@ -250,6 +250,8 @@ export interface Api {
   /** 把备份的原始机器码写回 */
   restoreMachineId: () => Promise<IpcResult<MachineIdActionResult>>
   revealMachineIdLocation: (field: MachineIdField) => Promise<IpcResult<void>>
+  /** 在文件管理器里定位切号写入的凭证文件（仅限 Kiro SSO 缓存目录） */
+  revealSsoCacheFile: (target: string) => Promise<IpcResult<void>>
   /** 当前出口 IP，走应用代理设置 */
   getIpInfo: () => Promise<IpcResult<IpInfo>>
   /** 测试单个网站的连通性与延迟 */

@@ -22,6 +22,13 @@ export async function waitUntil(
   return false
 }
 
+/** 本机当天日期 YYYY-MM-DD（本机时区），告诉模型今天是哪天 */
+export function localDate(): string {
+  const now = new Date()
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+}
+
 /** 往数组尾部追加，已存在则跳过（undefined 也算一个有效取值） */
 export function pushUnique<T>(list: T[], value: T): void {
   if (!list.includes(value)) list.push(value)

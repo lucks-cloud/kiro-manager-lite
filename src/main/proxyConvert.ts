@@ -8,12 +8,14 @@
 //  2. history 里不能出现结构化的 toolUses / toolResults 配对以外的残留：
 //     Kiro 对没有对应结果的 toolUse 直接 400。所以只保留「最后一轮 assistant 的
 //     toolUses + 当前消息的 toolResults」这一对，更早的工具轮次压成文本叙述。
-//  3. 工具名超过 64 字符会被拒，得缩短后在响应里还原成原名，否则客户端认不出自己的工具。
+//  3. 工具名只能是字母、数字、下划线、短横且不超过 64 字符，不合规的转换后在响应里还原成原名，
+//     否则客户端认不出自己的工具（见 shortenToolName）。
 //  4. 空内容也会 400，用占位符顶上。
 import { createHash, randomUUID } from 'crypto'
 import type { ServerResponse } from 'http'
 import { estimateTokens } from '../shared/proxyModels'
 import { log } from './logger'
+import { localDate } from './utils'
 
 // ============ 中立消息结构 ============
 
@@ -46,6 +48,8 @@ export interface NormTool {
   name: string
   description: string
   schema: Record<string, unknown>
+  /** 反代自己执行的搜索工具；客户端声明的同名工具没有这个标记，由客户端执行 */
+  managed?: boolean
 }
 
 /** 反代自己执行的联网搜索工具名；发给 Kiro 时就用这个名字 */
@@ -59,14 +63,21 @@ export const MAX_WEB_SEARCH_ROUNDS = 5
  * 描述写得具体一点，模型才知道什么时候该用它（不写清楚它会倾向于凭记忆作答）。
  * 也要写清楚什么时候不该用：这个工具是反代主动挂上的，客户端没要求，
  * 实测模型被问「你是什么模型」时会去搜一遍来核实，白多一轮上游请求（总耗时从 4 秒涨到 16 秒）。
+ *
+ * 描述里带上今天的日期：很多客户端的系统提示不写日期，模型就按训练数据的年份搜
+ * （问「近况」时搜「xxx 近况 2024」），拿到的全是旧闻，答案也跟着过时。
  */
 export function webSearchToolSpec(): NormTool {
   return {
     name: WEB_SEARCH_TOOL,
+    managed: true,
     description:
-      'Search the public web for current information. Use this whenever the answer depends on ' +
-      'recent events, prices, versions, or anything that may have changed after your training data, ' +
-      'or when the user explicitly asks you to search. Do not use it for questions about yourself ' +
+      `Search the public web for current information. Today's date is ${localDate()}; ` +
+      'your training data is older than that, so never assume the current year from it. ' +
+      'Use this whenever the answer depends on recent events, prices, versions, or anything that ' +
+      'may have changed after your training data, or when the user explicitly asks you to search. ' +
+      'For recent news or "latest" questions, use the current year (or no year at all) in the query, ' +
+      'and prefer the newest sources in the results. Do not use it for questions about yourself ' +
       '(your name, model or capabilities), for general knowledge you already have, or for the ' +
       "user's own code and files. Returns a ranked list of titles, URLs and snippets.",
     schema: {
@@ -465,12 +476,25 @@ export function normalizeOpenAiRequest(body: Record<string, unknown>): Normalize
 /** 工具名缩短后的还原表：短名 → 原名 */
 export type ToolNameMap = Map<string, string>
 
+/**
+ * 工具名转成 Kiro 接受的形式，原名记进 map，响应里再还原。
+ *
+ * Kiro 只认字母、数字、下划线和短横：名字里出现点号、斜杠、空格等字符时，整个请求回
+ * 400 "Invalid tool use format."。这类名字既可能来自客户端的工具声明，也可能来自历史：
+ * 模型偶尔会编出 functions.file_write 这种带前缀的调用，它一旦进了会话历史，
+ * 之后每个请求都会被拒，所以声明与历史里的名字都要经过这里。
+ * 非法字符换成下划线；超长或与别的工具撞名时截短并加原名的哈希，保证一一对应。
+ */
 function shortenToolName(name: string, map: ToolNameMap): string {
-  if (name.length <= TOOL_NAME_LIMIT) return name
-  const hash = createHash('sha256').update(name).digest('hex').slice(0, 8)
-  const short = `${name.slice(0, TOOL_NAME_LIMIT - 9)}_${hash}`
-  map.set(short, name)
-  return short
+  let safe = name.replace(/[^A-Za-z0-9_-]/g, '_') || 'tool'
+  const taken = map.get(safe)
+  if (safe.length > TOOL_NAME_LIMIT || (taken !== undefined && taken !== name)) {
+    const hash = createHash('sha256').update(name).digest('hex').slice(0, 8)
+    safe = `${safe.slice(0, TOOL_NAME_LIMIT - 9)}_${hash}`
+  }
+  // 原名不用转换的也登记（还原时原样返回）：先出现 a_b、后出现 a.b 时才能检测到撞名
+  map.set(safe, name)
+  return safe
 }
 
 /** 补齐 Kiro 要求的 JSON Schema 形状：缺 type / properties 会被拒 */
@@ -783,6 +807,42 @@ export interface StreamToolCall {
   toolUseId: string
   name: string
   input: Record<string, unknown>
+}
+
+/**
+ * 修正补丁里新建文件的内容行。
+ *
+ * 补丁格式（*** Begin Patch / *** Add File:）要求新文件的每一行以 `+` 开头，
+ * 客户端解析时只收 `+` 行，其余行直接丢掉。部分客户端的工具说明把前缀写成「` +`」，
+ * 模型照抄成「空格 + 加号」，结果文件建出来是空的，客户端却报告写入成功。
+ * Add File 段里「空格 + 加号」开头的行不可能有别的含义，这里去掉那个空格。
+ * Update File 段里空格开头是上下文行，不动。
+ */
+export function repairPatchCall(call: StreamToolCall): StreamToolCall {
+  let changed = false
+  const input: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(call.input)) {
+    if (typeof value !== 'string' || !value.includes('*** Begin Patch') || !value.includes('*** Add File:')) {
+      input[key] = value
+      continue
+    }
+    let inAdd = false
+    const lines = value.split('\n').map((line) => {
+      if (line.startsWith('*** ')) {
+        inAdd = line.startsWith('*** Add File:')
+        return line
+      }
+      if (inAdd && line.startsWith(' +')) {
+        changed = true
+        return line.slice(1)
+      }
+      return line
+    })
+    input[key] = lines.join('\n')
+  }
+  if (!changed) return call
+  log('debug', `[Proxy] 已修正 ${call.name} 补丁里新建文件的行前缀（「 +」→「+」）`)
+  return { ...call, input }
 }
 
 export interface StreamUsage {
@@ -1205,23 +1265,35 @@ export function normalizeResponsesRequest(body: Record<string, unknown>): Normal
   const toolOrigins = new Map<string, ToolOrigin>()
   const tools: NormTool[] = []
 
-  // 工具先收集：input 里的 custom_tool_call 需要知道哪些名字是 custom 工具
-  for (const raw of Array.isArray(body.tools) ? body.tools : []) {
+  const addTool = (raw: unknown): void => {
     const tool = asRecord(raw)
     const name = str(tool?.name)
-    if (!tool || !name) continue
+    if (!tool || !name || toolOrigins.has(name)) return
     if (tool.type === 'function') {
       tools.push({ name, description: str(tool.description), schema: asRecord(tool.parameters) ?? {} })
       toolOrigins.set(name, { name })
     } else if (tool.type === 'custom') {
       tools.push({ name, description: str(tool.description), schema: customToolSchema(tool) })
       toolOrigins.set(name, { name, custom: true })
+    } else if (tool.type === 'namespace' && name === 'functions' && Array.isArray(tool.tools)) {
+      // functions 是顶层工具的分组外壳，里面的工具按普通工具名调用
+      for (const inner of tool.tools) addTool(inner)
     }
     /*
-     * namespace（MCP / 插件工具分组）不转发：回传时需要 Codex 专有的命名空间字段，
+     * 其他 namespace（MCP / 插件工具分组）不转发：回传时需要 Codex 专有的命名空间字段，
      * 拼错了 Codex 会直接丢弃这次调用。
      * 核心的 exec_command / apply_patch / view_image 等都是普通 function，不受影响。
      */
+  }
+
+  // 工具先收集：input 里的 custom_tool_call 需要知道哪些名字是 custom 工具。
+  // Responses Lite 把工具定义放在 input 的 additional_tools 项里，一并收集。
+  for (const raw of Array.isArray(body.tools) ? body.tools : []) addTool(raw)
+  for (const raw of Array.isArray(body.input) ? body.input : []) {
+    const item = asRecord(raw)
+    if (item?.type === 'additional_tools' && Array.isArray(item.tools)) {
+      for (const tool of item.tools) addTool(tool)
+    }
   }
 
   /*

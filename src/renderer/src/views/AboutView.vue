@@ -50,27 +50,26 @@ function manualUpdate(): void {
   open(REPO_URL)
 }
 
-/** 关于页展示的功能清单，与 README 的功能特性保持一致 */
+/** 关于页展示的功能清单，按应用的模块顺序排列，与 README 的功能特性保持一致 */
 const features = [
-  { name: '多账号管理', desc: '添加、编辑、删除多个 Kiro 账号，支持搜索、多维筛选（含导入时间范围）与排序' },
-  { name: '五种添加方式', desc: '在线登录（Google / GitHub / Builder ID / Enterprise SSO）、OIDC 凭证、读取本地 Kiro 登录态' },
-  { name: '自定义分组', desc: '账号与 API Key 共用一套分组：新建、改名、拖动排序、按分组筛选与批量归组' },
-  { name: '三种展示形态', desc: '卡片、卡片紧凑、列表可随时切换并各自记住选择，列表模式按卡片实际宽度自动重排' },
-  { name: '一键切号', desc: '写入 IDE 凭证前强制刷新 Token，避免 IDE 被强制登出，可一键重启 IDE 生效' },
-  { name: '自动刷新', desc: 'Token 与积分用量各自独立的开关与间隔，冷启动会补跑一轮' },
-  { name: '主动续期', desc: '在 IDE 当前账号的 Token 即将过期前抢先刷新并写盘，保持登录态不掉线' },
-  { name: '账号测活', desc: '拉取真实可用模型并发起一次流式对话，模型可搜索、二级可选推理档位' },
-  { name: '积分与用量', desc: '订阅等级、积分明细、重置时间，并记录每次采样生成变化趋势' },
-  { name: '订阅管理', desc: '点订阅标签即用内置浏览器进 Stripe 账单页，未订阅则列出可开通档位并生成支付链接' },
-  { name: 'API Key 管理', desc: '管理 ksk_ 开头的 Kiro API Key，同步订阅额度、测活、查看积分历史' },
-  { name: '本地网关', desc: '把 Kiro IDE 的 AI 请求接管到本地代理并改用 API Key，运行期间可随时换 Key' },
-  { name: '常用工具', desc: '一键放行 Kiro 的终端命令确认框，关闭时还原开启前的配置' },
-  { name: '系统日志', desc: '按级别、分类、关键字与时间筛选，可导出，打包版同样可诊断' },
-  { name: '导入导出', desc: '卡密、JSON、CSV、TXT 互通，支持拖拽多个文件按顺序批量导入' },
-  { name: '隐私打码', desc: '一键隐藏邮箱、昵称与 API Key 等敏感信息' },
-  { name: '桌面端体验', desc: '系统托盘常驻、关闭行为可配、自定义协议唤起、单实例锁' },
-  { name: '网络代理', desc: '支持 HTTP 代理，留空时回退系统环境变量' },
-  { name: '主题定制', desc: '主题风格自动 / 浅色 / 深色，7 种预设主题色' }
+  { name: '多账号管理', desc: 'Google / GitHub / Builder ID / Enterprise SSO 在线登录、OIDC 凭证、读取本机登录态五种添加方式，支持搜索、多维筛选、排序与批量操作' },
+  { name: '分组与展示', desc: '账号与 API Key 共用一套自定义分组，卡片、卡片紧凑、列表三种形态可切换并记住选择' },
+  { name: '一键切号', desc: '把账号凭证写入 Kiro IDE，落盘前实测 profileArn，可一键重启 IDE 生效' },
+  { name: '刷新与续期', desc: 'Token 与用量各自定时刷新，IDE 当前账号的 Token 即将过期前主动续期写盘' },
+  { name: '流式测活', desc: '真实对话测活，模型可搜索、二级可选推理档位，可查看官方完整原始返回' },
+  { name: '订阅与官网', desc: '订阅状态、可开通档位与 Stripe 账单页，内置私密浏览器免登录进 Kiro 官网后台' },
+  { name: '账号 API Key', desc: '用账号凭证向 Kiro 申请 API Key 并列出已创建的 Key' },
+  { name: 'API Key 管理', desc: '管理 ksk_ 开头的 Kiro API Key，按区域同步额度、测活、查看积分历史' },
+  { name: '本地反代', desc: '账号池转成 OpenAI / Anthropic / Gemini 兼容接口，轮询选号、重试换号、托管联网搜索' },
+  { name: '一键接入客户端', desc: 'Claude Code、Codex、Cursor、VS Code 等 12 个命令行与桌面客户端一键写入，写入前备份、可一键还原' },
+  { name: '本地网关', desc: '把 Kiro IDE 的 AI 请求接管到指定 API Key，运行中可随时换 Key，按真实请求统计' },
+  { name: '用量与历史', desc: '记录每次刷新的积分变化，趋势曲线、明细表与 Excel 导出' },
+  { name: '导入导出', desc: '卡密、JSON、CSV、TXT 互通，可批量导入多个文件、分割导出为压缩包' },
+  { name: '常用工具', desc: '机器码重置与恢复、出口 IP 与网站连通性检测、自动同意 AI 操作' },
+  { name: '系统日志', desc: '主进程与界面日志同一时间线，按级别、分类、关键字与时间筛选并可导出' },
+  { name: '隐私打码', desc: '一键遮住邮箱、昵称、API Key 与备注，截图录屏更安心' },
+  { name: '个性化设置', desc: '主题风格与主题色、控件尺寸、HTTP 代理、内置浏览器地区、定时备份与初始化' },
+  { name: '桌面端体验', desc: '系统托盘常驻、关闭行为可配、自定义协议唤起、单实例锁' }
 ]
 
 /** 本项目仓库地址，头部按钮与检查更新指向同一个仓库 */
@@ -87,9 +86,38 @@ const sponsors = [
   { label: '支付宝', image: sponsorAlipay }
 ]
 
-const links = [
-  { label: '参考项目 Kiro-account-manager', url: 'https://github.com/chaogei/Kiro-account-manager' },
-  { label: 'Kiro 官网', url: 'https://github.com/kirodotdev/Kiro' }
+/** 致谢的开源项目：名称点击跳转 GitHub */
+const credits = [
+  {
+    name: 'Kiro-account-manager',
+    url: 'https://github.com/chaogei/Kiro-account-manager',
+    desc: 'Kiro 多账号管理器，本项目账户管理接口实现的来源（AGPL-3.0）'
+  },
+  {
+    name: 'Kiro-Go',
+    url: 'https://github.com/Quorinex/Kiro-Go',
+    desc: '把 Kiro 账号转换为 OpenAI / Anthropic 兼容 API 的 Go 服务'
+  },
+  {
+    name: 'kiro.rs',
+    url: 'https://github.com/hank9999/kiro.rs',
+    desc: 'Rust 编写的 Anthropic Claude API 兼容代理，将请求转换为 Kiro API'
+  },
+  {
+    name: 'new-api',
+    url: 'https://github.com/QuantumNous/new-api',
+    desc: '连接模型、应用与 Agent 的 AI 网关'
+  },
+  {
+    name: 'sub2api',
+    url: 'https://github.com/touwaeriol/sub2api',
+    desc: 'AI API 网关平台，订阅配额分发管理'
+  },
+  {
+    name: 'Kiro',
+    url: 'https://github.com/kirodotdev/Kiro',
+    desc: 'Kiro 官方仓库'
+  }
 ]
 
 function open(url: string): void {
@@ -143,9 +171,7 @@ function open(url: string): void {
         </span>
       </template>
       <p class="intro-text">
-        Kiro Manager Lite 是一个 Kiro IDE 的多账号与 API Key 管理工具。支持多账号快速切换、
-        Token 自动刷新与主动续期、积分用量跟踪、账号测活与订阅开通，以及自定义分组、
-        Kiro API Key 管理和本地网关接管，帮你在多个账号与订阅之间省去反复登录退出的力气。
+        Kiro 多账号一键切换 · 本地反代与客户端一键接入 · 自定义分组与三种展示形态 · 订阅开通与账单管理 · 账号 API Key 管理 · 本地网关与真实调用统计 · 机器码重置与网络检测 · 自动刷新与流式测活 · 内置私密浏览器 · 托盘常驻
       </p>
       <p class="intro-text">
         本应用使用 Electron + Vue 3 + TypeScript 开发，支持 Windows、macOS 和 Linux 平台。
@@ -205,16 +231,19 @@ function open(url: string): void {
     </a-card>
 
     <a-card size="small" title="致谢与许可" class="credits-card">
-      <p class="muted" style="margin: 0 0 14px">
+      <p class="muted" style="margin: 0 0 12px">
         账户管理相关的接口实现参考了开源项目 Kiro-account-manager（AGPL-3.0），本项目在其基础上重写为
-        Vue 技术栈并裁剪为纯账户管理。
+        Vue 技术栈；本地反代的协议转换、工具调用与网关设计参考了以下开源项目。本项目以 AGPL-3.0 许可开源。
       </p>
-      <a-space wrap>
-        <a-button v-for="link in links" :key="link.url" @click="open(link.url)">
-          <template #icon><GithubOutlined /></template>
-          {{ link.label }}
-        </a-button>
-      </a-space>
+      <ul class="feature-list">
+        <li v-for="item in credits" :key="item.url" class="feature-item">
+          <GithubOutlined class="feature-check" />
+          <!-- 保留 href 让链接可聚焦，实际跳转交给系统浏览器 -->
+          <a class="feature-name credit-link" :href="item.url" @click.prevent="open(item.url)">{{ item.name }}</a>
+          <span class="feature-sep">：</span>
+          <span class="feature-desc muted">{{ item.desc }}</span>
+        </li>
+      </ul>
     </a-card>
 
     <!-- 手动检查状态：点击后立即打开，加载、失败、已是最新版都在同一弹窗内呈现。 -->
@@ -341,9 +370,15 @@ function open(url: string): void {
   min-width: 0;
 }
 
-/* small 卡片默认 12px 内边距，大号按钮在其中显得贴边，单独放宽上下留白 */
 .credits-card :deep(.ant-card-body) {
-  padding: 16px 12px 20px;
+  padding: 16px;
+}
+
+/* 项目名是链接：悬停加下划线，与正文里的其它外链一致 */
+.credit-link:hover,
+.credit-link:focus-visible {
+  text-decoration: underline;
+  outline: none;
 }
 
 /* 最后一张卡片别贴着内容区底边 */

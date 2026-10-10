@@ -1119,15 +1119,7 @@ onUnmounted(() => stop?.())
             <a-tag v-if="store.status.error" color="error">{{ store.status.error }}</a-tag>
           </div>
           <div class="tool-desc">
-            用本地账号池给 Claude Code、Codex 这类桌面 agent 供能：它们按 Anthropic / OpenAI
-            协议请求本机地址，反代转成 Kiro 的对话接口，额度走你自己的账号。
-          </div>
-          <div class="tool-hint">
-            支持 <span class="mono">/v1/messages</span>（Anthropic）、
-            <span class="mono">/v1/chat/completions</span>（OpenAI）、
-            <span class="mono">/v1/models</span> 与
-            <span class="mono">/v1/messages/count_tokens</span>。
-            流式与非流式、工具调用、图片、推理内容都已转换。
+            把账号池转成 OpenAI / Anthropic / Gemini 兼容的模型接口，自动选号与失败换号、托管联网搜索，流式、工具调用、图片与推理完整转换，Claude Code、Codex、Cursor 等客户端可一键接入。
           </div>
         </div>
         <!-- 按钮比开关更像一个「动作」：启动要先过风险确认，开关一拨就生效的观感不合适 -->

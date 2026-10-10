@@ -14,6 +14,7 @@ import { qEndpoint } from './kiroEndpoints'
 import { apiKeyHeaders, authHeaders } from './kiroChat'
 import { httpRequest } from './net'
 import { log } from './logger'
+import { localDate } from './utils'
 
 /** 单条搜索结果，字段沿用 Kiro MCP 的返回 */
 export interface WebSearchResult {
@@ -119,9 +120,13 @@ export async function kiroWebSearch(
   return results
 }
 
-/** 搜索结果压成给模型看的文本；截断 snippet，避免一次灌进去太多 token */
+/**
+ * 搜索结果压成给模型看的文本；截断 snippet，避免一次灌进去太多 token。
+ * 开头注明搜索日期：模型据此判断哪些结果是旧闻，搜到的都偏旧时会换个词再搜。
+ */
 export function formatSearchResults(query: string, results: WebSearchResult[]): string {
-  if (!results.length) return `No results found for "${query}".`
+  const today = localDate()
+  if (!results.length) return `No results found for "${query}" (searched on ${today}).`
   const lines = results.map((r, i) => {
     const snippet = (r.snippet ?? '').trim()
     const clipped = snippet.length > 300 ? `${snippet.slice(0, 300)}…` : snippet
@@ -130,5 +135,9 @@ export function formatSearchResults(query: string, results: WebSearchResult[]): 
       .filter(Boolean)
       .join('\n')
   })
-  return `Search results for "${query}":\n\n${lines.join('\n\n')}`
+  return (
+    `Search results for "${query}" (searched on ${today}; ` +
+    `if these look outdated for a question about recent events, search again with the current year):\n\n` +
+    lines.join('\n\n')
+  )
 }

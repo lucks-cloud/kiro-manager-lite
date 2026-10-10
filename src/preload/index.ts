@@ -161,6 +161,7 @@ const api = {
   resetMachineId: () => invoke('tools:machine-id-reset'),
   restoreMachineId: () => invoke('tools:machine-id-restore'),
   revealMachineIdLocation: (field: string) => invoke('tools:machine-id-reveal', field),
+  revealSsoCacheFile: (target: string) => invoke('accounts:reveal-sso-file', target),
 
   // 常用工具：网络检测
   getIpInfo: () => invoke('tools:ip-info'),

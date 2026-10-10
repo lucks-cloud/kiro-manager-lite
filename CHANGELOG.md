@@ -3,6 +3,42 @@
 本文件记录 Kiro Manager Lite 的版本变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.0.35] - 2026-10-10
+
+本版本集中修复本地反代在各客户端里的工具调用与联网搜索问题：新版 Codex 调工具报 400、
+Cursor 新会话首轮建出空文件、VS Code 首轮搜到结果却答成旧闻、DeepSeek Harness 搜索不可用，
+以及 Claude Code 的 `/model` 里看不到 Sonnet 4.5 / 4、Codex CLI 看不到 Kiro 模型。
+
+### 新增
+
+- 切号成功弹窗里的 Token 文件与客户端注册路径可点击复制、打开所在目录，profileArn 点击即复制；弹窗居中并加宽
+- 反代代执行联网搜索时，没有原生搜索显示的客户端（VS Code、Cursor 等）会在回复里显示一行「已联网搜索：搜索词」
+- 写入 DeepSeek Harness 时把它自带的联网搜索后端指到本地反代，由 Kiro 的搜索执行并显示来源卡片；
+  所需的 Key 写进 `~/.dsh/.credentials.yaml`（权限 600），还原时移除
+- README 新增 [一键接入实测截图](docs/proxy-clients.md)，按应用内顺序列出 12 个客户端的接入效果
+- 关于页「致谢与许可」改为「名称：介绍」列表，名称可跳转 GitHub，新增 Kiro-Go、kiro.rs、new-api、sub2api
+
+### 优化
+
+- 联网搜索工具的描述与搜索结果带上当天日期（年月日），模型不再按训练数据的年份去搜「近况」类问题
+- 写入 DeepSeek Harness 时按模型实际能力声明输入类型，支持图片的模型可直接发图
+- 关于页的主要功能按应用实际模块重新编排
+
+### 修复
+
+- 修复新版 Codex（Responses Lite）只在 `input` 的 `additional_tools` 里带工具定义，反代读不到工具，
+  模型编造 `functions.xxx` 调用导致 HTTP 400「Invalid tool use format」或工具不可用；
+  模型目录关闭 Responses Lite，反代也兼容读取 `additional_tools`
+- 修复工具名含点号、斜杠等字符时 Kiro 整个请求返回 400：非法字符自动转义，超长或撞名时加哈希后缀，响应里还原原名
+- 修复 DeepSeek Harness 自带的 `web_search` 被反代当成托管搜索拦下，日志报「搜索词为空」
+- 修复 Cursor 新会话第一轮创建的文件内容为空：补丁里新建文件的行前缀写成「 +」时自动纠正
+- 修复反代搜索后模型接着调用客户端工具时，搜索结果没进客户端历史，最终回答凭记忆写出过时内容；
+  后续请求会把当时的搜索结果补回历史
+- 修复 Claude Code 把 `claude-sonnet-4.5`、`claude-sonnet-4` 当成已退役的官方型号，`/model` 里不显示；
+  Claude 系模型在 Claude Code 里写成 `kiro-sonnet-4.5` 这类名字，反代收到后还原
+- 修复 Codex 桌面版已写入时再写入 Codex CLI，会删掉桌面版的 provider 表，导致模型目录生成失败、
+  `codex --profile Kiro-Manager-Lite` 的 `/model` 只有 GPT 模型
+
 ## [1.0.34] - 2026-10-08
 
 本版本让写入桌面 agent 时也能选到 auto 模型，测活可以查看官方的完整原始返回（成功、失败、中止都能看），

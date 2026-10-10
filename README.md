@@ -9,12 +9,12 @@
 </p>
 
 <p align="center">
-  多账号一键切换 · 本地反代与客户端一键接入 · 自定义分组与三种展示形态 · 订阅开通与账单管理 · 账号 API Key 管理 · 本地网关与真实调用统计 · 本地反代 · 机器码重置与网络检测 · 自动刷新与流式测活 · 内置私密浏览器 · 托盘常驻
+  多账号一键切换 · 本地反代与客户端一键接入 · 自定义分组与三种展示形态 · 订阅开通与账单管理 · 账号 API Key 管理 · 本地网关与真实调用统计 · 机器码重置与网络检测 · 自动刷新与流式测活 · 内置私密浏览器 · 托盘常驻
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.0.26-6c5ce7" alt="version">
-  <img src="https://img.shields.io/badge/updated-2026--09--30-2f9e44" alt="updated">
+  <img src="https://img.shields.io/badge/version-1.0.35-6c5ce7" alt="version">
+  <img src="https://img.shields.io/badge/updated-2026--10--10-2f9e44" alt="updated">
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="license">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="platform">
   <img src="https://img.shields.io/badge/Vue-3-42b883" alt="vue">
@@ -41,7 +41,7 @@
 - 一键把账号凭证写入 Kiro IDE 切换当前登录身份，可选切号后自动重启 IDE
 - 切号前会逐个实测 `profileArn` 候选再落盘 —— 写错这个字段是 IDE 报「Invalid token」的主因
 - 批量刷新 Token / 用量与积分，支持定时自动刷新；「主动续期」会在 IDE 当前账号的 Token 剩约 15 分钟时抢先续期并写盘，避免 IDE 自己刷新时撞车被登出
-- 真实流式对话测活：实时看输出、随时中止。只有 runtime 面的真实对话才能暴露封禁账号
+- 真实流式对话测活：实时看输出、随时中止。只有 runtime 面的真实对话才能暴露封禁账号；响应区可「查看完整响应」，列出发给官方的每次请求与原始返回（成功、失败、中止都能看）
 - 测活的模型改为可搜索的级联选择，二级是该模型自己的推理档位（Claude 系 low / medium / high / xhigh / max，GPT 系另有 none，没有这一层的模型不显示二级）；只选主模型时自动补上它的默认档位
 
 **账号 API Key**
@@ -65,9 +65,28 @@
 - 首屏卡住会自动重试并把进度显示在标题位，次数用尽才给错误页，不再干等 30 秒白屏
 - 请求头伪装成普通 Chrome，并可在设置的「内置浏览器」里指定地区（内置 50 个常用地区，也支持自定义 BCP 47 标签）
 
+### 🔑 API Key 管理
+
+- 支持单个添加、批量导入、搜索、订阅 / 状态 / 用量 / 重置时间 / 导入时间范围筛选、排序、导出和批量删除
+- 与账号列表同一套自定义分组：新建 / 改名 / 删除、长按拖动排序、按分组多选筛选、批量设置分组，卡片上显示分组标签
+- 同样有卡片、卡片紧凑、列表三种展示形态可切换并记住选择
+- 每个 Key 独立绑定区域，展示订阅档位、注册邮箱、User ID、额度、重置时间和异常原因
+- 支持单个与批量刷新、真实对话测活、批量测活；测活的模型同样是可搜索的级联选择，能选推理档位并显示消耗倍率
+- 大量 Key 使用虚拟网格渲染；详情、历史、测活和导入导出弹窗均按需挂载，减少首屏开销
+
+### 🌐 本地网关与调用统计
+
+- 本地 KRS / CPS 网关可将 Kiro IDE 请求接管到指定 API Key，支持运行中即时切换 Key
+- 自动探测当前 Kiro 版本是否真正支持自定义网关端点，并监视配置被 IDE 回写后的自动恢复
+- 按真实请求统计请求数、成功率、RPM 和服务端权威积分消耗，辅助请求与对话请求分开计数
+- 网关调用历史按分钟聚合并持久化，可查看请求数 / 成功率 / 积分曲线、明细和汇总数据
+- 可选「网关错误自动续接」，按状态码、次数和固定间隔重试可恢复错误，不掩盖额度耗尽问题
+
 ### 🔁 本地反代
 
 把账号池转成标准的大模型接口，Claude Code、Codex、Cursor、VS Code 等客户端直接当作自己的模型服务来用。
+
+12 个客户端的接入效果见 **[一键接入实测截图](docs/proxy-clients.md)**。
 
 **接口与协议**
 
@@ -86,7 +105,7 @@
 **工具与模型**
 
 - 模型列表从当前选中的号实时拉取，带上下文与输出上限、推理档位与消耗倍率
-- 工具执行模式：由反代调用 Kiro 自带的联网搜索并把结果交回模型，不依赖任何第三方搜索服务
+- 工具执行模式：由反代调用 Kiro 自带的联网搜索并把结果交回模型，不依赖任何第三方搜索服务；搜索结果在后续轮次自动补回历史，客户端自带搜索工具的（DeepSeek Harness）交给客户端执行
 - 可一键禁用工具调用，只做纯对话
 
 **Key 与统计**
@@ -97,26 +116,9 @@
 **一键接入客户端**
 
 - 命令行：Claude Code、Codex CLI、DeepSeek Harness Web，给出启动命令并可直接打开终端运行
-- 桌面应用：Claude 桌面版（3P）、Codex 桌面版、DeepSeek Harness 桌面版、Cursor（CCursor）、VS Code（Copilot 自定义端点）、WorkBuddy
+- 桌面应用：Claude 桌面版（3P）、Codex 桌面版、DeepSeek Harness 桌面版、Cursor（CCursor）、VS Code（Copilot 自定义端点）、WorkBuddy、Qoder CN、ZCode、Kimi Code
 - 写入前检测是否安装并完整备份。共用的配置文件只改我们那一部分，还原也只摘掉这部分，你自己的设置原样保留
 - 模型、上下文上限与推理档位按账号实时写入；检测到系统代理拦截回环地址时提前提示
-
-### 🔑 API Key 管理
-
-- 支持单个添加、批量导入、搜索、订阅 / 状态 / 用量 / 重置时间 / 导入时间范围筛选、排序、导出和批量删除
-- 与账号列表同一套自定义分组：新建 / 改名 / 删除、长按拖动排序、按分组多选筛选、批量设置分组，卡片上显示分组标签
-- 同样有卡片、卡片紧凑、列表三种展示形态可切换并记住选择
-- 每个 Key 独立绑定区域，展示订阅档位、注册邮箱、User ID、额度、重置时间和异常原因
-- 支持单个与批量刷新、真实对话测活、批量测活；测活的模型同样是可搜索的级联选择，能选推理档位并显示消耗倍率
-- 大量 Key 使用虚拟网格渲染；详情、历史、测活和导入导出弹窗均按需挂载，减少首屏开销
-
-### 🌐 本地网关与调用统计
-
-- 本地 KRS / CPS 网关可将 Kiro IDE 请求接管到指定 API Key，支持运行中即时切换 Key
-- 自动探测当前 Kiro 版本是否真正支持自定义网关端点，并监视配置被 IDE 回写后的自动恢复
-- 按真实请求统计请求数、成功率、RPM 和服务端权威积分消耗，辅助请求与对话请求分开计数
-- 网关调用历史按分钟聚合并持久化，可查看请求数 / 成功率 / 积分曲线、明细和汇总数据
-- 可选「网关错误自动续接」，按状态码、次数和固定间隔重试可恢复错误，不掩盖额度耗尽问题
 
 ### 📈 用量与历史
 
@@ -142,13 +144,6 @@
 - 「网关错误自动续接」集中配置重试状态码、次数与间隔
 - 工具状态、目标配置路径和不兼容原因均在页面内可视化展示
 
-### 🖥️ 桌面端体验
-
-- 系统托盘常驻，可查看当前账号、刷新、切号、复制邮箱和显示窗口；关闭行为支持最小化到托盘 / 退出 / 每次询问
-- macOS 中文菜单栏、自定义协议 `kiro-manager-lite://` / `kml://` 和单实例唤起
-- 管理页详情、图表和各类模态框按用户操作实时挂载，页面切换不再等待退出动画，减少大数据量下的白屏感
-- 关于页手动检查更新会立即显示加载态；GitHub API 失败时自动重试并通过 Releases 页面兜底，失败后可重试或手动更新
-
 ### 🧾 系统日志
 
 - 主进程与渲染进程日志汇入同一时间线，支持关键字、时间、分类和级别筛选
@@ -167,20 +162,27 @@
   「初始化」清掉全部数据并还原改过的外部配置，和初次安装一样；备份计划默认开启，每 30 分钟静默备份一次、保留最新 3 份，周期与份数可改
 - REST / CBOR 用量接口、HTTP 代理、网关端口，以及数据、备份和日志目录快捷打开
 
+### 🖥️ 桌面端体验
+
+- 系统托盘常驻，可查看当前账号、刷新、切号、复制邮箱和显示窗口；关闭行为支持最小化到托盘 / 退出 / 每次询问
+- macOS 中文菜单栏、自定义协议 `kiro-manager-lite://` / `kml://` 和单实例唤起
+- 管理页详情、图表和各类模态框按用户操作实时挂载，页面切换不再等待退出动画，减少大数据量下的白屏感
+- 关于页手动检查更新会立即显示加载态；GitHub API 失败时自动重试并通过 Releases 页面兜底，失败后可重试或手动更新
+
 ---
 
 ## 📥 下载
 
 <p align="center">
   <a href="https://github.com/lucks-cloud/kiro-manager-lite/releases/latest">
-    <img src="https://img.shields.io/badge/⬇%20下载最新版-v1.0.26-6c5ce7?style=for-the-badge" alt="下载最新版">
+    <img src="https://img.shields.io/badge/⬇%20下载最新版-v1.0.35-6c5ce7?style=for-the-badge" alt="下载最新版">
   </a>
   <a href="https://github.com/lucks-cloud/kiro-manager-lite/releases">
     <img src="https://img.shields.io/badge/全部版本-Releases-24292f?style=for-the-badge&logo=github" alt="全部版本">
   </a>
 </p>
 
-**最新版本：v1.0.26**（2026-09-30） · 变更详情见 [CHANGELOG.md](CHANGELOG.md)
+**最新版本：v1.0.35**（2026-10-10） · 变更详情见 [CHANGELOG.md](CHANGELOG.md)
 
 ### 选择对应的安装包
 
@@ -262,6 +264,8 @@ Windows 与 Linux 暂不提供 arm64 包：原生依赖 `cbor-extract` 没有对
 ### 本地反代
 
 ![本地反代](docs/screenshots/proxy.png)
+
+各客户端一键接入后的实测截图见 [一键接入实测](docs/proxy-clients.md)。
 
 ### 常用工具
 
@@ -407,7 +411,7 @@ src/
 
 ## 🔖 更新日志
 
-各版本变更记录见 [CHANGELOG.md](CHANGELOG.md)，当前版本 v1.0.26，最后更新于 2026-09-30。
+各版本变更记录见 [CHANGELOG.md](CHANGELOG.md)，当前版本 v1.0.35，最后更新于 2026-10-10。
 
 ---
 
@@ -423,7 +427,13 @@ src/
 
 账户管理相关的接口实现参考了开源项目 [Kiro-account-manager](https://github.com/chaogei/Kiro-account-manager)（AGPL-3.0），
 本项目在其基础上重写为 Vue 技术栈，去掉了注册机、MITM 代理等模块；本地反代的接口字段对照它做了复刻，
-客户端接入与选号重试等部分为本项目重新实现，同时参考了 [Kiro-Go](https://github.com/Quorinex/Kiro-Go) 与 [kiro.rs](https://github.com/hank9999/kiro.rs)。
+客户端接入与选号重试等部分为本项目重新实现。以下开源项目在协议转换、工具调用与网关设计上提供了参考：
+
+- [Kiro-account-manager](https://github.com/chaogei/Kiro-account-manager)：Kiro 多账号管理器，本项目账户管理接口实现的来源（AGPL-3.0）
+- [Kiro-Go](https://github.com/Quorinex/Kiro-Go)：把 Kiro 账号转换为 OpenAI / Anthropic 兼容 API 的 Go 服务
+- [kiro.rs](https://github.com/hank9999/kiro.rs)：Rust 编写的 Anthropic Claude API 兼容代理，将请求转换为 Kiro API
+- [new-api](https://github.com/QuantumNous/new-api)：连接模型、应用与 Agent 的 AI 网关
+- [sub2api](https://github.com/touwaeriol/sub2api)：AI API 网关平台，订阅配额分发管理
 
 - 作者：[lucks-cloud](https://github.com/lucks-cloud)
 - 许可：[AGPL-3.0](LICENSE)

@@ -14,7 +14,7 @@ import {
 import { createAccountApiKey, deleteAccountApiKey, listAccountApiKeys } from './kiroApiKey'
 import { openAccountPortal, openInAppUrl } from './kiroPortal'
 import { createSubscriptionCheckout, getSubscriptionEntry } from './kiroSubscription'
-import { clearKiroSsoCache, readKiroAuthToken, readLocalKiroCredentials } from './kiroAuth'
+import { clearKiroSsoCache, readKiroAuthToken, readLocalKiroCredentials, ssoCacheFile } from './kiroAuth'
 import { restartKiroIde } from './kiroProcess'
 import { chatTraceOf, listKiroModels, streamApiKeyChat, streamKiroChat } from './kiroChat'
 import {
@@ -665,6 +665,15 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     if (!target) return fail(new Error('该项存放在注册表中，没有对应的文件'))
     if (existsSync(target)) shell.showItemInFolder(target)
     else await shell.openPath(dirname(target))
+    return ok()
+  })
+
+  /** 切号结果里的 Token 文件 / 客户端注册：只接受 SSO 缓存目录下的文件 */
+  handle('accounts:reveal-sso-file', async (_e, target: string) => {
+    const file = ssoCacheFile(target)
+    if (!file) return fail(new Error('只能定位 Kiro SSO 缓存目录下的凭证文件'))
+    if (existsSync(file)) shell.showItemInFolder(file)
+    else await shell.openPath(dirname(file))
     return ok()
   })
 
