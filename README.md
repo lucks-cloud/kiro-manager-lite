@@ -39,6 +39,7 @@
 **换号与保活**
 
 - 一键把账号凭证写入 Kiro IDE 切换当前登录身份，可选切号后自动重启 IDE
+- macOS 上同步写入 Kiro CLI 的本地账号凭证。Kiro CLI 2.24.1 的 v1 聊天引擎已实测可用；其 v2 引擎在同一凭证下仍可能报 `NoToken`。可用 `kiro-cli settings chat.agentEngine v1` 将 v1 设为默认；`kiro-cli whoami` 只能确认账号信息，建议运行一次 `kiro-cli chat --no-interactive '你好'` 验证真实对话。
 - 切号前会逐个实测 `profileArn` 候选再落盘 —— 写错这个字段是 IDE 报「Invalid token」的主因
 - 批量刷新 Token / 用量与积分，支持定时自动刷新；「主动续期」会在 IDE 当前账号的 Token 剩约 15 分钟时抢先续期并写盘，避免 IDE 自己刷新时撞车被登出
 - 真实流式对话测活：实时看输出、随时中止。只有 runtime 面的真实对话才能暴露封禁账号；响应区可「查看完整响应」，列出发给官方的每次请求与原始返回（成功、失败、中止都能看）
