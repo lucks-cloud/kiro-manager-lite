@@ -455,6 +455,8 @@ export interface SwitchAccountResult {
   verified: boolean
   /** 校验失败时的原因，仅用于提示，不代表切号失败 */
   verifyError?: string
+  /** CLI session is stored separately from the IDE. */
+  cliSync: { synced: boolean; error?: string }
   /** 过程中的提示信息（如换用了哪个 profileArn、清理了几个陈旧注册文件） */
   notes?: string[]
 }

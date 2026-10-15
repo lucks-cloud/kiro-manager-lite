@@ -13,6 +13,7 @@
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "vue-tsc --noEmit -p tsconfig.web.json --composite false",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "test:cli-sync": "node --test tests/kiroCliAuth.test.mjs",
     "clean": "node scripts/clean.mjs",
     "prepack:dist": "npm run clean && electron-vite build",
     "build:mac": "npm run prepack:dist && node scripts/build-mac.mjs",

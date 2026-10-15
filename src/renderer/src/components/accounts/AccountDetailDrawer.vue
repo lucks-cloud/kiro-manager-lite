@@ -120,7 +120,10 @@ async function act(kind: 'refresh' | 'check' | 'switch'): Promise<void> {
     } else if (kind === 'check') {
       notifyResult(await accountsStore.checkStatus(target.id), { success: '用量已更新' })
     } else {
-      notifyResult(await accountsStore.switchTo(target.id), { success: '已写入 Kiro IDE' })
+      const switched = await accountsStore.switchTo(target.id)
+      if (switched.ok && !switched.result?.cliSync?.synced)
+        message.warning(`IDE 已切换，CLI 未同步：${switched.result?.cliSync?.error || '未知原因'}`)
+      else notifyResult(switched, { success: '已写入 Kiro IDE 和 CLI 凭证' })
     }
   } finally {
     busy.value = false

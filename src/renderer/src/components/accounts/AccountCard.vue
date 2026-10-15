@@ -220,7 +220,7 @@ const actions = computed<CardAction[]>(() => [
     : {
         id: 'switch',
         action: 'switch',
-        title: '登录此账号（写入 Kiro IDE）',
+        title: '登录此账号（写入 Kiro IDE，并在 macOS 同步 CLI）',
         icon: LoginOutlined
       },
   {
