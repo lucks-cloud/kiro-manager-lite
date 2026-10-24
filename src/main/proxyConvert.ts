@@ -144,6 +144,15 @@ export interface NormalizedRequest {
    * { namespace, name }；custom 工具的参数是整段文本，要还原成 custom_tool_call。
    */
   toolOrigins?: Map<string, ToolOrigin>
+  /**
+   * 客户端自带的会话标识（只用于本地选号，不转发给上游）：
+   *  - Anthropic：metadata.user_id（Claude Code 形如 user_xxx_account__session_<uuid>，取其中的 UUID）
+   *  - OpenAI / Responses：prompt_cache_key（Codex 等会带）或 user 字段
+   * 没有就由 sessionKeyFor 用 system + 首条 user 消息的指纹兜底。
+   * 会话粘连与 conversationId 稳定化都靠它：同一会话固定同一账号，
+   * 上游的前缀缓存（实测约按未缓存价格的 10% 计费）才可能命中。
+   */
+  sessionHint?: string
 }
 
 export interface ToolOrigin {
@@ -235,6 +244,23 @@ function anthropicImage(block: Record<string, unknown>): KiroImage | null {
   if (!data) return null
   const mediaType = str(source.media_type) || 'image/png'
   return { format: normalizeImageFormat(mediaType.replace(/^image\//, '')), source: { bytes: data } }
+}
+
+/**
+ * 从 Anthropic 的 metadata.user_id 里取会话标识。
+ *
+ * Claude Code 发送的是 `user_<hash>_account__session_<uuid>`（每开一个新会话换一个 UUID），
+ * 取出 UUID 作为会话键；其他客户端的 user_id 即使不是这个格式，
+ * 只要同一个会话里保持不变，也照样能当会话键用。
+ * 会话键只用于本地选号与生成稳定的 conversationId，不会转发给上游。
+ */
+function anthropicSessionHint(metadata: unknown): string | undefined {
+  const userId = str(asRecord(metadata)?.user_id).trim()
+  if (!userId) return undefined
+  const match = /session_([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/.exec(
+    userId
+  )
+  return (match ? match[1] : userId).toLowerCase()
 }
 
 export function normalizeAnthropicRequest(body: Record<string, unknown>): NormalizedRequest {
@@ -363,7 +389,8 @@ export function normalizeAnthropicRequest(body: Record<string, unknown>): Normal
         ? thinkingField.budget_tokens
         : undefined,
     serverSearchQuery,
-    serverSearch
+    serverSearch,
+    sessionHint: anthropicSessionHint(body.metadata)
   }
 }
 
@@ -469,7 +496,8 @@ export function normalizeOpenAiRequest(body: Record<string, unknown>): Normalize
           ? body.max_completion_tokens
           : undefined,
     thinking: str(body.reasoning_effort) !== '' && body.reasoning_effort !== 'none',
-    effort: str(body.reasoning_effort) || undefined
+    effort: str(body.reasoning_effort) || undefined,
+    sessionHint: str(body.prompt_cache_key).trim() || str(body.user).trim() || undefined
   }
 }
 
@@ -696,7 +724,16 @@ export function buildKiroPayload(
   /** 推理档位等按模型 schema 拼好的字段，放在请求体根级（见 kiroChat.buildPayload 的实测说明） */
   additionalModelRequestFields?: Record<string, unknown>,
   /** 请求体上限（字节），来自配置的 payloadLimitKB */
-  maxPayloadBytes: number = DEFAULT_PAYLOAD_BYTES
+  maxPayloadBytes: number = DEFAULT_PAYLOAD_BYTES,
+  /**
+   * 会话级稳定的 conversationId（来自 conversationIdFor）。
+   *
+   * Kiro 的对话接口本质无状态：history 每轮全量重发。但上游对相同前缀有服务端缓存，
+   * 实测重复前段的计费约为未缓存价格的 10%（2026-10-21 Opus 5.5 实测，见 kiro.rs PR #203）。
+   * 每个请求都换随机会话 ID 会让这类前缀永远命中不了；官方 IDE 与 kiro.rs 在同一会话内
+   * 都复用同一个 conversationId，这里保持一致。不传时维持旧随机行为（托管搜索的子请求等）。
+   */
+  stableConversationId?: string
 ): BuiltPayload {
   const toolNameMap: ToolNameMap = new Map()
   const merged = mergeMessages(request.messages)
@@ -821,10 +858,12 @@ export function buildKiroPayload(
 
   const payload: Record<string, unknown> = {
     conversationState: {
+      // agentContinuationId 与官方 IDE / kiro.rs 一致：每个请求都换新的
       agentContinuationId: randomUUID(),
       agentTaskType: 'vibe',
       chatTriggerType: 'MANUAL',
-      conversationId: randomUUID(),
+      // 同一会话内复用同一个 conversationId（官方 IDE 行为），上游前缀缓存才有命中机会
+      conversationId: stableConversationId || randomUUID(),
       currentMessage: { userInputMessage },
       ...(history.length ? { history } : {})
     }
@@ -846,6 +885,43 @@ export function buildKiroPayload(
     request.tools.reduce((sum, t) => sum + estimateTokens(t.name + t.description), 0)
 
   return { payload, toolNameMap, estimatedInputTokens }
+}
+
+/**
+ * 会话键：客户端自带标识优先，没有就用「模型 + system + 首条 user 消息」的指纹兜底。
+ *
+ * 会话键只用于本地选号（proxyUpstream 的会话粘连）与派生稳定 conversationId，
+ * 不转发给上游。指纹兜底与 kiro.rs PR #204 的做法一致：
+ * 同一段对话的前缀不变，指纹就不变；不同对话的 system/首条消息几乎必不同。
+ */
+export function sessionKeyFor(request: NormalizedRequest): string {
+  if (request.sessionHint) return `hint:${request.sessionHint}`
+  const firstUser = request.messages.find((m) => m.role === 'user')
+  const seed = [
+    request.model,
+    request.system,
+    firstUser?.text ?? '',
+    request.messages.length ? 'u' : ''
+  ].join('\u0000')
+  return `fp:${createHash('sha256').update(seed).digest('hex')}`
+}
+
+/**
+ * 由会话键派生稳定且格式合法的 conversationId。
+ *
+ * 客户端给的会话 UUID 直接复用；其余的键（prompt_cache_key / user / 指纹）可能是
+ * 任意字符串，不能直接当 conversationId 发给上游，统一哈希成 UUID v4 形状。
+ * 同一会话键永远得到同一个 conversationId，重启应用后依然成立（不存任何状态）。
+ */
+export function conversationIdFor(sessionKey: string): string {
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(sessionKey.slice(5))) {
+    return sessionKey.slice(5)
+  }
+  const digest = createHash('sha256').update(`conversation:${sessionKey}`).digest()
+  digest[6] = (digest[6] & 0x0f) | 0x40
+  digest[8] = (digest[8] & 0x3f) | 0x80
+  const hex = digest.subarray(0, 16).toString('hex')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
 /**
@@ -1525,7 +1601,8 @@ export function normalizeResponsesRequest(body: Record<string, unknown>): Normal
     maxTokens: typeof body.max_output_tokens === 'number' ? body.max_output_tokens : undefined,
     thinking: !!reasoning && str(reasoning.effort) !== '' && reasoning.effort !== 'none',
     effort: str(reasoning?.effort) || undefined,
-    toolOrigins
+    toolOrigins,
+    sessionHint: str(body.prompt_cache_key).trim() || str(body.user).trim() || undefined
   }
 }
 

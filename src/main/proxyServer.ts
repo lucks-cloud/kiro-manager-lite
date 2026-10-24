@@ -24,11 +24,13 @@ import {
   buildOpenAiResponse,
   buildResponsesResponse,
   buildGeminiResponse,
+  conversationIdFor,
   normalizeAnthropicRequest,
   normalizeOpenAiRequest,
   normalizeResponsesRequest,
   normalizeGeminiRequest,
   normalizeStopReason,
+  sessionKeyFor,
   webSearchToolSpec,
   type ServerSearchBlock,
   MAX_WEB_SEARCH_ROUNDS,
@@ -1059,13 +1061,25 @@ async function handleChat(ctx: HandleContext): Promise<void> {
   const restoredSearches = restoreSearchResults(request.messages)
   if (restoredSearches) log('debug', `[Proxy] 已为历史补回 ${restoredSearches} 次联网搜索的结果`)
 
+  /*
+   * 会话键与稳定 conversationId：
+   *  - 轮询调度会把同一会话的连续请求打到不同账号上，而上游前缀缓存按账号生效，
+   *    换号即换缓存，缓存永远命中不了；conversationId 每请求随机同样命中不了。
+   *  - 同一会话固定用同一个 conversationId + 粘住同一个账号（失败自动解绑换号），
+   *    与官方 IDE 的行为一致。会话键来自客户端标识（Claude Code 的 metadata.user_id、
+   *    Codex 的 prompt_cache_key），没有就用 system + 首条 user 消息的指纹，见 sessionKeyFor。
+   */
+  const sessionKey = sessionKeyFor(request)
+  const conversationId = conversationIdFor(sessionKey)
+
   const payloadLimit = payloadLimitBytes()
   const { payload, toolNameMap, estimatedInputTokens } = buildKiroPayload(
     request,
     mapped.modelId,
     undefined,
     requestFields,
-    payloadLimit
+    payloadLimit,
+    conversationId
   )
 
   const entry = newLog({
@@ -1176,6 +1190,7 @@ async function handleChat(ctx: HandleContext): Promise<void> {
         toolNameMap,
         endpoint: config.endpoint,
         pool: poolOptionsFrom(config),
+        sessionKey,
         retryEnabled: config.retryEnabled,
         maxRetries: config.maxRetries,
         retryDelayMs: config.retryDelayMs,
@@ -1321,7 +1336,7 @@ async function handleChat(ctx: HandleContext): Promise<void> {
       })
       request.messages.push({ role: 'user', text: '', images: [], toolUses: [], toolResults })
 
-      const next = buildKiroPayload(request, mapped.modelId, undefined, requestFields, payloadLimit)
+      const next = buildKiroPayload(request, mapped.modelId, undefined, requestFields, payloadLimit, conversationId)
       result = await callUpstream(
         {
           payload: next.payload,
@@ -1329,6 +1344,8 @@ async function handleChat(ctx: HandleContext): Promise<void> {
           toolNameMap: next.toolNameMap,
           endpoint: config.endpoint,
           pool: poolOptionsFrom(config),
+          // 搜索续轮与主请求是同一段对话：沿用同一会话键，继续粘在同一个账号上
+          sessionKey,
           retryEnabled: config.retryEnabled,
           maxRetries: config.maxRetries,
           retryDelayMs: config.retryDelayMs,

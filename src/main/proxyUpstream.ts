@@ -237,6 +237,58 @@ function orderForRequest(members: PoolMember[], source: ProxyAccountSource): Poo
   return [...members.slice(start), ...members.slice(0, start)]
 }
 
+// ============ 会话粘连 ============
+
+/**
+ * 会话 → 上次成功使用的账号。缓存按账号生效，同一段对话必须回到同一个账号，
+ * 上游的前缀缓存才有命中机会（详见 CallOptions.sessionKey 与 proxyConvert.sessionKeyFor）。
+ *
+ * 进程内保持，重启后自然清空（重启后第一个请求重新建缓存，代价可忽略）。
+ */
+const sessionAffinity = new Map<string, { id: string; boundAt: number }>()
+/** 与 kiro.rs PR #204 的会话粘连同量级：一小时内的对话固定在同一账号 */
+const AFFINITY_TTL_MS = 60 * 60 * 1000
+/** 上限防泄漏：超限淘汰最早绑定的会话（长会话数远小于此） */
+const AFFINITY_MAX_ENTRIES = 2_000
+
+/** 取会话绑定的账号 id；过期视为未绑定并顺手清掉 */
+function boundMemberId(sessionKey: string): string | undefined {
+  const entry = sessionAffinity.get(sessionKey)
+  if (!entry) return undefined
+  if (Date.now() - entry.boundAt >= AFFINITY_TTL_MS) {
+    sessionAffinity.delete(sessionKey)
+    return undefined
+  }
+  return entry.id
+}
+
+/** 记住会话当前用的账号；超限时先淘汰过期与最早的条目 */
+function bindSession(sessionKey: string, memberId: string): void {
+  if (sessionAffinity.size >= AFFINITY_MAX_ENTRIES) {
+    const now = Date.now()
+    for (const [key, entry] of sessionAffinity) {
+      if (now - entry.boundAt >= AFFINITY_TTL_MS) sessionAffinity.delete(key)
+    }
+    if (sessionAffinity.size >= AFFINITY_MAX_ENTRIES) {
+      let oldestKey = ''
+      let oldestAt = Infinity
+      for (const [key, entry] of sessionAffinity) {
+        if (entry.boundAt < oldestAt) {
+          oldestAt = entry.boundAt
+          oldestKey = key
+        }
+      }
+      if (oldestKey) sessionAffinity.delete(oldestKey)
+    }
+  }
+  sessionAffinity.set(sessionKey, { id: memberId, boundAt: Date.now() })
+}
+
+/** 解除会话绑定：绑定的账号失效 / 被移出池子时调用，下次成功后重新绑定 */
+function unbindSession(sessionKey: string): void {
+  sessionAffinity.delete(sessionKey)
+}
+
 /** token 剩余不足这个时间就安排刷新 */
 const REFRESH_LEAD_MS = 2 * 60 * 1000
 /** 剩余不足这个时间就当已过期：请求在路上的这几秒里可能正好过期 */
@@ -570,6 +622,15 @@ export interface CallOptions {
   toolNameMap: Map<string, string>
   endpoint: ProxyEndpoint
   pool: AccountPoolOptions
+  /**
+   * 会话键（来自 proxyConvert.sessionKeyFor）：同一会话粘住同一账号。
+   *
+   * 全局按请求轮询会把同一段对话的连续请求打散到不同账号上，
+   * 而上游的前缀缓存按账号生效（换账号即换缓存），轮询调度下缓存永远命中不了。
+   * 有了会话键，成功过的账号在 TTL 内被固定复用；账号失效或被移出池子时自动解绑，
+   * 请求按原有轮询顺序换号，成功后重新绑定。不传（如某些内部子请求）则完全按轮询。
+   */
+  sessionKey?: string
   /** 自动重试总开关，见 ProxyConfig.retryEnabled */
   retryEnabled: boolean
   /** 每个账号上的重试次数，见 ProxyConfig.maxRetries */
@@ -787,6 +848,17 @@ export async function callUpstream(
   const members = orderForRequest(poolMembers(options.pool), options.pool.source)
   if (!members.length) throw new UpstreamError(emptyPoolMessage(options.pool), 503)
 
+  /*
+   * 会话粘连：绑定的账号还在当前池子里就提到最前面优先尝试；
+   * 不在（调度策略被改、账号被删）就解绑，按轮询顺序走，成功后重新绑定。
+   */
+  const boundId = options.sessionKey ? boundMemberId(options.sessionKey) : undefined
+  if (boundId) {
+    const index = members.findIndex((member) => member.id === boundId)
+    if (index > 0) members.unshift(...members.splice(index, 1))
+    else if (index === -1 && options.sessionKey) unbindSession(options.sessionKey)
+  }
+
   const perMember = options.retryEnabled ? Math.max(0, options.maxRetries) : 0
   const delay = Math.max(0, options.retryDelayMs)
   const retries: string[] = []
@@ -801,8 +873,10 @@ export async function callUpstream(
     try {
       prepared = await prepareMember(member, options.endpoint)
     } catch (error) {
-      // 凭证刷不出来属于「这个号用不了」，跳过
+      // 凭证刷不出来属于「这个号用不了」，跳过；粘在它上面的会话一并解绑，
+      // 否则这个会话的每个后续请求都要先白等一次刷新失败
       lastError = new UpstreamError(`刷新凭证失败：${errorMessage(error)}`, 401)
+      if (options.sessionKey && boundId && member.id === boundId) unbindSession(options.sessionKey)
       retries.push(`${member.email}：刷新凭证失败，换下一个账号`)
       continue
     }
@@ -816,6 +890,8 @@ export async function callUpstream(
       const result = await attemptOnce(prepared, options, callbacks)
       if (result.ok) {
         const { outcome } = result
+        // 粘连在成功之后才落定：失败轮换下来最终成功的账号，才是这个会话接下来该用的
+        if (options.sessionKey) bindSession(options.sessionKey, prepared.identity.id)
         return {
           account: prepared.identity,
           endpoint: result.endpoint,
@@ -839,6 +915,8 @@ export async function callUpstream(
       if (isAccountUnusable(err) || isAuthStatus(err.status)) {
         // 缓存的 profileArn 候选可能已经不对了，下次用这个号时重新问
         if (isAuthStatus(err.status) && member.kind === 'account') dropArnCache(member.id)
+        // 粘住的账号确定用不了就解绑：后续请求别再先试它，等重新成功后自然绑定到别的号
+        if (options.sessionKey && boundId && member.id === boundId) unbindSession(options.sessionKey)
         retries.push(`${member.email}：${brief}，换下一个账号`)
         break
       }
