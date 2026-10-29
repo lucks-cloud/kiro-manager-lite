@@ -74,6 +74,14 @@ const { running, aborted, stat, started, start, abort, stopSilently } = useBatch
 const got = computed(() => rows.value.filter((row) => row.state === 'ok' && row.url))
 /** 没有已生成的链接、或正在生成时不给下载 */
 const noDownload = computed(() => !got.value.length || running.value)
+
+/** 「更多」下拉的开合由本组件管（见模板里的说明） */
+const moreOpen = ref(false)
+
+function onMorePick(): void {
+  moreOpen.value = false
+  void download('xlsx')
+}
 const planTitle = computed(() => plans.value.find((p) => p.subscriptionType === planType.value)?.title ?? '')
 
 function email(account: Account): string {
@@ -286,12 +294,12 @@ function close(): void {
           <template #icon><DownloadOutlined /></template>
           下载 txt（{{ got.length }}）
         </a-button>
-        <a-dropdown :disabled="noDownload" placement="topRight">
+        <a-dropdown v-model:open="moreOpen" :disabled="noDownload" placement="topRight" :trigger="['click']">
           <a-button :disabled="noDownload" aria-label="选择下载格式">
             <template #icon><DownOutlined /></template>
           </a-button>
           <template #overlay>
-            <a-menu @click="download('xlsx')">
+            <a-menu @click="onMorePick">
               <a-menu-item key="xlsx">
                 <FileExcelOutlined />
                 下载 xlsx（{{ got.length }}）

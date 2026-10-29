@@ -113,6 +113,8 @@ export interface Api {
   selectKey: (id: string | null) => Promise<IpcResult<{ data: KeyGatewayData; status: KeyGatewayStatus }>>
   testKey: (id: string) => Promise<IpcResult<KeyTestResult>>
   listKeyModels: (id: string) => Promise<IpcResult<KeyModelInfo[]>>
+  /** 该 Key 可用模型的完整信息（上下文 / 输出上限、倍率、推理档位） */
+  listKeyModelDetails: (id: string) => Promise<IpcResult<KiroModelInfo[]>>
   syncKey: (id: string) => Promise<IpcResult<KeyGatewayData>>
   syncAllKeys: (concurrency?: number) => Promise<IpcResult<{
     data: KeyGatewayData

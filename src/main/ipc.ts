@@ -128,6 +128,7 @@ import {
   getGatewayStatus,
   importKeys,
   inspectGatewayConflict,
+  listKeyModelDetails,
   listKeyModels,
   loadKeys,
   recordChatTestResult,
@@ -413,6 +414,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   handle('keys:select', async (_e, id: string) => ok(await selectKey(id)))
   handle('keys:test', async (_e, id: string) => ok(await testKey(id)))
   handle('keys:models', async (_e, id: string) => ok(await listKeyModels(id)))
+  handle('keys:model-details', async (_e, id: string) => ok(await listKeyModelDetails(id)))
   handle('keys:sync', async (_e, id: string) => ok(await syncKey(id)))
   handle('keys:sync-all', async (_e, concurrency?: number) => ok(await syncAllKeys(concurrency)))
 

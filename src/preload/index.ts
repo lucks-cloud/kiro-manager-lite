@@ -76,6 +76,7 @@ const api = {
   selectKey: (id: string | null) => invoke('keys:select', id),
   testKey: (id: string) => invoke('keys:test', id),
   listKeyModels: (id: string) => invoke('keys:models', id),
+  listKeyModelDetails: (id: string) => invoke('keys:model-details', id),
   syncKey: (id: string) => invoke('keys:sync', id),
   syncAllKeys: (concurrency?: number) => invoke('keys:sync-all', concurrency),
   getKeyGatewayStatus: () => invoke('key-gateway:status'),

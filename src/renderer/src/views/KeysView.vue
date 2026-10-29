@@ -23,6 +23,7 @@ import {
   FilterOutlined,
   SyncOutlined,
   ThunderboltOutlined,
+  BranchesOutlined,
   UploadOutlined
 } from '@ant-design/icons-vue'
 import { useKeysStore } from '@/stores/keys'
@@ -71,6 +72,8 @@ import {
   keyUsageRatio as usageRatio
 } from '@/utils/keyEntry'
 import KeyCard from '@/components/keys/KeyCard.vue'
+import ModelListModal from '@/components/common/ModelListModal.vue'
+import BatchKeyModelsModal from '@/components/keys/BatchKeyModelsModal.vue'
 import { NO_BATCH_QUERY_HITS, runBatchQuery } from '@/utils/batchQuery'
 import { createScopedSearchText } from '@/utils/searchText'
 import { isTrashed } from '@shared/itemGroups'
@@ -82,6 +85,7 @@ import type {
   KeyFilter,
   KeyGatewayConflict,
   KeyStatus,
+  KiroModelInfo,
   KiroCapability,
   SubscriptionType
 } from '@shared/types'
@@ -126,6 +130,7 @@ const exportOpen = ref(false)
 const detailTarget = ref<KeyEntry | null>(null)
 const testTarget = ref<KeyEntry | null>(null)
 const batchTestOpen = ref(false)
+const batchModelsOpen = ref(false)
 const usageTarget = ref<KeyEntry | null>(null)
 const gatewayHistoryTarget = ref<KeyEntry | null>(null)
 const gatewayHistoryMetric = ref<'requests' | 'credits'>('requests')
@@ -617,6 +622,7 @@ function clearDeletedKeyUi(ids: string[]): void {
     gatewayHistoryTarget.value = null
   }
   if (regionTarget.value && deleted.has(regionTarget.value.id)) regionTarget.value = null
+  if (modelsTarget.value && deleted.has(modelsTarget.value.id)) modelsTarget.value = null
   if (editOpen.value && deleted.has(editId.value)) editOpen.value = false
   if (restartPrompt.value?.keyId && deleted.has(restartPrompt.value.keyId)) {
     restartPrompt.value = null
@@ -816,14 +822,29 @@ function test(entry: KeyEntry): void {
 
 /**
  * 生成 API Key / 获取订阅链接要用账号的登录凭证，API Key 本身没有，
- * 所以 Key 卡片的右键菜单只有备注、分组、回收站与删除。
+ * 所以 Key 卡片的右键菜单没有这两项。
  */
 const normalMenu: ContextMenuItem[] = [
   { key: 'note', label: '设置备注', icon: EditOutlined },
   { key: 'group', label: '设置分组', icon: AppstoreOutlined },
+  { key: 'models', label: '查询可用模型', icon: BranchesOutlined },
   { key: 'trash', label: '放入回收站', icon: RestOutlined, divided: true },
   { key: 'remove', label: '删除该 API Key', icon: DeleteOutlined, danger: true }
 ]
+
+/** 只作用于单个条目的菜单项：多选时也只查右键的那一个，文案不带数量 */
+const SINGLE_ONLY = new Set(['models'])
+
+/** 「查询可用模型」弹窗对应的 Key；按 id 在主进程取，明文不经渲染进程传 */
+const modelsTarget = ref<KeyEntry | null>(null)
+
+async function loadKeyModels(): Promise<KiroModelInfo[]> {
+  const target = modelsTarget.value
+  if (!target) return []
+  const res = await window.api.listKeyModelDetails(target.id)
+  if (!res.success) throw new Error(res.error || '查询可用模型失败')
+  return res.data ?? []
+}
 
 const trashMenu: ContextMenuItem[] = [
   { key: 'restore', label: '移出回收站', icon: RollbackOutlined },
@@ -847,10 +868,13 @@ const contextMenuItems = computed<ContextMenuItem[]>(() => {
   const base = trashView.value ? trashMenu : normalMenu
   const count = menuTargetIds.value.length
   if (count <= 1) return base
-  return base.map((item) => ({
-    ...item,
-    label: item.key === 'remove' ? `${trashView.value ? '彻底删除' : '删除'}所选 API Key（${count}个）` : `${item.label}（${count}个）`
-  }))
+  return base.map((item) => {
+    if (SINGLE_ONLY.has(item.key)) return item
+    return {
+      ...item,
+      label: item.key === 'remove' ? `${trashView.value ? '彻底删除' : '删除'}所选 API Key（${count}个）` : `${item.label}（${count}个）`
+    }
+  })
 })
 
 function onContextMenu(key: string): void {
@@ -861,6 +885,7 @@ function onContextMenu(key: string): void {
   const multi = ids.length > 1
   if (key === 'note') multi ? (batchNoteOpen.value = true) : openEdit(entry)
   else if (key === 'group') multi ? (batchGroupOpen.value = true) : (groupTarget.value = entry)
+  else if (key === 'models') modelsTarget.value = entry
   else if (key === 'trash') void moveToTrash([...ids], true)
   else if (key === 'restore') void moveToTrash([...ids], false)
   else if (key === 'remove') multi ? removeSelected() : remove(entry)
@@ -1282,16 +1307,7 @@ onUnmounted(() => store.stopStatsPolling())
           移出回收站（{{ selectedIds.length }}个）
         </a-button>
 
-        <a-button
-          v-if="!trashView"
-          :size="toolbarSize"
-          :disabled="!batchTargets.length"
-          @click="batchTestOpen = true"
-        >
-          <template #icon><ThunderboltOutlined /></template>
-          批量测活{{ batchScopeSuffix }}
-        </a-button>
-        <!-- 批量操作作用于全部勾选项 -->
+        <!-- 批量操作作用于全部勾选项，没有勾选时不显示 -->
         <a-dropdown v-if="!trashView && selectedIds.length">
           <a-button :size="toolbarSize">
             批量操作（{{ selectedIds.length }}个）
@@ -1299,6 +1315,14 @@ onUnmounted(() => store.stopStatsPolling())
           </a-button>
           <template #overlay>
             <a-menu>
+              <a-menu-item key="test" @click="batchTestOpen = true">
+                <ThunderboltOutlined />
+                批量测活
+              </a-menu-item>
+              <a-menu-item key="models" @click="batchModelsOpen = true">
+                <BranchesOutlined />
+                批量获取模型
+              </a-menu-item>
               <a-menu-item key="note" @click="batchNoteOpen = true">
                 <EditOutlined />
                 批量设置备注
@@ -1424,6 +1448,19 @@ onUnmounted(() => store.stopStatsPolling())
     </a-modal>
 
     <ExportApiKeysModal v-if="exportOpen" v-model:open="exportOpen" :selected-ids="selectedIds" />
+
+    <ModelListModal
+      v-if="modelsTarget"
+      :subject="displayKey(modelsTarget.key)"
+      :load="loadKeyModels"
+      @close="modelsTarget = null"
+    />
+
+    <BatchKeyModelsModal
+      v-if="batchModelsOpen"
+      :keys="batchTargets"
+      @close="batchModelsOpen = false"
+    />
 
     <BatchNoteModal
       v-if="batchNoteOpen"

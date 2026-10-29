@@ -23,6 +23,7 @@ import {
   type EndpointSnapshot
 } from './kiroSettings'
 import { assertKeyGatewaySupported } from './kiroCapability'
+import { listApiKeyModels } from './kiroChat'
 import { releasePorts } from './localPorts'
 import { log } from './logger'
 import { shouldSkipKeyUsageRefresh } from '../shared/refreshPolicy'
@@ -35,7 +36,8 @@ import type {
   KeyGatewayData,
   KeyGatewayStatus,
   KeyModelInfo,
-  KeyTestResult
+  KeyTestResult,
+  KiroModelInfo
 } from '../shared/types'
 
 let notify: ((status: KeyGatewayStatus) => void) | null = null
@@ -478,6 +480,16 @@ export async function listKeyModels(id: string): Promise<KeyModelInfo[]> {
   if (!entry) throw new Error('未找到该 API Key')
   const result = await fetchModels(entry.region, entry.key)
   return result.models
+}
+
+/**
+ * 该 Key 可用模型的完整信息（上下文 / 输出上限、倍率、推理档位等），供「查询可用模型」弹窗用。
+ * 按 id 在主进程里取 Key，明文不经渲染进程来回传。只读，用 viewKeyData 免一次整表深拷贝。
+ */
+export async function listKeyModelDetails(id: string): Promise<KiroModelInfo[]> {
+  const entry = viewKeyData().keys.find((item) => item.id === id)
+  if (!entry) throw new Error('未找到该 API Key')
+  return listApiKeyModels(entry.key, entry.region)
 }
 
 export async function testKey(id: string): Promise<KeyTestResult> {

@@ -19,6 +19,7 @@ import {
   RestOutlined,
   RollbackOutlined,
   SyncOutlined,
+  BranchesOutlined,
   UploadOutlined
 } from '@ant-design/icons-vue'
 import AccountCard from '@/components/accounts/AccountCard.vue'
@@ -44,6 +45,9 @@ import GroupPanel from '@/components/common/GroupPanel.vue'
 import GroupManageModal from '@/components/common/GroupManageModal.vue'
 import BatchCreateApiKeyModal from '@/components/accounts/BatchCreateApiKeyModal.vue'
 import BatchSubscriptionModal from '@/components/accounts/BatchSubscriptionModal.vue'
+import BatchModelsModal from '@/components/accounts/BatchModelsModal.vue'
+import ModelListModal from '@/components/common/ModelListModal.vue'
+import { freshAccount } from '@/utils/freshAccount'
 import SortMenu from '@/components/common/SortMenu.vue'
 import { useRangeSelect } from '@/utils/rangeSelect'
 import { DEFAULT_SORT, SORT_FIELDS, compareBy, type SortField, type SortKey } from '@/utils/listSort'
@@ -70,7 +74,7 @@ import {
 } from '@/utils/ui'
 import { shouldSkipAccountUsageRefresh } from '@shared/refreshPolicy'
 import { isTrashed } from '@shared/itemGroups'
-import type { Account, AccountDisplayMode, SwitchAccountResult } from '@shared/types'
+import type { Account, AccountDisplayMode, KiroModelInfo, SwitchAccountResult } from '@shared/types'
 
 const accountsStore = useAccountsStore()
 const settingsStore = useSettingsStore()
@@ -96,6 +100,7 @@ const batchNoteOpen = ref(false)
 const batchGroupOpen = ref(false)
 const batchApiKeyOpen = ref(false)
 const batchSubscriptionOpen = ref(false)
+const batchModelsOpen = ref(false)
 
 /** 批量生成 Key / 订阅链接的目标：全部勾选项，按界面当前排序，被筛掉的勾选项排在后面 */
 const batchTargets = computed(() => {
@@ -590,9 +595,29 @@ const normalMenu: ContextMenuItem[] = [
   { key: 'group', label: '设置分组', icon: AppstoreOutlined },
   { key: 'apikey', label: '生成 API Key', icon: KeyOutlined },
   { key: 'subscription', label: '获取订阅链接', icon: CrownOutlined },
+  { key: 'models', label: '查询可用模型', icon: BranchesOutlined },
   { key: 'trash', label: '放入回收站', icon: RestOutlined, divided: true },
   { key: 'remove', label: '删除该账号', icon: DeleteOutlined, danger: true }
 ]
+
+/** 「查询可用模型」弹窗对应的账号 */
+const modelsTarget = ref<Account | null>(null)
+
+/** 非 IDE 当前登录的账号 Token 多半已过期，按需续一次再拉 */
+async function loadAccountModels(): Promise<KiroModelInfo[]> {
+  const target = modelsTarget.value
+  if (!target) return []
+  const account = await freshAccount(target)
+  const res = await window.api.listKiroModels({
+    accessToken: account.credentials.accessToken ?? '',
+    profileArn: account.profileArn || account.credentials.profileArn,
+    region: account.credentials.region,
+    idp: account.idp,
+    authMethod: account.credentials.authMethod
+  })
+  if (!res.success) throw new Error(res.error || '查询可用模型失败')
+  return res.data ?? []
+}
 
 const trashMenu: ContextMenuItem[] = [
   { key: 'restore', label: '移出回收站', icon: RollbackOutlined },
@@ -641,6 +666,9 @@ function onContextMenu(key: string): void {
   else if (key === 'apikey') multi ? (batchApiKeyOpen.value = true) : (apiKeyTarget.value = account)
   else if (key === 'subscription') {
     multi ? (batchSubscriptionOpen.value = true) : (subscriptionTarget.value = account)
+  } else if (key === 'models') {
+    // 多个账号走批量获取（按模型数量归类），单个直接看模型详情
+    multi ? (batchModelsOpen.value = true) : (modelsTarget.value = account)
   } else if (key === 'trash') moveToTrash([...ids], true)
   else if (key === 'restore') moveToTrash([...ids], false)
   else if (key === 'remove') multi ? removeSelected() : removeOne(account)
@@ -929,6 +957,10 @@ function logoutIde(account: Account): void {
                 <CrownOutlined />
                 批量生成订阅链接
               </a-menu-item>
+              <a-menu-item key="models" @click="batchModelsOpen = true">
+                <BranchesOutlined />
+                批量获取模型
+              </a-menu-item>
             </a-menu>
           </template>
         </a-dropdown>
@@ -1084,6 +1116,17 @@ function logoutIde(account: Account): void {
       v-if="batchSubscriptionOpen"
       :accounts="batchTargets"
       @close="batchSubscriptionOpen = false"
+    />
+    <BatchModelsModal
+      v-if="batchModelsOpen"
+      :accounts="batchTargets"
+      @close="batchModelsOpen = false"
+    />
+    <ModelListModal
+      v-if="modelsTarget"
+      :subject="displayEmail(modelsTarget.email)"
+      :load="loadAccountModels"
+      @close="modelsTarget = null"
     />
     <GroupPickerModal
       v-if="batchGroupOpen || groupTarget"
