@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h, ref, toRef, watch } from 'vue'
-import { message } from 'ant-design-vue'
+import { message, Modal } from 'ant-design-vue'
 import {
   AppstoreOutlined,
   CodeOutlined,
@@ -503,6 +503,57 @@ async function switchTo(account: Account): Promise<void> {
         ? `${account.nickname}（${account.email}）`
         : account.email
     switchModalOpen.value = true
+  })
+}
+
+/** 写入命令行版 kiro-cli，并把结果（识别类型、模型数、备份位置）汇报给用户 */
+async function loginToCli(account: Account): Promise<void> {
+  await withBusy(account.id, 'cli-login', async () => {
+    const res = await accountsStore.loginToCli(account.id)
+    if (!res.ok || !res.result) return void message.error(`写入 kiro-cli 失败：${res.error}`)
+    const r = res.result
+    const label = privacyMode.value
+      ? maskedEmail(account.email, true)
+      : account.nickname
+        ? `${account.nickname}（${account.email}）`
+        : account.email
+    const detail = [
+      r.accountType ? `kiro-cli 识别：${r.accountType}` : '',
+      typeof r.modelCount === 'number' && r.modelCount > 0 ? `可用模型：${r.modelCount} 个` : '',
+      !r.keychainWritten ? '（当前平台未写钥匙串，仅写入 data.sqlite3）' : '',
+      r.backupPath ? `原凭证已备份：${r.backupPath}` : ''
+    ].filter(Boolean)
+    if (r.verified) {
+      message.success(`已写入 kiro-cli：${label}`)
+      if (detail.length) {
+        Modal.success({
+          title: '已写入 Kiro CLI',
+          content: h(
+            'div',
+            { style: 'line-height:1.9;word-break:break-all;font-size:13px' },
+            detail.map((t) => h('div', t))
+          )
+        })
+      }
+    } else {
+      Modal.warning({
+        title: '已写入，但校验未通过',
+        content: h(
+          'div',
+          { style: 'line-height:1.9;word-break:break-all;font-size:13px' },
+          [
+            h('div', `账号 ${label} 的凭证已写入 kiro-cli。`),
+            r.verifyError ? h('div', { style: 'color:#faad14' }, `原因：${r.verifyError}`) : null,
+            ...detail.map((t) => h('div', t)),
+            h(
+              'div',
+              { style: 'color:var(--kal-muted);margin-top:6px' },
+              '已在运行的 kiro-cli / KiroCrew 会在下次轮询时重新读取凭证。'
+            )
+          ].filter(Boolean)
+        )
+      })
+    }
   })
 }
 
@@ -1045,6 +1096,7 @@ function logoutIde(account: Account): void {
           @edit="cardHandlers.edit"
           @remove="removeOne"
           @switch="switchTo"
+          @cli-login="loginToCli"
           @logout="logoutIde"
           @refresh-key="refreshKey"
           @refresh-usage="refreshUsage"

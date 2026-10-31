@@ -466,6 +466,58 @@ export interface SwitchAccountResult {
   notes?: string[]
 }
 
+// ============ 写入 Kiro CLI（命令行版 kiro-cli / KiroCrew 共用的凭证库） ============
+
+/** 渲染层发起「写入 kiro-cli」时带的账号凭证 */
+export interface KiroCliLoginInput {
+  accountId: string
+  accessToken: string
+  refreshToken: string
+  clientId?: string
+  clientSecret?: string
+  region?: string
+  startUrl?: string
+  authMethod?: AuthMethod
+  provider?: IdpType
+  profileArn?: string
+}
+
+/** writeKiroCliAuth 的结果（不含刷新后的凭证，由 accountService 合并） */
+export interface KiroCliWriteResult {
+  /** 实际写入的 data.sqlite3 路径 */
+  dbPath: string
+  /** 改动前的备份文件路径 */
+  backupPath?: string
+  /** 是否写了 macOS 钥匙串（其它平台只写 sqlite） */
+  keychainWritten: boolean
+  /** 用 kiro-cli 实测 whoami + 模型列表是否通过 */
+  verified: boolean
+  /** whoami 识别出的账号类型，如 SocialGitHub / BuilderId */
+  accountType?: string
+  /** 实测取到的可用模型数量 */
+  modelCount?: number
+  /** 校验失败原因，仅提示用 */
+  verifyError?: string
+  /** 过程说明（备份位置、识别结果、清理项等） */
+  notes: string[]
+}
+
+/** 写入 kiro-cli 的完整返回：含刷新轮换出的新凭证，供渲染层回写账号 */
+export interface KiroCliLoginResult extends KiroCliWriteResult {
+  accessToken: string
+  refreshToken: string
+  expiresIn: number
+}
+
+/** 当前平台 / 安装情况是否支持写入 kiro-cli */
+export interface KiroCliSupportInfo {
+  supported: boolean
+  reason?: string
+  dbExists: boolean
+  cliInstalled: boolean
+  dbPath: string
+}
+
 /** Kiro 官方可用模型 */
 export interface KiroModelInfo {
   modelId: string

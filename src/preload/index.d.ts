@@ -29,6 +29,9 @@ import type {
   KiroCapability,
   KeyModelInfo,
   KeyTestResult,
+  KiroCliLoginInput,
+  KiroCliLoginResult,
+  KiroCliSupportInfo,
   KiroModelInfo,
   LocalKiroCredentials,
   LoginPollResult,
@@ -178,6 +181,11 @@ export interface Api {
   switchAccount: (input: SwitchAccountInput) => Promise<IpcResult<SwitchAccountResult>>
   restartKiroIde: () => Promise<IpcResult<RestartIdeResult>>
   logoutKiro: () => Promise<IpcResult<{ deleted: number }>>
+
+  getKiroCliSupport: () => Promise<
+    IpcResult<KiroCliSupportInfo & { currentAccount: { accountType?: string; email?: string } | null }>
+  >
+  loginKiroCli: (input: KiroCliLoginInput) => Promise<IpcResult<KiroCliLoginResult>>
 
   getUsageHistory: (accountId: string) => Promise<IpcResult<UsageHistoryEntry[]>>
   /** 最近半小时 / 一小时实际消耗的积分；API Key 的 id 要带 key: 前缀 */

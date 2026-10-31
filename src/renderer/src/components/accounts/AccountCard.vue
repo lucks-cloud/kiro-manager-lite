@@ -3,6 +3,7 @@ import { computed, type Component } from 'vue'
 import {
   CalendarOutlined,
   ClockCircleOutlined,
+  CodeOutlined,
   CopyOutlined,
   DeleteOutlined,
   EditOutlined,
@@ -65,6 +66,8 @@ const emit = defineEmits<{
   remove: [account: Account]
   switch: [account: Account]
   logout: [account: Account]
+  /** 写入命令行版 kiro-cli 的凭证库 */
+  'cli-login': [account: Account]
   'refresh-key': [account: Account]
   'refresh-usage': [account: Account]
   'copy-token': [account: Account]
@@ -189,6 +192,7 @@ const tokenState = computed(() => {
 type ActionKey =
   | 'switch'
   | 'logout'
+  | 'cli-login'
   | 'refresh-key'
   | 'refresh-usage'
   | 'copy-token'
@@ -241,6 +245,12 @@ const actions = computed<CardAction[]>(() => [
       { key: 'refresh-key', label: '刷新密钥', icon: KeyOutlined },
       { key: 'refresh-usage', label: '刷新用量与积分', icon: SyncOutlined }
     ]
+  },
+  {
+    id: 'cli-login',
+    action: 'cli-login',
+    title: '写入 Kiro CLI（命令行版 kiro-cli / KiroCrew）',
+    icon: CodeOutlined
   },
   { id: 'copy-token', action: 'copy-token', title: '复制凭证 JSON', icon: CopyOutlined },
   { id: 'test', action: 'test', title: '测活（发一次真实对话）', icon: ThunderboltOutlined },

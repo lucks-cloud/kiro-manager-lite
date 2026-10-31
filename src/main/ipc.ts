@@ -13,12 +13,14 @@ import { dirname, extname, join } from 'path'
 import {
   checkAccountStatus,
   forgetSwitchedAccounts,
+  loginAccountToCli,
   refreshAccountToken,
   setLastSwitchedAccountId,
   switchAccount,
   syncCredentialsToIde,
   verifyCredentials
 } from './accountService'
+import { kiroCliSupport, readKiroCliWhoami } from './kiroCliAuth'
 import { createAccountApiKey, deleteAccountApiKey, listAccountApiKeys } from './kiroApiKey'
 import { openAccountPortal, openInAppUrl } from './kiroPortal'
 import { createSubscriptionCheckout, getSubscriptionEntry, listSubscriptionPlans } from './kiroSubscription'
@@ -177,6 +179,7 @@ import type {
   ApiKeyChatTestInput,
   ChatTestInput,
   IpcResult,
+  KiroCliLoginInput,
   KiroModelInfo,
   LogQuery,
   MachineIdField,
@@ -391,6 +394,17 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   })
 
   handle('kiro:restart-ide', async () => ok(await restartKiroIde()))
+
+  // ============ 写入命令行版 Kiro CLI（kiro-cli / KiroCrew 共用凭证库） ============
+  handle('kiro:cli-support', async () => {
+    const support = kiroCliSupport()
+    const whoami = support.supported && support.dbExists ? await readKiroCliWhoami() : null
+    return ok({ ...support, currentAccount: whoami })
+  })
+
+  handle('kiro:cli-login', async (_e, input: KiroCliLoginInput) =>
+    ok(await loginAccountToCli(input))
+  )
 
   // ============ Kiro API Key 管理 / 本地网关 ============
   handle('keys:load', () => ok(loadKeys()))
