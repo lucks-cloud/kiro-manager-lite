@@ -17,6 +17,7 @@ import {
   resolveProfileArn,
   writeKiroAuthToken
 } from './kiroAuth'
+import { kiroCliSupport, writeKiroCliAuth } from './kiroCliAuth'
 import { sleep } from './utils'
 import { DEFAULT_REGION } from '../shared/regions'
 import type {
@@ -24,6 +25,8 @@ import type {
   AccountSnapshot,
   AuthMethod,
   IdpType,
+  KiroCliLoginInput,
+  KiroCliLoginResult,
   RefreshTokenResult,
   SwitchAccountInput,
   SwitchAccountResult,
@@ -648,4 +651,77 @@ export async function switchAccount(input: SwitchAccountInput): Promise<SwitchAc
     verifyError: verified ? undefined : verifyError || '用量接口没有返回可识别的结果',
     notes
   }
+}
+
+// ============ 写入 Kiro CLI ============
+
+/**
+ * 把账号写入本机 kiro-cli 的凭证库（命令行版 kiro-cli / KiroCrew 共用）。
+ *
+ * 和切号写 IDE 同理：refreshToken 轮换式，必须先刷新再写盘，否则 kiro-cli 一小时后
+ * 拿作废的旧 refreshToken 刷新会失败。社交账号写固定的 social profileArn，
+ * 具体格式与 state 处理在 kiroCliAuth.writeKiroCliAuth 里。
+ */
+export async function loginAccountToCli(input: KiroCliLoginInput): Promise<KiroCliLoginResult> {
+  const support = kiroCliSupport()
+  if (!support.supported) throw new Error(support.reason || 'kiro-cli 不支持当前平台')
+  if (!support.dbExists) {
+    throw new Error('未找到 kiro-cli 数据库，请先安装并至少运行 / 登录过一次 kiro-cli')
+  }
+
+  const {
+    refreshToken,
+    clientId = '',
+    clientSecret = '',
+    region = DEFAULT_REGION,
+    startUrl,
+    provider = 'BuilderId',
+    profileArn
+  } = input
+  const authMethod = inferAuthMethod(provider, input.authMethod)
+  if (authMethod !== 'social' && (!clientId || !clientSecret)) {
+    throw new Error('IdC / BuilderId 账号需要 clientId 与 clientSecret 才能写入 kiro-cli')
+  }
+
+  let accessToken = input.accessToken
+  let finalRefreshToken = refreshToken
+  let expiresIn = DEFAULT_EXPIRES_IN
+
+  if (refreshToken) {
+    const refreshed = await refreshWithRetry(
+      '写入 kiro-cli 前刷新 Token',
+      { refreshToken, clientId, clientSecret, region, authMethod },
+      '未知错误'
+    )
+      .then((r) => ({ ok: true as const, value: r }))
+      .catch((e) => ({ ok: false as const, error: errorMessage(e) }))
+
+    if (!refreshed.ok) {
+      throw new Error(`刷新 Token 失败，已中止写入以避免 kiro-cli 存入作废凭证。原因：${refreshed.error}`)
+    }
+    accessToken = refreshed.value.accessToken
+    finalRefreshToken = refreshed.value.refreshToken || refreshToken
+    expiresIn = refreshed.value.expiresIn ?? DEFAULT_EXPIRES_IN
+  }
+
+  // 社交账号写固定的 social profileArn；IdC / BuilderId 的 odic token 不带 profile
+  const arnToWrite =
+    authMethod === 'social'
+      ? profileArn || resolveProfileArn({ authMethod, provider, region })
+      : undefined
+
+  const result = await writeKiroCliAuth({
+    accessToken,
+    refreshToken: finalRefreshToken,
+    expiresAtIso: expiresAtIso(expiresIn),
+    authMethod,
+    provider,
+    region,
+    startUrl,
+    clientId,
+    clientSecret,
+    profileArn: arnToWrite
+  })
+
+  return { ...result, accessToken, refreshToken: finalRefreshToken, expiresIn }
 }

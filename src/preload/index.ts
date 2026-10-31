@@ -111,6 +111,10 @@ const api = {
   restartKiroIde: () => invoke('kiro:restart-ide'),
   logoutKiro: () => invoke('kiro:logout'),
 
+  // 命令行版 Kiro CLI（kiro-cli / KiroCrew 共用凭证库）
+  getKiroCliSupport: () => invoke('kiro:cli-support'),
+  loginKiroCli: (input: unknown) => invoke('kiro:cli-login', input),
+
   // 账号测活
   listKiroModels: (input: unknown) => invoke('kiro:list-models', input),
   chatTest: (requestId: string, input: unknown) => invoke('kiro:chat-test', requestId, input),

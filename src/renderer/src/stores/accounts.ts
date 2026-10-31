@@ -16,6 +16,7 @@ import {
   type ProactiveRenewalPayload,
   type SubscriptionType,
   type SwitchAccountResult,
+  type KiroCliLoginResult,
   type VerifyCredentialsInput
 } from '@shared/types'
 import { errorMessage, isCredentialRejected } from '@shared/errors'
@@ -1122,6 +1123,55 @@ export const useAccountsStore = defineStore('accounts', () => {
     return { ok: true, result }
   }
 
+  /**
+   * 把账号写入本机 kiro-cli（命令行版 / KiroCrew 共用凭证库）。
+   * 与切号到 IDE 不同：这不改变 IDE 的激活账号，只回写轮换后的凭证。
+   */
+  async function loginToCli(
+    id: string
+  ): Promise<{ ok: boolean; error?: string; result?: KiroCliLoginResult }> {
+    const account = get(id)
+    if (!account) return { ok: false, error: '账号不存在' }
+
+    const res = await window.api.loginKiroCli({
+      accountId: id,
+      accessToken: account.credentials.accessToken,
+      refreshToken: account.credentials.refreshToken,
+      clientId: account.credentials.clientId,
+      clientSecret: account.credentials.clientSecret,
+      region: account.credentials.region,
+      startUrl: account.credentials.startUrl,
+      authMethod: authMethodOf(account.idp),
+      provider: account.idp,
+      profileArn: account.profileArn || account.credentials.profileArn
+    })
+    if (!res.success || !res.data) {
+      console.warn(`[Account] 写入 kiro-cli 失败（${account.email}）：${res.error}`)
+      return { ok: false, error: res.error }
+    }
+
+    const result = res.data
+    console.info(
+      `[Account] 已写入 kiro-cli：${account.email}（${result.accountType || '未知'}，校验${result.verified ? '通过' : '未通过'}）`
+    )
+    // 刷新轮换出的新凭证回写内存，否则下次用旧 refreshToken 会失败
+    accounts.value = accounts.value.map((a) =>
+      a.id === id
+        ? {
+            ...a,
+            credentials: {
+              ...a.credentials,
+              accessToken: result.accessToken,
+              refreshToken: result.refreshToken,
+              expiresAt: Date.now() + result.expiresIn * 1000
+            }
+          }
+        : a
+    )
+    persist(true)
+    return { ok: true, result }
+  }
+
   async function restartKiroIde(): Promise<{ ok: boolean; message: string }> {
     const res = await window.api.restartKiroIde()
     if (!res.success || !res.data) {
@@ -1447,6 +1497,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     applyRenewedCredentials,
     runBatch,
     switchTo,
+    loginToCli,
     restartKiroIde,
     syncActiveFromIde,
     logoutIde,
