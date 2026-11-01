@@ -31,22 +31,26 @@ const DEFAULT_EXPIRES_IN = 3600
 let protocolRegistered = false
 
 /**
- * 抢占 kiro:// 协议，并确认真的抢到了。
+ * 强制把 kiro:// 的系统默认处理者抢回本应用，并确认真的抢到了。
  *
- * 必须验证而不能只看 setAsDefaultProtocolClient 的返回值：
- * macOS 上只有 Info.plist 声明过该 scheme 才可能成为默认处理者
- * （见 electron-builder.yml 的 protocols），未声明时调用会静默失效，
- * 回调依旧被 Kiro IDE 接走——表现就是「登录成功后打开了 Kiro，而不是回到本应用」。
+ * 别的应用（Kiro IDE、甚至微信开发者工具这类也声明了 kiro:// 的工具）可能已经把自己
+ * 设成了默认处理者；只调用一次 setAsDefaultProtocolClient 未必能盖过它，表现就是
+ * 「浏览器授权成功后打开了别的应用，而不是回到本应用」。
+ *
+ * 这里每次发起社交登录时都强制重新抢占：先撤销再设置，让 macOS 的
+ * LSSetDefaultHandlerForURLScheme（Windows 下写注册表）把默认处理者改回本应用。
+ * 之后用 isDefaultProtocolClient 校验是否真的抢到——macOS 上只有 Info.plist 声明过该
+ * scheme 才可能成为默认处理者（见 electron-builder.yml 的 protocols），未声明会静默失效。
  *
  * @returns 是否已成为 kiro:// 的默认处理者
  */
 function registerProtocol(): boolean {
-  if (!protocolRegistered) {
-    setProtocolClient(PROTOCOL, true)
-    protocolRegistered = true
-  }
+  // 先撤销自身旧登记再重新设置，强制触发系统把默认处理者改回本应用
+  setProtocolClient(PROTOCOL, false)
+  setProtocolClient(PROTOCOL, true)
+  protocolRegistered = true
   const owned = app.isDefaultProtocolClient(PROTOCOL)
-  console.log(`[Login] kiro:// protocol registered (temporary), owned=${owned}`)
+  console.log(`[Login] kiro:// protocol reclaimed (temporary), owned=${owned}`)
   return owned
 }
 
@@ -335,14 +339,14 @@ export async function startSocialLogin(
   }
 
   /*
-   * 抢不到 kiro:// 就别让用户白走一趟：授权会成功，但回调会被 Kiro IDE 接走，
-   * 本应用永远等不到 code，用户只会看到「浏览器授权完了，然后 Kiro 打开了」。
-   * 这里提前拦下并说明原因，而不是让它静默失败。
+   * 抢不到 kiro:// 就别让用户白走一趟：授权会成功，但回调会被别的应用接走，
+   * 本应用永远等不到 code，用户只会看到「浏览器授权完了，然后打开了别的应用」。
+   * 这里先强制把默认处理者抢回本应用；仍抢不到（通常是开发模式未声明该协议）就提前拦下并说明原因。
    */
   if (!registerProtocol()) {
     cancelLogin()
     throw new Error(
-      '无法接管 kiro:// 回调协议，社交登录的回调会被 Kiro IDE 接走。' +
+      '无法接管 kiro:// 回调协议，社交登录的回调会被其它应用接走。' +
         '这通常发生在开发模式下（Electron 未声明该协议）；' +
         '请使用正式安装的版本，或改用 Builder ID / 企业版登录。'
     )

@@ -189,7 +189,9 @@ interface RawFreeTrial {
 
 interface RawBonus {
   bonusCode?: string
+  bonusType?: string
   displayName?: string
+  description?: string
   currentUsage?: number
   currentUsageWithPrecision?: number
   usageLimit?: number
@@ -384,6 +386,8 @@ export function parseUsageResponse(res: UsageResponse): ParsedUsage {
     bonuses.push({
       code: b.bonusCode || '',
       name: b.displayName || '',
+      bonusType: b.bonusType || undefined,
+      description: b.description || undefined,
       current,
       limit,
       expiresAt: toIso(b.expiresAt)

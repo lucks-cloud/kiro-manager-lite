@@ -77,6 +77,21 @@ function mask(value?: string): string {
   return `${value.slice(0, 8)}${'•'.repeat(24)}${value.slice(-6)}`
 }
 
+/** 注册密码单独的显隐开关，与凭证区互不影响 */
+const showPassword = ref(false)
+
+/**
+ * 遮挡注册密码：只露首尾各一位，中间固定 8 个星号。
+ * 中间位数与真实长度无关，避免从展示长度反推出密码位数。
+ */
+function maskPassword(value?: string): string {
+  if (!value) return '-'
+  if (showPassword.value) return value
+  const first = value.slice(0, 1)
+  const last = value.length > 1 ? value.slice(-1) : ''
+  return `${first}${'*'.repeat(8)}${last}`
+}
+
 function copy(label: string, value?: string): void {
   if (!value) return void message.warning(`${label} 为空`)
   copyText(value, `${label} 已复制`)
@@ -91,8 +106,7 @@ const credentialFields = computed(() => {
     { label: 'Refresh Token', value: target.credentials.refreshToken },
     { label: 'Client ID', value: target.credentials.clientId },
     { label: 'Client Secret', value: target.credentials.clientSecret },
-    { label: 'Profile ARN', value: target.profileArn || target.credentials.profileArn },
-    { label: '注册密码', value: target.password }
+    { label: 'Profile ARN', value: target.profileArn || target.credentials.profileArn }
   ]
 })
 
@@ -179,6 +193,24 @@ async function act(kind: 'refresh' | 'check' | 'switch'): Promise<void> {
         <a-descriptions-item label="区域">
           {{ regionLabel(account.credentials.region) }}
         </a-descriptions-item>
+        <a-descriptions-item label="注册密码">
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px">
+            <span class="mono">{{ maskPassword(account.password) }}</span>
+            <a-space v-if="account.password" :size="0">
+              <a-button type="link" size="small" @click="showPassword = !showPassword">
+                <template #icon>
+                  <EyeInvisibleOutlined v-if="showPassword" />
+                  <EyeOutlined v-else />
+                </template>
+                {{ showPassword ? '隐藏' : '显示' }}
+              </a-button>
+              <a-button type="link" size="small" @click="copy('注册密码', account.password)">
+                <template #icon><CopyOutlined /></template>
+                复制
+              </a-button>
+            </a-space>
+          </div>
+        </a-descriptions-item>
         <a-descriptions-item label="添加时间">{{ formatDateTime(account.createdAt) }}</a-descriptions-item>
         <a-descriptions-item label="最后检查">{{ formatDateTime(account.lastCheckedAt) }}</a-descriptions-item>
       </a-descriptions>
@@ -211,7 +243,7 @@ async function act(kind: 'refresh' | 'check' | 'switch'): Promise<void> {
         {{ account.usage.resourceDetail?.displayNamePlural || 'Credits' }}
       </p>
 
-      <a-descriptions :column="1" size="small" bordered style="margin-bottom: 12px">
+      <a-descriptions :column="1" size="small" bordered style="margin-bottom: 18px">
         <a-descriptions-item label="基础额度">
           {{ formatCreditsPair(account.usage.baseCurrent, account.usage.baseLimit, precision) }}
         </a-descriptions-item>
@@ -221,6 +253,26 @@ async function act(kind: 'refresh' | 'check' | 'switch'): Promise<void> {
             （{{ formatDate(account.usage.freeTrialExpiry) }} 到期）
           </span>
         </a-descriptions-item>
+        <!-- 奖励额度（试用赠送、首充赠送等）：紧跟在基础 / 试用额度下面，各占一行 -->
+        <a-descriptions-item
+          v-for="bonus in account.usage.bonuses || []"
+          :key="bonus.code || bonus.name"
+          :label="bonus.name || '奖励额度'"
+        >
+          <div>
+            {{ formatCreditsPair(bonus.current, bonus.limit, precision) }}
+            <span v-if="bonus.expiresAt" class="muted">
+              （{{ formatDate(bonus.expiresAt) }} 到期）
+            </span>
+          </div>
+          <div
+            v-if="bonus.bonusType || bonus.description"
+            class="muted"
+            style="font-size: 12px; margin-top: 2px"
+          >
+            {{ [bonus.bonusType, bonus.description].filter(Boolean).join(' • ') }}
+          </div>
+        </a-descriptions-item>
         <a-descriptions-item v-if="account.usage.resourceDetail?.overageRate" label="超额费率">
           {{ account.usage.resourceDetail.currency }} {{ account.usage.resourceDetail.overageRate }} /
           {{ account.usage.resourceDetail.unit }}
@@ -229,21 +281,6 @@ async function act(kind: 'refresh' | 'check' | 'switch'): Promise<void> {
           </a-tag>
         </a-descriptions-item>
       </a-descriptions>
-
-      <template v-if="account.usage.bonuses?.length">
-        <div class="muted" style="margin-bottom: 6px">奖励额度</div>
-        <a-list size="small" bordered :data-source="account.usage.bonuses" style="margin-bottom: 18px">
-          <template #renderItem="{ item }">
-            <a-list-item>
-              <span>{{ item.name || item.code }}</span>
-              <span class="muted">
-                {{ formatCreditsPair(item.current, item.limit, precision) }}
-                <template v-if="item.expiresAt"> · {{ formatDate(item.expiresAt) }} 到期</template>
-              </span>
-            </a-list-item>
-          </template>
-        </a-list>
-      </template>
 
       <div class="section-title" style="margin-top: 6px">
         凭证

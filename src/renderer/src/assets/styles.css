@@ -356,3 +356,32 @@ body {
 .ant-notification {
   z-index: 2000 !important;
 }
+
+/*
+ * 全局滚动条：细长条、无轨道背景，滑块半透明，悬停加深。
+ * 渲染进程是 Chromium，::-webkit-scrollbar 全局生效；颜色用中性灰，明暗主题都能看清。
+ */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: rgba(140, 140, 160, 0.35);
+  /*
+   * 滑块长度由「可视区 ÷ 内容总长」决定，内容一长就缩成一小截。
+   * 设最小长度保底，长列表里也好抓、好看见。
+   */
+  min-height: 60px;
+  min-width: 60px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(140, 140, 160, 0.6);
+}

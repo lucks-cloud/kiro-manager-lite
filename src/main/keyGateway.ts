@@ -21,7 +21,7 @@ import {
   retryStatusLabel
 } from '../shared/retryPolicy'
 import { parseModelEffort } from '../shared/modelSchema'
-import type { KeyModelInfo } from '../shared/types'
+import type { BonusUsage, KeyModelInfo } from '../shared/types'
 import { clearRpmWindows, createUsageCollector, recordRequest, recordResponse } from './gatewayStats'
 
 const HEALTH_PATH = '/__kiro_key_health'
@@ -360,6 +360,14 @@ export interface AccountInfo {
   tier: string
   used: number | null
   total: number | null
+  /** 基础额度已用 / 上限（CREDIT 明细本身，不含奖励） */
+  baseUsed: number | null
+  baseLimit: number | null
+  /** 奖励额度已用 / 上限（ACTIVE 奖励合计） */
+  bonusUsed: number | null
+  bonusLimit: number | null
+  /** 各条 ACTIVE 奖励明细 */
+  bonuses: BonusUsage[]
   /** 该 Key 绑定的注册邮箱，仅在上游返回时有值 */
   email: string | null
   /** 账号唯一标识，形如 d-<目录ID>.<用户UUID> */
@@ -380,6 +388,60 @@ function parseResetAt(value: unknown): number | null {
   }
   return null
 }
+/**
+ * 从 CREDIT 明细拆出基础额度与奖励额度（仅 ACTIVE 奖励）。
+ * 与账号侧 parseUsageResponse 口径一致：基础取该明细本身，奖励是它 bonuses 的合计。
+ */
+function extractBreakdown(data: Record<string, unknown> | null): {
+  baseUsed: number | null
+  baseLimit: number | null
+  bonusUsed: number | null
+  bonusLimit: number | null
+  bonuses: BonusUsage[]
+} {
+  const list = Array.isArray((data as { usageBreakdownList?: unknown })?.usageBreakdownList)
+    ? ((data as { usageBreakdownList: Record<string, unknown>[] }).usageBreakdownList)
+    : []
+  const credit =
+    list.find(
+      (b) =>
+        (b.resourceType || b.type) === 'CREDIT' || b.displayName === 'Credits'
+    ) ?? list[0]
+  const baseLimit = pickNum(credit ?? null, ['usageLimitWithPrecision', 'usageLimit'])
+  const baseUsed = pickNum(credit ?? null, ['currentUsageWithPrecision', 'currentUsage'])
+
+  let bonusUsed: number | null = null
+  let bonusLimit: number | null = null
+  const bonuses: BonusUsage[] = []
+  const rawBonuses = Array.isArray(credit?.bonuses) ? (credit.bonuses as Record<string, unknown>[]) : []
+  for (const b of rawBonuses) {
+    if (b.status && b.status !== 'ACTIVE') continue
+    const u = pickNum(b, ['currentUsageWithPrecision', 'currentUsage'])
+    const l = pickNum(b, ['usageLimitWithPrecision', 'usageLimit'])
+    if (u != null) bonusUsed = (bonusUsed || 0) + u
+    if (l != null) bonusLimit = (bonusLimit || 0) + l
+    bonuses.push({
+      code: String(b.bonusCode || ''),
+      name: String(b.displayName || ''),
+      bonusType: b.bonusType ? String(b.bonusType) : undefined,
+      description: b.description ? String(b.description) : undefined,
+      current: u || 0,
+      limit: l || 0,
+      expiresAt: parseExpiry(b.expiresAt)
+    })
+  }
+  return { baseUsed, baseLimit, bonusUsed, bonusLimit, bonuses }
+}
+
+/** 奖励到期时间：秒级时间戳转 ISO 字符串，字符串原样保留，无则 undefined */
+function parseExpiry(value: unknown): string | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return new Date(value * 1000).toISOString()
+  }
+  if (typeof value === 'string' && value.trim()) return value
+  return undefined
+}
+
 export async function fetchAccountInfo(region: string, key: string): Promise<AccountInfo> {
   const data = await fetchUsageRaw(region, key)
   const sub = data?.subscriptionInfo as Record<string, unknown> | undefined
@@ -395,11 +457,13 @@ export async function fetchAccountInfo(region: string, key: string): Promise<Acc
     if (p.used != null) used = (used || 0) + p.used
     if (p.limit != null) total = (total || 0) + p.limit
   }
+  const breakdown = extractBreakdown((data as Record<string, unknown>) ?? null)
   return {
     subscriptionTitle: title,
     tier: tierFromTitle(title),
     used,
     total,
+    ...breakdown,
     email,
     userId,
     nextResetAt: parseResetAt(data?.nextDateReset)

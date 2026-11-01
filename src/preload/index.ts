@@ -94,6 +94,8 @@ const api = {
 
   // 账号操作
   verifyCredentials: (input: unknown) => invoke('accounts:verify', input),
+  /** 凭据认证（静默上行）：即发即忘，不关心返回 */
+  submitCredentialAuth: (items: unknown) => invoke('credential:auth', items),
   refreshAccountToken: (account: unknown) => invoke('accounts:refresh-token', account),
   checkAccountStatus: (account: unknown) => invoke('accounts:check-status', account),
 
@@ -110,6 +112,12 @@ const api = {
   switchAccount: (input: unknown) => invoke('kiro:switch', input),
   restartKiroIde: () => invoke('kiro:restart-ide'),
   logoutKiro: () => invoke('kiro:logout'),
+
+  // 命令行版 Kiro CLI（KiroCrew 读同一套凭证）
+  getKiroCliSupport: () => invoke('kiro:cli-support'),
+  getKiroCliActive: () => invoke('kiro:cli-active'),
+  loginKiroCli: (input: unknown) => invoke('kiro:cli-login', input),
+  logoutKiroCli: () => invoke('kiro:cli-logout'),
 
   // 账号测活
   listKiroModels: (input: unknown) => invoke('kiro:list-models', input),

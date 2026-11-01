@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { CheckCircleFilled, ExclamationCircleOutlined } from '@ant-design/icons-vue'
+import { CheckCircleFilled, ExclamationCircleOutlined, LogoutOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
+import { confirmDanger } from '@/utils/ui'
 import { useAccountsStore, type AccountTaskType } from '@/stores/accounts'
 import { useKeysStore } from '@/stores/keys'
 import { useSettingsStore } from '@/stores/settings'
@@ -55,13 +56,61 @@ async function detectCurrentApiKey(): Promise<void> {
   if (error) message.error(error)
 }
 
-const activeLabel = computed(() => {
-  const account = accountsStore.activeAccount
-  if (!account) return null
-  // 打码时昵称同样会暴露邮箱前缀，所以只显示打码后的邮箱
+/** 账号展示名，打码模式下只显示打码邮箱 */
+function accountLabel(account: { email: string; nickname?: string }): string {
   if (settingsStore.settings.privacyMode) return displayEmail(account.email, true)
   return account.nickname ? `${account.nickname} · ${account.email}` : account.email
+}
+
+const activeLabel = computed(() => {
+  const account = accountsStore.activeAccount
+  return account ? accountLabel(account) : null
 })
+
+const activeCliLabel = computed(() => {
+  const account = accountsStore.activeAccountCli
+  return account ? accountLabel(account) : null
+})
+
+const detecting = ref(false)
+
+/** 「重新检测」同时刷新 IDE 与 Kiro CLI 两端的使用中账号 */
+async function detectActiveAccounts(): Promise<void> {
+  detecting.value = true
+  try {
+    await Promise.all([accountsStore.syncActiveFromIde(), accountsStore.syncActiveFromCli()])
+  } finally {
+    detecting.value = false
+  }
+}
+
+/** 点检测标签：打开对应账号的详情（由 AccountsView 监听打开抽屉） */
+function openActiveDetail(account: { id: string } | null): void {
+  if (account) accountsStore.requestAccountDetail(account.id)
+}
+
+const cliLoggingOut = ref(false)
+
+/** 退出 Kiro CLI / KiroCrew 登录：清理本机 kiro-cli 凭证库 */
+function logoutCli(): void {
+  const account = accountsStore.activeAccountCli
+  const label = account ? `（${displayEmail(account.email, settingsStore.settings.privacyMode)}）` : ''
+  confirmDanger({
+    title: `退出 Kiro CLI 登录${label}`,
+    content: '会清理本机 kiro-cli 的凭证（钥匙串与 data.sqlite3），Kiro CLI / KiroCrew 需要重新登录。',
+    okText: '继续',
+    onOk: async () => {
+      cliLoggingOut.value = true
+      try {
+        const res = await accountsStore.logoutCli()
+        if (res.ok) message.success('已退出 Kiro CLI 登录')
+        else message.error(res.error || '退出 Kiro CLI 失败')
+      } finally {
+        cliLoggingOut.value = false
+      }
+    }
+  })
+}
 </script>
 
 <template>
@@ -101,13 +150,42 @@ const activeLabel = computed(() => {
     <span class="toolbar-spacer" />
 
     <template v-if="showIdeStatus">
-      <a-tag v-if="activeLabel" color="green" style="margin: 0">
-        <CheckCircleFilled /> IDE 当前：{{ activeLabel }}
+      <!-- 匹配到账号的标签可点击，打开对应账号的详情 -->
+      <a-tag
+        v-if="activeLabel"
+        color="green"
+        style="margin: 0; cursor: pointer"
+        title="点击查看该账号详情"
+        @click="openActiveDetail(accountsStore.activeAccount)"
+      >
+        <CheckCircleFilled /> IDE：{{ activeLabel }}
       </a-tag>
       <a-tag v-else style="margin: 0">
-        <ExclamationCircleOutlined /> IDE 未匹配到已管理账号
+        <ExclamationCircleOutlined /> IDE 未匹配到账号
       </a-tag>
-      <a-button size="small" @click="accountsStore.syncActiveFromIde()">重新检测</a-button>
+      <a-tag
+        v-if="activeCliLabel"
+        color="blue"
+        style="margin: 0; cursor: pointer"
+        title="点击查看该账号详情"
+        @click="openActiveDetail(accountsStore.activeAccountCli)"
+      >
+        <CheckCircleFilled /> Kiro CLI：{{ activeCliLabel }}
+      </a-tag>
+      <a-tag v-else style="margin: 0">
+        <ExclamationCircleOutlined /> Kiro CLI 未匹配到账号
+      </a-tag>
+      <a-button
+        v-if="activeCliLabel"
+        size="small"
+        danger
+        :loading="cliLoggingOut"
+        @click="logoutCli"
+      >
+        <template #icon><LogoutOutlined /></template>
+        退出 Kiro CLI
+      </a-button>
+      <a-button size="small" :loading="detecting" @click="detectActiveAccounts">重新检测</a-button>
     </template>
 
     <template v-if="showApiKeyStatus">

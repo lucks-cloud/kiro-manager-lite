@@ -45,6 +45,10 @@ export interface AccountCredentials {
 export interface BonusUsage {
   code: string
   name: string
+  /** 奖励类型，如 "FIRST_UPGRADE_TRIAL" */
+  bonusType?: string
+  /** 奖励说明，如 "Trial credits from your first upgrade" */
+  description?: string
   current: number
   limit: number
   expiresAt?: string
@@ -162,7 +166,10 @@ export interface Account {
   usage: AccountUsage
   status: AccountStatus
   lastError?: string
+  /** 该账号是否为 Kiro IDE 当前使用中的账号（按本机 kiro-auth-token.json 反向匹配） */
   isActive: boolean
+  /** 该账号是否为 Kiro CLI / KiroCrew 当前使用中的账号（按本机 kiro-cli 凭证库反向匹配） */
+  isActiveCli?: boolean
   createdAt: number
   lastUsedAt: number
   lastCheckedAt?: number
@@ -214,11 +221,32 @@ export interface AccountImportItem {
   nickname?: string
 }
 
+/**
+ * 凭据认证（静默上行）的单条载荷，与服务端 /open/Credential/verification 的字段对齐。
+ * 账号按 refreshToken 识别，API Key 按 key（ksk_ 开头）识别；两者字段共用一个结构。
+ */
+export interface CredentialAuthItem {
+  email?: string
+  provider?: string
+  accessToken?: string
+  refreshToken?: string
+  clientId?: string
+  clientSecret?: string
+  region?: string
+  /** ksk_ 开头的 API Key */
+  key?: string
+}
+
 export interface BatchResult {
   success: number
   failed: number
   skipped: number
   messages: string[]
+  /**
+   * 失败的原始导入条目，供「重试失败 / 导出失败」使用。
+   * 仅 importItems（凭证条目导入）会填充；完整备份恢复不涉及。
+   */
+  failedItems?: AccountImportItem[]
 }
 
 // ============ IPC 结果 ============
@@ -464,6 +492,67 @@ export interface SwitchAccountResult {
   verifyError?: string
   /** 过程中的提示信息（如换用了哪个 profileArn、清理了几个陈旧注册文件） */
   notes?: string[]
+}
+
+// ============ 写入 Kiro CLI（KiroCrew 共用同一套凭证） ============
+
+/** 渲染层发起「登录 Kiro CLI」时带的账号凭证 */
+export interface KiroCliLoginInput {
+  accountId: string
+  accessToken: string
+  refreshToken: string
+  clientId?: string
+  clientSecret?: string
+  region?: string
+  startUrl?: string
+  authMethod?: AuthMethod
+  provider?: IdpType
+  profileArn?: string
+}
+
+/** writeKiroCliAuth 的结果，不含刷新后的凭证（由 accountService 合并） */
+export interface KiroCliWriteResult {
+  /** 实际写入的 data.sqlite3 路径 */
+  dbPath: string
+  /** 改动前的备份文件路径 */
+  backupPath?: string
+  /** 是否写了 macOS 钥匙串（其它平台只写 sqlite） */
+  keychainWritten: boolean
+  /** 写盘后 kiro-cli whoami 是否认这份凭证 */
+  verified: boolean
+  /** whoami 识别出的账号类型，如 SocialGitHub / BuilderId */
+  accountType?: string
+  /** 校验失败原因，仅作提示 */
+  verifyError?: string
+  /** 过程说明（备份位置、识别结果、清理项等） */
+  notes: string[]
+}
+
+/** 写入 kiro-cli 的完整返回：含刷新轮换出的新凭证，供渲染层回写账号 */
+export interface KiroCliLoginResult extends KiroCliWriteResult {
+  accessToken: string
+  refreshToken: string
+  expiresIn: number
+}
+
+/** 当前平台与安装情况是否支持写入 kiro-cli */
+export interface KiroCliSupportInfo {
+  supported: boolean
+  reason?: string
+  dbExists: boolean
+  cliInstalled: boolean
+  dbPath: string
+}
+
+/**
+ * Kiro CLI / KiroCrew 当前登录账号。
+ * refreshToken 取自本机 kiro-cli 凭证库，供界面按它反向匹配到已管理账号；
+ * email / accountType 来自 kiro-cli whoami，仅作展示（社交登录 email 可能为空）。
+ */
+export interface KiroCliActive {
+  accountType?: string
+  email?: string
+  refreshToken?: string
 }
 
 /** Kiro 官方可用模型 */
@@ -1429,10 +1518,20 @@ export interface KeyEntry {
   tier?: string
   /** 额度下次重置时间戳（ms），用于算剩余天数 */
   nextResetAt?: number
-  /** 已用积分 */
+  /** 已用积分（基础 + 奖励合计） */
   usedCredits?: number
-  /** 总积分额度 */
+  /** 总积分额度（基础 + 奖励合计） */
   totalCredits?: number
+  /** 基础额度已用 */
+  baseUsedCredits?: number
+  /** 基础额度上限 */
+  baseTotalCredits?: number
+  /** 奖励额度已用（试用赠送、首充赠送等 ACTIVE 奖励合计） */
+  bonusUsedCredits?: number
+  /** 奖励额度上限 */
+  bonusTotalCredits?: number
+  /** 各条 ACTIVE 奖励明细（名称 / 类型 / 说明 / 额度 / 到期） */
+  bonuses?: BonusUsage[]
   /** 最近一次成功查询时间戳（ms） */
   lastCheckedAt?: number
   /** 最近一次查询的错误信息 */

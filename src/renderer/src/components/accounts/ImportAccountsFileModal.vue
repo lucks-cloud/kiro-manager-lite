@@ -10,15 +10,23 @@ import { message } from 'ant-design-vue'
 import {
   CopyOutlined,
   DeleteOutlined,
+  DownOutlined,
+  ExportOutlined,
   ImportOutlined,
   InboxOutlined,
-  LoadingOutlined
+  LoadingOutlined,
+  RedoOutlined
 } from '@ant-design/icons-vue'
 import { useAccountsStore } from '@/stores/accounts'
 import { useSettingsStore } from '@/stores/settings'
 import { copyText } from '@/utils/ui'
-import { parseImportContent, type ParsedImport } from '@/utils/transfer'
-import { DEFAULT_SETTINGS, type BatchResult } from '@shared/types'
+import {
+  buildImportItemsJson,
+  failedItemsFilename,
+  parseImportContent,
+  type ParsedImport
+} from '@/utils/transfer'
+import { DEFAULT_SETTINGS, type AccountImportItem, type BatchResult } from '@shared/types'
 
 const props = defineProps<{ open: boolean }>()
 const emit = defineEmits<{ 'update:open': [boolean] }>()
@@ -42,6 +50,10 @@ const importing = ref(false)
 const currentIndex = ref(0)
 const currentName = ref('')
 const result = ref<BatchResult | null>(null)
+/** 累积的失败条目，供重试 / 导出 */
+const failedItems = ref<AccountImportItem[]>([])
+/** 导出失败账号的进行态 */
+const exporting = ref(false)
 
 const importConcurrency = computed(
   () => settingsStore.settings.importConcurrency || DEFAULT_SETTINGS.importConcurrency
@@ -98,6 +110,7 @@ watch(
     if (open) {
       entries.value = []
       result.value = null
+      failedItems.value = []
       currentIndex.value = 0
       currentName.value = ''
     }
@@ -149,11 +162,6 @@ function remove(uid: string): void {
   entries.value = entries.value.filter((e) => e.uid !== uid)
 }
 
-function clearAll(): void {
-  entries.value = []
-  result.value = null
-}
-
 function close(): void {
   emit('update:open', false)
 }
@@ -166,6 +174,7 @@ async function submit(): Promise<void> {
 
   importing.value = true
   const merged: BatchResult = { success: 0, failed: 0, skipped: 0, messages: [] }
+  const collectedFailed: AccountImportItem[] = []
   try {
     for (let i = 0; i < list.length; i++) {
       const entry = list[i]
@@ -186,6 +195,7 @@ async function submit(): Promise<void> {
       merged.success += single.success
       merged.failed += single.failed
       merged.skipped += single.skipped
+      if (single.failedItems?.length) collectedFailed.push(...single.failedItems)
       merged.messages.push(
         `【${entry.name}】成功 ${single.success}，跳过 ${single.skipped}，失败 ${single.failed}`,
         ...single.messages.map((line) => `  ${line}`)
@@ -193,10 +203,11 @@ async function submit(): Promise<void> {
     }
 
     result.value = merged
+    failedItems.value = collectedFailed
     const summary = `成功 ${merged.success}，跳过 ${merged.skipped}，失败 ${merged.failed}`
     if (merged.success) message.success(`${list.length} 个文件导入完成：${summary}`)
     else message.warning(`没有成功导入的账号（${summary}）`)
-    // 全部顺利才自动关闭；有失败时留下弹窗给用户看日志
+    // 全部顺利才自动关闭；有失败时留下弹窗给用户看日志与重试
     if (merged.success && !merged.failed) close()
   } finally {
     importing.value = false
@@ -204,12 +215,55 @@ async function submit(): Promise<void> {
     currentName.value = ''
   }
 }
+
+/** 重试失败账号：只把上次失败的条目再跑一遍，结果合并进日志，失败清单替换为新一轮的失败 */
+async function retryFailed(): Promise<void> {
+  const retryList = failedItems.value
+  if (retryList.length === 0) return
+  importing.value = true
+  currentName.value = `重试 ${retryList.length} 个失败账号`
+  try {
+    const single = await accountsStore.importItems(retryList)
+    const base = result.value ?? { success: 0, failed: 0, skipped: 0, messages: [] }
+    base.success += single.success
+    base.skipped += single.skipped
+    // 失败数以本轮为准（重试成功的要从失败里扣掉）
+    base.failed = base.failed - retryList.length + single.failed
+    base.messages.push(
+      `【重试 ${retryList.length} 个失败账号】成功 ${single.success}，跳过 ${single.skipped}，失败 ${single.failed}`,
+      ...single.messages.map((line) => `  ${line}`)
+    )
+    result.value = { ...base }
+    failedItems.value = single.failedItems ?? []
+    const summary = `成功 ${single.success}，跳过 ${single.skipped}，失败 ${single.failed}`
+    if (single.success) message.success(`重试完成：${summary}`)
+    else message.warning(`重试没有新增成功（${summary}）`)
+  } finally {
+    importing.value = false
+    currentName.value = ''
+  }
+}
+
+/** 导出失败账号 JSON（精简 JSON，格式与账号管理导出一致，可再次导入） */
+async function exportFailed(): Promise<void> {
+  if (failedItems.value.length === 0) return
+  exporting.value = true
+  try {
+    const content = buildImportItemsJson(failedItems.value)
+    const res = await window.api.exportToFile(content, failedItemsFilename(failedItems.value.length))
+    if (!res.success) return void message.error(res.error || '导出失败')
+    if (!res.data?.saved) return
+    message.success(`已导出 ${failedItems.value.length} 个失败账号`)
+  } finally {
+    exporting.value = false
+  }
+}
 </script>
 
 <template>
   <a-modal
     :open="props.open"
-    width="700px"
+    width="820px"
     centered
     :footer="null"
     :mask-closable="!importing"
@@ -304,9 +358,28 @@ async function submit(): Promise<void> {
       </div>
     </template>
 
-    <a-space style="width: 100%; justify-content: flex-end; margin-top: 16px">
-      <a-button :disabled="importing" @click="close">关闭</a-button>
-      <a-button v-if="entries.length" :disabled="importing" @click="clearAll">清空列表</a-button>
+    <div class="footer-bar">
+      <a-space :size="8" wrap>
+        <a-button :disabled="importing" @click="close">关闭</a-button>
+        <a-dropdown v-if="failedItems.length" :disabled="importing || exporting">
+          <a-button :loading="importing || exporting">
+            操作失败项（{{ failedItems.length }}）
+            <DownOutlined />
+          </a-button>
+          <template #overlay>
+            <a-menu>
+              <a-menu-item key="retry" @click="retryFailed">
+                <RedoOutlined />
+                重试失败
+              </a-menu-item>
+              <a-menu-item key="export" @click="exportFailed">
+                <ExportOutlined />
+                导出失败 JSON
+              </a-menu-item>
+            </a-menu>
+          </template>
+        </a-dropdown>
+      </a-space>
       <a-button
         type="primary"
         :loading="importing || pendingCount > 0"
@@ -316,11 +389,21 @@ async function submit(): Promise<void> {
         <template #icon><ImportOutlined /></template>
         开始导入{{ usable.length ? `（${usable.length} 个文件）` : '' }}
       </a-button>
-    </a-space>
+    </div>
   </a-modal>
 </template>
 
 <style scoped>
+/* 底部操作栏：左侧关闭/清空，右侧导出/重试/导入；放不下时整体换行 */
+.footer-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 16px;
+}
+
 /* 标题与复制按钮同一行：标题左、按钮右 */
 .log-head {
   display: flex;

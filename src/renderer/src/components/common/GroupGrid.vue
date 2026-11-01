@@ -440,23 +440,6 @@ onBeforeUnmount(endDrag)
   scrollbar-gutter: stable;
 }
 
-.group-grid::-webkit-scrollbar {
-  width: 6px;
-}
-
-.group-grid::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.group-grid::-webkit-scrollbar-thumb {
-  border-radius: 3px;
-  background: rgba(140, 140, 160, 0.35);
-}
-
-.group-grid::-webkit-scrollbar-thumb:hover {
-  background: rgba(140, 140, 160, 0.6);
-}
-
 /*
  * 固定排数：行高取格子的实际高度（上下内边距 7 + 内容 20 + 边框 2 = 36），
  * 总高 = 排数 × 行高 + 间距。align-content: start 让行贴顶，不被拉伸撑满；

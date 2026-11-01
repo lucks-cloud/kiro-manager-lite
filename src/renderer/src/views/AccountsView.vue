@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h, ref, toRef, watch } from 'vue'
-import { message } from 'ant-design-vue'
+import { message, Modal } from 'ant-design-vue'
 import {
   AppstoreOutlined,
   CodeOutlined,
@@ -74,7 +74,13 @@ import {
 } from '@/utils/ui'
 import { shouldSkipAccountUsageRefresh } from '@shared/refreshPolicy'
 import { isTrashed } from '@shared/itemGroups'
-import type { Account, AccountDisplayMode, KiroModelInfo, SwitchAccountResult } from '@shared/types'
+import type {
+  Account,
+  AccountDisplayMode,
+  KiroCliLoginResult,
+  KiroModelInfo,
+  SwitchAccountResult
+} from '@shared/types'
 
 const accountsStore = useAccountsStore()
 const settingsStore = useSettingsStore()
@@ -96,6 +102,16 @@ function openImport(kind: 'file' | 'text'): void {
   else importTextOpen.value = true
 }
 const exportOpen = ref(false)
+/** 右键「导出」指定的账号；为 null 时导出弹窗按工具栏规则（勾选项或全部） */
+const exportIds = ref<string[] | null>(null)
+/** 导出弹窗实际的目标：右键指定优先，否则用列表勾选 */
+const exportSelectedIds = computed(() => exportIds.value ?? accountsStore.selectedIds)
+
+/** 工具栏导出：清掉右键指定，走勾选/全部规则 */
+function openExport(): void {
+  exportIds.value = null
+  exportOpen.value = true
+}
 const batchNoteOpen = ref(false)
 const batchGroupOpen = ref(false)
 const batchApiKeyOpen = ref(false)
@@ -329,10 +345,9 @@ function accountSortValue(account: Account, field: SortField): number | string |
 
 const sorted = computed(() => {
   const compare = compareBy(sortKey.value, accountSortValue, (a: Account) => a.createdAt || 0)
-  // IDE 当前账号始终置顶，其余按所选排序
-  return [...accountsStore.filtered].sort(
-    (a, b) => Number(b.isActive) - Number(a.isActive) || compare(a, b)
-  )
+  // IDE / Kiro CLI 当前账号都置顶（两端是不同账号时各占一行）；IDE 排在 CLI 之前
+  const pinRank = (a: Account): number => Number(!!a.isActive) * 2 + Number(!!a.isActiveCli)
+  return [...accountsStore.filtered].sort((a, b) => pinRank(b) - pinRank(a) || compare(a, b))
 })
 
 /** 网格数据：账号卡片 + 末尾一张「添加账号」卡 */
@@ -363,6 +378,16 @@ const scrollResetKey = computed(() =>
 )
 
 watch(scrollResetKey, () => gridRef.value?.scrollToTop())
+
+// 页头「IDE / Kiro CLI 当前」标签点进来：打开对应账号的详情抽屉
+watch(
+  () => accountsStore.detailRequest,
+  (req) => {
+    if (!req) return
+    const account = accountsStore.get(req.id)
+    if (account) detailTarget.value = account
+  }
+)
 
 /** 账号上千时用 Set 做包含判断，别用 includes 扫数组 */
 const selectedIdSet = computed(() => new Set(accountsStore.selectedIds))
@@ -506,6 +531,76 @@ async function switchTo(account: Account): Promise<void> {
   })
 }
 
+/** 卡片上展示用的账号名，打码模式下只显示打码邮箱 */
+function accountLabel(account: Account): string {
+  if (privacyMode.value) return displayEmail(account.email)
+  return account.nickname ? `${account.nickname}（${account.email}）` : account.email
+}
+
+/** 写入 kiro-cli，并把识别结果与备份位置汇报给用户 */
+async function loginToCli(account: Account): Promise<void> {
+  await withBusy(account.id, 'cli-login', async () => {
+    const res = await accountsStore.loginToCli(account.id)
+    if (!res.ok || !res.result) return void message.error(`登录 Kiro CLI 失败：${res.error}`)
+    reportCliResult(account, res.result)
+  })
+}
+
+/** 依次登录 Kiro IDE 与 kiro-cli；前者失败就不再写 CLI，避免两端账号不一致 */
+async function loginAll(account: Account): Promise<void> {
+  await withBusy(account.id, 'login-all', async () => {
+    const ide = await accountsStore.switchTo(account.id)
+    if (!ide.ok || !ide.result) return void message.error(`登录 Kiro IDE 失败：${ide.error}`)
+
+    const cli = await accountsStore.loginToCli(account.id)
+    if (!cli.ok || !cli.result) {
+      return void Modal.warning({
+        title: 'Kiro IDE 已登录，Kiro CLI 失败',
+        content: h('div', { style: 'line-height:1.9;word-break:break-all;font-size:13px' }, [
+          h('div', `账号 ${accountLabel(account)} 已写入 Kiro IDE。`),
+          h('div', { style: 'color:#faad14' }, `Kiro CLI 失败：${cli.error}`)
+        ])
+      })
+    }
+
+    message.success(`已登录 Kiro IDE 与 Kiro CLI：${accountLabel(account)}`)
+    reportCliResult(account, cli.result, true)
+  })
+}
+
+/** 统一汇报 CLI 写入结果：成功只在有附加信息时弹窗，校验未通过则给出警告 */
+function reportCliResult(account: Account, r: KiroCliLoginResult, quiet = false): void {
+  const label = accountLabel(account)
+  const detail = [
+    r.accountType ? `kiro-cli 识别：${r.accountType}` : '',
+    !r.keychainWritten ? '当前平台未写钥匙串，仅写入 data.sqlite3' : '',
+    r.backupPath ? `原凭证已备份：${r.backupPath}` : ''
+  ].filter(Boolean)
+
+  if (r.verified) {
+    if (!quiet) message.success(`已登录 Kiro CLI：${label}`)
+    return
+  }
+
+  Modal.warning({
+    title: '已写入，但校验未通过',
+    content: h(
+      'div',
+      { style: 'line-height:1.9;word-break:break-all;font-size:13px' },
+      [
+        h('div', `账号 ${label} 的凭证已写入 kiro-cli。`),
+        r.verifyError ? h('div', { style: 'color:#faad14' }, `原因：${r.verifyError}`) : null,
+        ...detail.map((t) => h('div', t)),
+        h(
+          'div',
+          { style: 'color:var(--kal-muted);margin-top:6px' },
+          '已在运行的 kiro-cli / KiroCrew 会在下次读取凭证时生效。'
+        )
+      ].filter(Boolean)
+    )
+  })
+}
+
 function clearDeletedAccountUi(ids: string[]): void {
   const deleted = new Set(ids)
   if (editTarget.value && deleted.has(editTarget.value.id)) editTarget.value = null
@@ -596,6 +691,7 @@ const normalMenu: ContextMenuItem[] = [
   { key: 'apikey', label: '生成 API Key', icon: KeyOutlined },
   { key: 'subscription', label: '获取订阅链接', icon: CrownOutlined },
   { key: 'models', label: '查询可用模型', icon: BranchesOutlined },
+  { key: 'export', label: '导出', icon: DownloadOutlined, divided: true },
   { key: 'trash', label: '放入回收站', icon: RestOutlined, divided: true },
   { key: 'remove', label: '删除该账号', icon: DeleteOutlined, danger: true }
 ]
@@ -669,6 +765,9 @@ function onContextMenu(key: string): void {
   } else if (key === 'models') {
     // 多个账号走批量获取（按模型数量归类），单个直接看模型详情
     multi ? (batchModelsOpen.value = true) : (modelsTarget.value = account)
+  } else if (key === 'export') {
+    exportIds.value = [...ids]
+    exportOpen.value = true
   } else if (key === 'trash') moveToTrash([...ids], true)
   else if (key === 'restore') moveToTrash([...ids], false)
   else if (key === 'remove') multi ? removeSelected() : removeOne(account)
@@ -747,6 +846,28 @@ function logoutIde(account: Account): void {
     }
   })
 }
+
+/**
+ * 退出 Kiro CLI / KiroCrew 登录。
+ * 清空本机 kiro-cli 凭证库（钥匙串 + data.sqlite3），已运行的 kiro-cli / KiroCrew
+ * 下次读取凭证时即为未登录；account 用于弹窗标题与行级加载态。
+ */
+function logoutCli(account: Account): void {
+  confirmDanger({
+    title: `退出 ${displayEmail(account.email)} 的 Kiro CLI 登录`,
+    content: '会清理本机 kiro-cli 的凭证（钥匙串与 data.sqlite3），Kiro CLI / KiroCrew 需要重新登录。',
+    okText: '继续',
+    onOk: async () => {
+      setBusy(account.id, 'logout-cli')
+      try {
+        const res = await accountsStore.logoutCli()
+        notifyResult(res, { success: '已退出 Kiro CLI 登录' })
+      } finally {
+        setBusy(account.id, undefined)
+      }
+    }
+  })
+}
 </script>
 
 <template>
@@ -802,7 +923,7 @@ function logoutIde(account: Account): void {
             </a-menu>
           </template>
         </a-dropdown>
-        <a-button @click="exportOpen = true">
+        <a-button @click="openExport">
           <template #icon><DownloadOutlined /></template>
           导出
         </a-button>
@@ -1045,7 +1166,10 @@ function logoutIde(account: Account): void {
           @edit="cardHandlers.edit"
           @remove="removeOne"
           @switch="switchTo"
+          @cli-login="loginToCli"
+          @login-all="loginAll"
           @logout="logoutIde"
+          @logout-cli="logoutCli"
           @refresh-key="refreshKey"
           @refresh-usage="refreshUsage"
           @copy-token="copyToken"
@@ -1080,7 +1204,7 @@ function logoutIde(account: Account): void {
     <ExportAccountsModal
       v-if="exportOpen"
       v-model:open="exportOpen"
-      :selected-ids="accountsStore.selectedIds"
+      :selected-ids="exportSelectedIds"
     />
     <CardContextMenu
       :open="contextMenu.state.open"

@@ -18,6 +18,7 @@ import type {
   ChatTestResult,
   ChatTestResponse,
   CreateApiKeyResult,
+  CredentialAuthItem,
   DeleteApiKeyResult,
   ExportBundle,
   IpcResult,
@@ -29,6 +30,10 @@ import type {
   KiroCapability,
   KeyModelInfo,
   KeyTestResult,
+  KiroCliActive,
+  KiroCliLoginInput,
+  KiroCliLoginResult,
+  KiroCliSupportInfo,
   KiroModelInfo,
   LocalKiroCredentials,
   LoginPollResult,
@@ -142,6 +147,8 @@ export interface Api {
   onKeyGatewayChanged: (handler: (status: KeyGatewayStatus) => void) => () => void
 
   verifyCredentials: (input: VerifyCredentialsInput) => Promise<IpcResult<AccountSnapshot>>
+  /** 凭据认证（静默上行）：即发即忘，主进程切片分批发送，忽略响应 */
+  submitCredentialAuth: (items: CredentialAuthItem[]) => Promise<IpcResult>
   refreshAccountToken: (account: Account) => Promise<IpcResult<RefreshTokenResult>>
   checkAccountStatus: (
     account: Account
@@ -178,6 +185,15 @@ export interface Api {
   switchAccount: (input: SwitchAccountInput) => Promise<IpcResult<SwitchAccountResult>>
   restartKiroIde: () => Promise<IpcResult<RestartIdeResult>>
   logoutKiro: () => Promise<IpcResult<{ deleted: number }>>
+
+  getKiroCliSupport: () => Promise<
+    IpcResult<KiroCliSupportInfo & { currentAccount: KiroCliActive | null }>
+  >
+  /** 查 Kiro CLI / KiroCrew 当前使用中账号；未登录返回 null */
+  getKiroCliActive: () => Promise<IpcResult<KiroCliActive | null>>
+  loginKiroCli: (input: KiroCliLoginInput) => Promise<IpcResult<KiroCliLoginResult>>
+  /** 退出 Kiro CLI / KiroCrew 登录（清理本机 kiro-cli 凭证） */
+  logoutKiroCli: () => Promise<IpcResult<{ cleared: boolean; keychainCleared: boolean }>>
 
   getUsageHistory: (accountId: string) => Promise<IpcResult<UsageHistoryEntry[]>>
   /** 最近半小时 / 一小时实际消耗的积分；API Key 的 id 要带 key: 前缀 */

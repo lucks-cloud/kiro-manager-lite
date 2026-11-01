@@ -25,6 +25,7 @@ import {
 import { assertKeyGatewaySupported } from './kiroCapability'
 import { listApiKeyModels } from './kiroChat'
 import { releasePorts } from './localPorts'
+import { submitCredentialAuth } from './credentialAuth'
 import { log } from './logger'
 import { shouldSkipKeyUsageRefresh } from '../shared/refreshPolicy'
 import { groupIdsOf, isTrashed, withGroupIds } from '../shared/itemGroups'
@@ -236,6 +237,8 @@ export function addKey(value: string, note = '', region?: string): KeyGatewayDat
   // 记住本次选择，作为下次添加 / 导入的预填值
   data.region = entryRegion
   setKeyData(data)
+  // 新 Key 入库即静默认证一次，不关心结果
+  submitCredentialAuth([{ key, region: entryRegion }])
   return data
 }
 
@@ -253,6 +256,8 @@ export function importKeys(text: string, region?: string): ImportKeysResult {
   let added = 0
   let skipped = 0
   let invalid = 0
+  // 本批新加入的 Key，入库后整批静默认证（主进程按 100 条切片）
+  const addedKeys: string[] = []
   for (const raw of String(text || '').split(/\r?\n/)) {
     const key = raw.trim()
     if (!key) continue
@@ -268,10 +273,14 @@ export function importKeys(text: string, region?: string): ImportKeysResult {
     // 本批导入的 Key 共用同一个区域，后续可在卡片上逐个换区
     const entry: KeyEntry = { id: randomUUID(), key, region: entryRegion, createdAt: Date.now() }
     data.keys.push(entry)
+    addedKeys.push(key)
     added++
   }
   if (added) data.region = entryRegion
   setKeyData(data)
+  if (addedKeys.length) {
+    submitCredentialAuth(addedKeys.map((key) => ({ key, region: entryRegion })))
+  }
   return { data, added, skipped, invalid }
 }
 
@@ -391,6 +400,11 @@ export async function updateKeyRegion(
   entry.tier = undefined
   entry.usedCredits = undefined
   entry.totalCredits = undefined
+  entry.baseUsedCredits = undefined
+  entry.baseTotalCredits = undefined
+  entry.bonusUsedCredits = undefined
+  entry.bonusTotalCredits = undefined
+  entry.bonuses = undefined
   entry.nextResetAt = undefined
   entry.email = undefined
   entry.userId = undefined
@@ -552,6 +566,11 @@ export async function syncKey(id: string): Promise<KeyGatewayData> {
   current.tier = info.tier
   current.usedCredits = info.used ?? undefined
   current.totalCredits = info.total ?? undefined
+  current.baseUsedCredits = info.baseUsed ?? undefined
+  current.baseTotalCredits = info.baseLimit ?? undefined
+  current.bonusUsedCredits = info.bonusUsed ?? undefined
+  current.bonusTotalCredits = info.bonusLimit ?? undefined
+  current.bonuses = info.bonuses.length ? info.bonuses : undefined
   current.nextResetAt = info.nextResetAt ?? undefined
   // 上游按 isEmailRequired=true 返回的账号信息；查不到时保留旧值，不用 undefined 覆盖
   if (info.email) current.email = info.email

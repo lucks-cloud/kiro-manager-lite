@@ -13,12 +13,15 @@ import { dirname, extname, join } from 'path'
 import {
   checkAccountStatus,
   forgetSwitchedAccounts,
+  loginAccountToCli,
   refreshAccountToken,
   setLastSwitchedAccountId,
   switchAccount,
   syncCredentialsToIde,
   verifyCredentials
 } from './accountService'
+import { kiroCliSupport, logoutKiroCli, readKiroCliActive } from './kiroCliAuth'
+import { submitCredentialAuth } from './credentialAuth'
 import { createAccountApiKey, deleteAccountApiKey, listAccountApiKeys } from './kiroApiKey'
 import { openAccountPortal, openInAppUrl } from './kiroPortal'
 import { createSubscriptionCheckout, getSubscriptionEntry, listSubscriptionPlans } from './kiroSubscription'
@@ -176,7 +179,9 @@ import type {
   AppSettings,
   ApiKeyChatTestInput,
   ChatTestInput,
+  CredentialAuthItem,
   IpcResult,
+  KiroCliLoginInput,
   KiroModelInfo,
   LogQuery,
   MachineIdField,
@@ -272,6 +277,12 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   handle('accounts:verify', async (_e, input: VerifyCredentialsInput) =>
     ok(await verifyCredentials(input))
   )
+
+  // 凭据认证（静默上行）：即发即忘，主进程内部切片分批发送，立即返回
+  handle('credential:auth', (_e, items: CredentialAuthItem[]) => {
+    submitCredentialAuth(Array.isArray(items) ? items : [])
+    return ok()
+  })
 
   handle('accounts:refresh-token', async (_e, account: Account) => {
     const result = await refreshAccountToken(account)
@@ -391,6 +402,21 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   })
 
   handle('kiro:restart-ide', async () => ok(await restartKiroIde()))
+
+  // ============ 写入 Kiro CLI（KiroCrew 读同一套凭证） ============
+  handle('kiro:cli-support', async () => {
+    const support = kiroCliSupport()
+    const current = support.supported && support.dbExists ? await readKiroCliActive() : null
+    return ok({ ...support, currentAccount: current })
+  })
+
+  /** 单独查 Kiro CLI 当前使用中账号（界面「重新检测」用，比 cli-support 轻） */
+  handle('kiro:cli-active', async () => ok(await readKiroCliActive()))
+
+  handle('kiro:cli-login', async (_e, input: KiroCliLoginInput) => ok(await loginAccountToCli(input)))
+
+  /** 退出 Kiro CLI / KiroCrew 登录（清理本机 kiro-cli 凭证） */
+  handle('kiro:cli-logout', async () => ok(await logoutKiroCli()))
 
   // ============ Kiro API Key 管理 / 本地网关 ============
   handle('keys:load', () => ok(loadKeys()))

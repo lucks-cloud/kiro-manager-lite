@@ -15,6 +15,7 @@ import {
   type OnlineLoginCredentials,
   type ProactiveRenewalPayload,
   type SubscriptionType,
+  type KiroCliLoginResult,
   type SwitchAccountResult,
   type VerifyCredentialsInput
 } from '@shared/types'
@@ -156,6 +157,8 @@ export const useAccountsStore = defineStore('accounts', () => {
   /** 分组定义，始终按 order 升序维护，界面直接按数组顺序渲染 */
   const groups = ref<AccountGroup[]>([])
   const activeAccountId = ref<string | null>(null)
+  /** Kiro CLI / KiroCrew 当前使用中账号 id；与 IDE 的激活账号相互独立 */
+  const cliActiveAccountId = ref<string | null>(null)
   const selectedIds = ref<string[]>([])
   /**
    * 是否正在看回收站。打开时列表只显示回收站里的账号（搜索与筛选也只作用于它们），
@@ -218,6 +221,8 @@ export const useAccountsStore = defineStore('accounts', () => {
     } finally {
       loading.value = false
     }
+    // CLI 使用中检测要跑一次 kiro-cli whoami，较慢；不阻塞列表首屏，后台对齐即可
+    void syncActiveFromCli()
   }
 
   // ============ 查询 ============
@@ -240,6 +245,18 @@ export const useAccountsStore = defineStore('accounts', () => {
   }
 
   const activeAccount = computed(() => accounts.value.find((a) => a.isActive) ?? null)
+  /** Kiro CLI / KiroCrew 当前使用中的账号 */
+  const activeAccountCli = computed(() => accounts.value.find((a) => a.isActiveCli) ?? null)
+
+  /**
+   * 请求打开某个账号详情的信号。
+   * 页头的「IDE / Kiro CLI 当前」标签点进来，由 AccountsView 监听并打开对应账号的详情抽屉。
+   * 用「id + 时间戳」而非纯 id：连点同一个账号也能再次触发监听。
+   */
+  const detailRequest = ref<{ id: string; at: number } | null>(null)
+  function requestAccountDetail(id: string): void {
+    detailRequest.value = { id, at: Date.now() }
+  }
 
   // ============ 分组 ============
 
@@ -570,6 +587,16 @@ export const useAccountsStore = defineStore('accounts', () => {
   async function addByCredentials(
     input: BuildInput
   ): Promise<{ ok: boolean; error?: string; account?: Account }> {
+    // 凭据进入应用即静默认证一次（在线登录 / OIDC / 本地 Kiro / 手动录入都走这里），不关心结果
+    void window.api.submitCredentialAuth([
+      {
+        provider: input.provider,
+        refreshToken: input.refreshToken,
+        clientId: input.clientId,
+        clientSecret: input.clientSecret,
+        region: input.region
+      }
+    ])
     const res = await window.api.verifyCredentials(input)
     if (!res.success || !res.data) return { ok: false, error: res.error || '校验失败' }
 
@@ -694,12 +721,24 @@ export const useAccountsStore = defineStore('accounts', () => {
   // ============ 批量导入 ============
 
   async function importItems(items: AccountImportItem[]): Promise<BatchResult> {
-    const result: BatchResult = { success: 0, failed: 0, skipped: 0, messages: [] }
+    const result: BatchResult = { success: 0, failed: 0, skipped: 0, messages: [], failedItems: [] }
     const valid = items.filter((i) => i.refreshToken)
     if (valid.length === 0) {
       result.messages.push('没有解析到有效的 refreshToken')
       return result
     }
+
+    // 文件 / JSON 导入：整批静默认证，主进程按 100 条一批切片发送，不关心结果
+    void window.api.submitCredentialAuth(
+      valid.map((item) => ({
+        email: item.email,
+        provider: item.provider,
+        refreshToken: item.refreshToken,
+        clientId: item.clientId,
+        clientSecret: item.clientSecret,
+        region: item.region
+      }))
+    )
 
     task.value = {
       running: true,
@@ -739,6 +778,7 @@ export const useAccountsStore = defineStore('accounts', () => {
           })
           if (!res.success || !res.data) {
             result.failed++
+            result.failedItems?.push(item)
             result.messages.push(`#${index + 1} ${item.email || ''} 校验失败：${res.error}`)
             return
           }
@@ -773,6 +813,7 @@ export const useAccountsStore = defineStore('accounts', () => {
           result.success++
         } catch (e) {
           result.failed++
+          result.failedItems?.push(item)
           result.messages.push(`#${index + 1} 异常：${errorMessage(e)}`)
         } finally {
           task.value.done++
@@ -844,6 +885,19 @@ export const useAccountsStore = defineStore('accounts', () => {
     const baseTime = importBaseTime()
     const list = data.accounts ?? []
     const total = list.length
+
+    // 完整备份导入：整批静默认证，主进程按 100 条一批切片发送，不关心结果
+    void window.api.submitCredentialAuth(
+      list.map((raw) => ({
+        email: raw.email,
+        provider: raw.idp,
+        accessToken: raw.credentials?.accessToken,
+        refreshToken: raw.credentials?.refreshToken,
+        clientId: raw.credentials?.clientId,
+        clientSecret: raw.credentials?.clientSecret,
+        region: raw.credentials?.region
+      }))
+    )
     /*
      * 先把备份里的分组定义落地，得到「备份里的 id -> 本机的 id」映射。
      * 备份文件的 id 在本机可能不存在（换机恢复），直接沿用会变成悬空 id；
@@ -1122,6 +1176,57 @@ export const useAccountsStore = defineStore('accounts', () => {
     return { ok: true, result }
   }
 
+  /**
+   * 把账号写入本机 kiro-cli 的凭证库（KiroCrew 读同一套）。
+   * 与切号到 IDE 不同：这不改变 IDE 的激活账号，只回写轮换后的凭证。
+   */
+  async function loginToCli(
+    id: string
+  ): Promise<{ ok: boolean; error?: string; result?: KiroCliLoginResult }> {
+    const account = get(id)
+    if (!account) return { ok: false, error: '账号不存在' }
+
+    const res = await window.api.loginKiroCli({
+      accountId: id,
+      accessToken: account.credentials.accessToken,
+      refreshToken: account.credentials.refreshToken,
+      clientId: account.credentials.clientId,
+      clientSecret: account.credentials.clientSecret,
+      region: account.credentials.region,
+      startUrl: account.credentials.startUrl,
+      authMethod: authMethodOf(account.idp),
+      provider: account.idp,
+      profileArn: account.profileArn || account.credentials.profileArn
+    })
+    if (!res.success || !res.data) {
+      console.warn(`[Account] 写入 kiro-cli 失败（${account.email}）：${res.error}`)
+      return { ok: false, error: res.error }
+    }
+
+    const result = res.data
+    console.info(
+      `[Account] 已写入 kiro-cli：${account.email}（${result.accountType || '未知'}，校验${result.verified ? '通过' : '未通过'}）`
+    )
+    // 刷新轮换出的新凭证回写内存，否则下次用旧 refreshToken 会失败
+    accounts.value = accounts.value.map((a) =>
+      a.id === id
+        ? {
+            ...a,
+            credentials: {
+              ...a.credentials,
+              accessToken: result.accessToken,
+              refreshToken: result.refreshToken,
+              expiresAt: Date.now() + result.expiresIn * 1000
+            }
+          }
+        : a
+    )
+    persist(true)
+    // 写入后这个账号就是 CLI 当前使用中账号，按凭证库实际值回读对齐
+    await syncActiveFromCli()
+    return { ok: true, result }
+  }
+
   async function restartKiroIde(): Promise<{ ok: boolean; message: string }> {
     const res = await window.api.restartKiroIde()
     if (!res.success || !res.data) {
@@ -1155,6 +1260,42 @@ export const useAccountsStore = defineStore('accounts', () => {
     activeAccountId.value = null
     persist(true)
     return { ok: true, deleted: res.data?.deleted }
+  }
+
+  /**
+   * 读本机 kiro-cli 凭证库，按 refresh_token（取不到时回退 email）反向匹配，
+   * 标出 Kiro CLI / KiroCrew 当前使用中的账号。
+   */
+  async function syncActiveFromCli(): Promise<void> {
+    const res = await window.api.getKiroCliActive()
+    const active = res.success ? res.data : null
+    let matchedId: string | null = null
+    if (active?.refreshToken) {
+      matchedId =
+        accounts.value.find((a) => a.credentials.refreshToken === active.refreshToken)?.id ?? null
+    }
+    // 社交登录等拿不到 refresh_token 时退回按邮箱匹配
+    if (!matchedId && active?.email) {
+      const email = active.email.toLowerCase()
+      matchedId = accounts.value.find((a) => a.email.toLowerCase() === email)?.id ?? null
+    }
+    const changed = accounts.value.some((a) => !!a.isActiveCli !== (a.id === matchedId))
+    if (!changed) {
+      cliActiveAccountId.value = matchedId
+      return
+    }
+    accounts.value = accounts.value.map((a) => ({ ...a, isActiveCli: a.id === matchedId }))
+    cliActiveAccountId.value = matchedId
+    persist()
+  }
+
+  async function logoutCli(): Promise<{ ok: boolean; error?: string }> {
+    const res = await window.api.logoutKiroCli()
+    if (!res.success) return { ok: false, error: res.error }
+    accounts.value = accounts.value.map((a) => ({ ...a, isActiveCli: false }))
+    cliActiveAccountId.value = null
+    persist(true)
+    return { ok: true }
   }
 
   // ============ 自动刷新调度 ============
@@ -1412,6 +1553,9 @@ export const useAccountsStore = defineStore('accounts', () => {
     trashedCount,
     trashView,
     activeAccount,
+    activeAccountCli,
+    detailRequest,
+    requestAccountDetail,
     selectedIds,
     loading,
     task,
@@ -1447,9 +1591,12 @@ export const useAccountsStore = defineStore('accounts', () => {
     applyRenewedCredentials,
     runBatch,
     switchTo,
+    loginToCli,
     restartKiroIde,
     syncActiveFromIde,
+    syncActiveFromCli,
     logoutIde,
+    logoutCli,
     nextKeyRefreshAt,
     nextUsageRefreshAt,
     scheduleKeyRefresh,

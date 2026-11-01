@@ -1,12 +1,13 @@
 {
   "name": "kiro-account-lite",
-  "version": "1.0.41",
+  "version": "1.0.42",
   "description": "Kiro Manager Lite - Kiro 多账号管理器轻量版",
   "main": "./out/main/index.js",
   "author": "kiro-account-lite",
   "license": "AGPL-3.0",
   "private": true,
   "scripts": {
+    "predev": "node -e \"process.platform==='darwin'&&require('child_process').spawnSync('sh',['scripts/dev-register-kiro-scheme.sh'],{stdio:'inherit'})\"",
     "dev": "electron-vite dev",
     "start": "electron-vite preview",
     "build": "npm run typecheck && electron-vite build",

@@ -2267,7 +2267,8 @@ onUnmounted(() => stop?.())
 
 <style scoped>
 .proxy-page { display: flex; flex-direction: column; gap: 16px; }
-.tool-card { border: 1px solid var(--kal-border); }
+/* 无边框 a-card 默认带一层阴影，这里去掉，只保留描边 */
+.tool-card { border: 1px solid var(--kal-border); box-shadow: none; }
 .tool-row { display: flex; align-items: flex-start; gap: 16px; }
 .tool-main { flex: 1 1 auto; min-width: 0; }
 /* 启动前风险确认：标题用警示色，要点压成三条，不重复页面顶部那份细则 */

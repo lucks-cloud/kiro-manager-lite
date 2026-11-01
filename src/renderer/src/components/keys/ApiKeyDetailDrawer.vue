@@ -21,7 +21,7 @@ import {
   displayNote as maskedNote,
   displayUserId
 } from '@/utils/display'
-import { formatCreditsPair, formatDateTime } from '@/utils/format'
+import { formatCreditsPair, formatDate, formatDateTime, usageColor } from '@/utils/format'
 import { regionLabel } from '@shared/regions'
 import type { KeyEntry } from '@shared/types'
 
@@ -46,6 +46,21 @@ const entry = computed(() =>
     : null
 )
 const precision = computed(() => settingsStore.settings.usagePrecision)
+
+/** 已用占比（0-1），用于进度条与配色 */
+const percentUsed = computed(() => {
+  const e = entry.value
+  if (!e || !e.totalCredits) return 0
+  return Math.min(1, (e.usedCredits || 0) / e.totalCredits)
+})
+
+/** 下次重置剩余天数；无重置时间则不显示 */
+const resetDays = computed(() => {
+  const at = entry.value?.nextResetAt
+  if (!at) return undefined
+  const days = Math.ceil((at - Date.now()) / 86_400_000)
+  return days >= 0 ? days : undefined
+})
 /** 邮箱跟随全局隐私打码；上游未返回时占位 */
 const emailText = computed(() => {
   const value = entry.value?.email
@@ -311,7 +326,32 @@ function subscriptionColor(tier?: string): string {
         <a-descriptions-item label="最后同步">{{ formatDateTime(entry.lastCheckedAt) }}</a-descriptions-item>
       </a-descriptions>
 
-      <div class="section-title">订阅与积分</div>
+      <div class="section-title">订阅</div>
+      <a-descriptions
+        :column="1"
+        size="small"
+        bordered
+        :label-style="labelStyle"
+        style="margin-bottom: 18px"
+      >
+        <a-descriptions-item label="套餐">
+          <a-tag :color="subscriptionColor(entry.tier)">{{ entry.subscription || '未知' }}</a-tag>
+        </a-descriptions-item>
+        <a-descriptions-item label="下次重置">
+          {{ entry.nextResetAt ? formatDate(entry.nextResetAt) : '-' }}
+          <span v-if="resetDays !== undefined" class="muted">（{{ resetDays }} 天后）</span>
+        </a-descriptions-item>
+      </a-descriptions>
+
+      <div class="section-title">积分与用量</div>
+      <a-progress
+        :percent="Math.min(100, Math.round(percentUsed * 1000) / 10)"
+        :stroke-color="usageColor(percentUsed)"
+      />
+      <p class="muted" style="margin: 4px 0 12px">
+        总计 {{ formatCreditsPair(entry.usedCredits, entry.totalCredits, precision) }} Credits
+      </p>
+
       <a-descriptions
         :column="1"
         size="small"
@@ -319,11 +359,38 @@ function subscriptionColor(tier?: string): string {
         :label-style="labelStyle"
         style="margin-bottom: 12px"
       >
-        <a-descriptions-item label="套餐">
-          <a-tag :color="subscriptionColor(entry.tier)">{{ entry.subscription || '未知' }}</a-tag>
+        <a-descriptions-item
+          v-if="entry.baseTotalCredits !== undefined"
+          label="基础额度"
+        >
+          {{ formatCreditsPair(entry.baseUsedCredits, entry.baseTotalCredits, precision) }}
         </a-descriptions-item>
-        <a-descriptions-item label="额度">
+        <!-- 旧数据没有基础 / 奖励拆分时，退回只显示总额度 -->
+        <a-descriptions-item
+          v-else-if="!entry.bonuses?.length"
+          label="额度"
+        >
           {{ formatCreditsPair(entry.usedCredits, entry.totalCredits, precision) }}
+        </a-descriptions-item>
+        <!-- 奖励额度：各条奖励一行，第二行显示「bonusType • description」 -->
+        <a-descriptions-item
+          v-for="bonus in entry.bonuses || []"
+          :key="bonus.code || bonus.name"
+          :label="bonus.name || '奖励额度'"
+        >
+          <div>
+            {{ formatCreditsPair(bonus.current, bonus.limit, precision) }}
+            <span v-if="bonus.expiresAt" class="muted">
+              （{{ formatDate(bonus.expiresAt) }} 到期）
+            </span>
+          </div>
+          <div
+            v-if="bonus.bonusType || bonus.description"
+            class="muted"
+            style="font-size: 12px; margin-top: 2px"
+          >
+            {{ [bonus.bonusType, bonus.description].filter(Boolean).join(' • ') }}
+          </div>
         </a-descriptions-item>
       </a-descriptions>
 

@@ -3,6 +3,7 @@ import { computed, type Component } from 'vue'
 import {
   CalendarOutlined,
   ClockCircleOutlined,
+  CodeOutlined,
   CopyOutlined,
   DeleteOutlined,
   EditOutlined,
@@ -64,7 +65,14 @@ const emit = defineEmits<{
   edit: [account: Account]
   remove: [account: Account]
   switch: [account: Account]
+  /** 写入命令行版 kiro-cli 的凭证库（KiroCrew 读同一套） */
+  'cli-login': [account: Account]
+  /** 依次写入 Kiro IDE 与 kiro-cli */
+  'login-all': [account: Account]
+  /** 退出 Kiro IDE 登录（清理 IDE 凭证） */
   logout: [account: Account]
+  /** 退出 Kiro CLI / KiroCrew 登录（清理 kiro-cli 凭证） */
+  'logout-cli': [account: Account]
   'refresh-key': [account: Account]
   'refresh-usage': [account: Account]
   'copy-token': [account: Account]
@@ -85,6 +93,9 @@ const accountsStore = useAccountsStore()
 const settingsStore = useSettingsStore()
 
 const precision = computed(() => settingsStore.settings.usagePrecision)
+
+/** kiro-cli 不可写时的原因，空串表示可写 */
+const cliReason = computed(() => settingsStore.kiroCliReason)
 
 const privacy = computed(() => settingsStore.settings.privacyMode)
 
@@ -188,7 +199,10 @@ const tokenState = computed(() => {
 
 type ActionKey =
   | 'switch'
+  | 'cli-login'
+  | 'login-all'
   | 'logout'
+  | 'logout-cli'
   | 'refresh-key'
   | 'refresh-usage'
   | 'copy-token'
@@ -202,6 +216,10 @@ interface MenuEntry {
   key: ActionKey
   label: string
   icon: Component
+  /** 置灰原因，有值即不可点（如本机未安装 kiro-cli） */
+  disabledReason?: string
+  /** 危险项（退出登录）以红色呈现 */
+  danger?: boolean
 }
 
 interface CardAction {
@@ -217,22 +235,51 @@ interface CardAction {
   color?: string
 }
 
-/** 首个按钮随登录状态切换：已登录显示退出登录，未登录显示登录 */
+/** IDE / CLI 任一端正在使用此账号 */
+const inUse = computed(() => props.account.isActive || !!props.account.isActiveCli)
+
+/**
+ * 登录 / 退出下拉：IDE 与 Kiro CLI 各一项，按该端当前是否使用此账号分别呈现「登录」或「退出」。
+ * 两端都还不是此账号时再给一个「全部登录」一键写入两端。
+ */
+const loginMenu = computed<MenuEntry[]>(() => {
+  const entries: MenuEntry[] = [
+    props.account.isActive
+      ? { key: 'logout', label: '退出 Kiro IDE', icon: LogoutOutlined, danger: true }
+      : { key: 'switch', label: '登录 Kiro IDE', icon: LoginOutlined },
+    props.account.isActiveCli
+      ? { key: 'logout-cli', label: '退出 Kiro CLI（含 KiroCrew）', icon: CodeOutlined, danger: true }
+      : {
+          key: 'cli-login',
+          label: '登录 Kiro CLI（含 KiroCrew）',
+          icon: CodeOutlined,
+          disabledReason: cliReason.value
+        }
+  ]
+  // 只有两端都未登录时才提供「全部登录」；任一端已登录就不再出现
+  if (!inUse.value) {
+    entries.push({
+      key: 'login-all',
+      label: '全部登录',
+      icon: ThunderboltOutlined,
+      disabledReason: cliReason.value
+    })
+  }
+  return entries
+})
+
+/**
+ * 首个按钮始终是「登录 / 退出」下拉：使用中（任一端）标绿、图标用退出态，
+ * 完全未登录时用登录图标。各端的登录 / 退出在下拉里按端切换。
+ */
 const actions = computed<CardAction[]>(() => [
-  props.account.isActive
-    ? {
-        id: 'logout',
-        action: 'logout',
-        title: '退出登录（清理 Kiro IDE 凭证）',
-        icon: LogoutOutlined,
-        color: '#52c41a'
-      }
-    : {
-        id: 'switch',
-        action: 'switch',
-        title: '登录此账号（写入 Kiro IDE）',
-        icon: LoginOutlined
-      },
+  {
+    id: 'login',
+    title: '登录 / 退出登录',
+    icon: inUse.value ? LogoutOutlined : LoginOutlined,
+    color: inUse.value ? '#52c41a' : undefined,
+    menu: loginMenu.value
+  },
   {
     id: 'refresh',
     title: '刷新',
@@ -295,6 +342,7 @@ function onCardClick(): void {
       {
         'is-selected': props.selected,
         'is-active': props.account.isActive,
+        'is-active-cli': props.account.isActiveCli,
         'is-context': props.contextActive
       }
     ]"
@@ -316,9 +364,10 @@ function onCardClick(): void {
           :title="props.account.note && !privacy ? props.account.note : undefined"
         >备注：{{ note || '-' }}</span>
       </div>
-      <!-- 「使用中」和状态一起摆右上角；状态钉在最外侧，位置在所有卡片上保持一致 -->
+      <!-- 「使用中」按端区分：Kiro IDE 绿色、Kiro CLI 蓝色，各一个标签摆右上角 -->
       <!-- 带描边：和右边的状态标签一致，无边框的实底块摆在角上显得发虚 -->
-      <a-tag v-if="props.account.isActive" color="green" class="head-tag">使用中</a-tag>
+      <a-tag v-if="props.account.isActive" color="green" class="head-tag">IDE 使用中</a-tag>
+      <a-tag v-if="props.account.isActiveCli" color="blue" class="head-tag">CLI 使用中</a-tag>
       <a-tag :color="status.color" class="status-tag">{{ status.text }}</a-tag>
     </div>
 
@@ -446,6 +495,8 @@ function onCardClick(): void {
               size="small"
               class="action-btn"
               :title="item.title"
+              :danger="item.danger"
+              :style="item.color ? { color: item.color } : undefined"
               :loading="isLoading(item)"
               :disabled="busy && !isLoading(item)"
             >
@@ -456,6 +507,9 @@ function onCardClick(): void {
                 <a-menu-item
                   v-for="entry in item.menu"
                   :key="entry.key"
+                  :danger="entry.danger"
+                  :disabled="!!entry.disabledReason"
+                  :title="entry.disabledReason || undefined"
                   @click="trigger(entry.key)"
                 >
                   <component :is="entry.icon" />
@@ -514,7 +568,12 @@ function onCardClick(): void {
   box-shadow: 0 0 0 1px var(--kal-primary) inset;
 }
 
-/* 当前使用的账号：只用绿边标识，背景保持和其它卡片一致 */
+/* 当前使用的账号：只用边框标识，背景保持和其它卡片一致 */
+/* 仅 Kiro CLI 使用中用蓝边；IDE 使用中用绿边（写在后面，两端同号时取绿边优先） */
+.account-card.is-active-cli {
+  border-color: #1677ff;
+}
+
 .account-card.is-active {
   border-color: #52c41a;
 }

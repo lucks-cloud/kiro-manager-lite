@@ -219,6 +219,40 @@ export function parseImportContent(raw: string): ParsedImport {
 
 // ============ 导出 ============
 
+/**
+ * 把导入条目导出成精简 JSON（字段与账号管理的 OIDC 导出一致）。
+ *
+ * 用于「导出失败账号」：失败条目从未校验通过，没有 accessToken，这里保持与
+ * buildExportContent 的 'oidc' 分支相同的字段顺序（accessToken 置空串），
+ * 额外带上 region，方便再次按文件导入时还原区域。导出结果可直接粘回批量导入框。
+ *
+ * @param items 导入条目
+ * @returns 精简 JSON 文本
+ */
+export function buildImportItemsJson(items: AccountImportItem[]): string {
+  return JSON.stringify(
+    items.map((it) => {
+      const out: Record<string, string> = {
+        email: it.email || '',
+        accessToken: '',
+        refreshToken: it.refreshToken || '',
+        provider: it.provider || 'BuilderId'
+      }
+      if (it.clientId) out.clientId = it.clientId
+      if (it.clientSecret) out.clientSecret = it.clientSecret
+      if (it.region) out.region = it.region
+      return out
+    }),
+    null,
+    2
+  )
+}
+
+/** 失败账号导出文件名：kiro-failed-时间戳-N个.json */
+export function failedItemsFilename(count: number): string {
+  return `kiro-failed-${exportStamp()}-${count}个.json`
+}
+
 export function buildExportContent(
   format: ExportFormat,
   accounts: Account[],
@@ -257,7 +291,6 @@ export function buildExportContent(
             refreshToken: a.credentials.refreshToken || '',
             provider: a.idp || 'BuilderId'
           }
-          if (a.password) item.password = a.password
           if (a.credentials.clientId) item.clientId = a.credentials.clientId
           if (a.credentials.clientSecret) item.clientSecret = a.credentials.clientSecret
           return item
