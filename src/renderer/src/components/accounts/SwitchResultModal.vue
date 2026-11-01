@@ -33,6 +33,7 @@ const verifyState = computed<'ok' | 'failed' | 'unknown'>(() => {
   if (props.result?.verified === false) return 'failed'
   return 'unknown'
 })
+const cliSynced = computed(() => props.result?.cliSync?.synced === true)
 
 watch(
   () => props.open,
@@ -70,14 +71,16 @@ async function restart(): Promise<void> {
   <a-modal :open="props.open" width="760px" centered :footer="null" @cancel="close">
     <template #title>
       <span class="title">
-        <CheckCircleFilled v-if="verifyState === 'ok'" style="color: #52c41a" />
+        <CheckCircleFilled v-if="verifyState === 'ok' && cliSynced" style="color: #52c41a" />
         <ExclamationCircleFilled v-else style="color: #faad14" />
         {{
-          verifyState === 'ok'
-            ? '切换成功'
-            : verifyState === 'failed'
-              ? '已写入，但校验未通过'
-              : '已写入，未拿到校验结果'
+          verifyState === 'ok' && cliSynced
+            ? 'IDE 与 CLI 凭证已写入'
+            : !cliSynced
+              ? 'IDE 已切换，CLI 未同步'
+              : verifyState === 'failed'
+                ? '已写入，但校验未通过'
+                : '已写入，未拿到校验结果'
         }}
       </span>
     </template>
@@ -85,6 +88,23 @@ async function restart(): Promise<void> {
     <p class="lead">
       账号 <strong>{{ props.accountLabel }}</strong> 的凭证已写入 Kiro IDE。
     </p>
+
+    <a-alert
+      v-if="cliSynced"
+      type="success"
+      show-icon
+      message="Kiro CLI 凭证已写入"
+      description="这只确认写入成功。请用 kiro-cli chat --agent-engine v1 --no-interactive '你好' 验证实际对话；Kiro CLI 2.24.1 的 v2 引擎可能仍报凭证错误。"
+      style="margin-bottom: 12px"
+    />
+    <a-alert
+      v-else
+      type="warning"
+      show-icon
+      :message="`Kiro CLI 未同步：${props.result?.cliSync?.error || '主进程未返回 CLI 同步结果'}`"
+      description="IDE 已切换；请勿将这次操作当作两端均已切换。"
+      style="margin-bottom: 12px"
+    />
 
     <a-alert
       v-if="verifyState === 'ok'"
@@ -143,7 +163,7 @@ async function restart(): Promise<void> {
     </ul>
 
     <p class="muted tip">
-      已经在运行的 IDE 仍握着上一个账号的 Token，需要重启才会重新读取凭证。
+      已经在运行的 IDE 仍握着上一个账号的 Token，需要重启才会重新读取凭证。已有的 CLI 会话也需重新启动。
     </p>
 
     <a-space style="width: 100%; justify-content: flex-end">
