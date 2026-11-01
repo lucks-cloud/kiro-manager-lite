@@ -73,6 +73,7 @@ function nextRefreshText(at: number | null): string {
 
 const nextKeyRefreshText = computed(() => nextRefreshText(accountsStore.nextKeyRefreshAt))
 const nextUsageRefreshText = computed(() => nextRefreshText(accountsStore.nextUsageRefreshAt))
+const nextCliCheckText = computed(() => nextRefreshText(accountsStore.nextCliCheckAt))
 const nextApiKeyUsageRefreshText = computed(() => nextRefreshText(keysStore.nextUsageRefreshAt))
 
 watch(
@@ -193,6 +194,7 @@ function update(patch: Parameters<typeof settingsStore.update>[0]): void {
 type NumericSettingKey =
   | 'keyRefreshInterval'
   | 'usageRefreshInterval'
+  | 'cliAutoSwitchThreshold'
   | 'apiKeyUsageRefreshInterval'
   | 'apiKeyRefreshConcurrency'
 
@@ -511,12 +513,38 @@ function resetAll(): void {
           />
           <span class="muted">并发过高容易被限流</span>
         </a-form-item>
+        <a-form-item label="kiro-cli 用完自动切换" class="field-inline">
+          <SettingSwitch field="cliAutoSwitch" />
+          <span class="muted">
+            监控已「写入 Kiro CLI」的账号用量，达到阈值后自动换一个非 Student 的健康账号
+          </span>
+        </a-form-item>
+        <a-form-item label="自动切换阈值" class="field-inline">
+          <a-input-number
+            :value="settings.cliAutoSwitchThreshold"
+            :min="1"
+            :max="100"
+            :step="1"
+            addon-after="%"
+            style="width: 180px"
+            :disabled="!settings.cliAutoSwitch"
+            @change="(v: unknown) => updateNumber('cliAutoSwitchThreshold', v)"
+          />
+          <span class="muted">
+            用量占比达到该值即换号（检查节奏跟随上面的用量刷新间隔）
+            <span class="next-refresh">{{ nextCliCheckText }}</span>
+          </span>
+        </a-form-item>
         <a-form-item label="删除前确认">
           <SettingSwitch field="confirmBeforeDelete" />
         </a-form-item>
       </a-form>
       <ul class="tips">
         <li>自动刷新密钥只处理 30 分钟内即将过期的账号；自动刷新用量会覆盖全部非封禁账号。</li>
+        <li>
+          kiro-cli 用完自动切换只监控经「写入 Kiro CLI」按钮登录过的账号；换号时在非 Student
+          账号里挑用量占比最低的那个写入 kiro-cli / KiroCrew。
+        </li>
         <li>两个间隔各自独立计时，撞在一起时按「密钥 → 用量」先后串行执行，不会丢轮。</li>
         <li>账号很多时建议把用量刷新间隔调大一些，全量拉取用量的请求量随账号数线性增长。</li>
         <li>手动批量操作进行中时定时任务会等待，操作结束后立即补跑到期的那一轮。</li>

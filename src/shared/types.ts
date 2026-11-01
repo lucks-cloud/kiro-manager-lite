@@ -184,6 +184,8 @@ export interface AccountStoreData {
   version: number
   accounts: Account[]
   activeAccountId?: string | null
+  /** 当前写入命令行版 kiro-cli 的账号 id，供「用完自动切换」监控用 */
+  cliAccountId?: string | null
   /** 分组定义；老数据没有该字段时按空数组处理 */
   groups?: AccountGroup[]
 }
@@ -1326,6 +1328,14 @@ export interface AppSettings {
   keyRefreshInterval: number
   /** 用量刷新间隔（分钟） */
   usageRefreshInterval: number
+  /**
+   * kiro-cli 用完自动切换：监控「写入 Kiro CLI」过的那个账号的用量，
+   * 达到阈值后自动换一个非 Student 的健康账号写进 kiro-cli。
+   * 检查节奏复用用量刷新间隔。
+   */
+  cliAutoSwitch: boolean
+  /** kiro-cli 自动切换的触发阈值（百分比 0-100），用量占比达到即换号 */
+  cliAutoSwitchThreshold: number
   /** 批量并发 */
   concurrency: number
   /** 用量接口类型 */
@@ -1411,6 +1421,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoRefreshUsage: true,
   keyRefreshInterval: 5,
   usageRefreshInterval: 5,
+  cliAutoSwitch: false,
+  cliAutoSwitchThreshold: 99,
   concurrency: 5,
   usageApiType: 'rest',
   importConcurrency: 50,

@@ -85,7 +85,9 @@ watch(
     settingsStore.settings.autoRefresh,
     settingsStore.settings.autoRefreshUsage,
     settingsStore.settings.keyRefreshInterval,
-    settingsStore.settings.usageRefreshInterval
+    settingsStore.settings.usageRefreshInterval,
+    settingsStore.settings.cliAutoSwitch,
+    settingsStore.settings.cliAutoSwitchThreshold
   ],
   () => accountsStore.startAutoRefresh()
 )

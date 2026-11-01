@@ -157,6 +157,8 @@ export const useAccountsStore = defineStore('accounts', () => {
   /** 分组定义，始终按 order 升序维护，界面直接按数组顺序渲染 */
   const groups = ref<AccountGroup[]>([])
   const activeAccountId = ref<string | null>(null)
+  /** 当前写入命令行版 kiro-cli 的账号 id（用完自动切换时监控它） */
+  const cliAccountId = ref<string | null>(null)
   const selectedIds = ref<string[]>([])
   /**
    * 是否正在看回收站。打开时列表只显示回收站里的账号（搜索与筛选也只作用于它们），
@@ -190,6 +192,7 @@ export const useAccountsStore = defineStore('accounts', () => {
       version: 1,
       accounts: accounts.value,
       activeAccountId: activeAccountId.value,
+      cliAccountId: cliAccountId.value,
       groups: groups.value
     }
   }
@@ -212,6 +215,7 @@ export const useAccountsStore = defineStore('accounts', () => {
       if (res.success && res.data) {
         accounts.value = res.data.accounts ?? []
         activeAccountId.value = res.data.activeAccountId ?? null
+        cliAccountId.value = res.data.cliAccountId ?? null
         // order 是持久化的排序依据，读回来先归一，界面就能直接按数组顺序渲染
         groups.value = [...(res.data.groups ?? [])].sort((a, b) => a.order - b.order)
       }
@@ -1168,8 +1172,91 @@ export const useAccountsStore = defineStore('accounts', () => {
           }
         : a
     )
+    // 记下当前 kiro-cli 账号，供「用完自动切换」监控
+    cliAccountId.value = id
     persist(true)
     return { ok: true, result }
+  }
+
+  // ============ kiro-cli 用完自动切换 ============
+
+  /** 阈值百分比（1-100）→ 占比小数（0-1） */
+  function cliSwitchLimit(): number {
+    const pct = Math.min(100, Math.max(1, settingsStore.settings.cliAutoSwitchThreshold || 99))
+    return pct / 100
+  }
+
+  /**
+   * 选一个可切换的替补账号：
+   * 非 Student、未封禁 / 未过期 / 无错误、有 refreshToken、用量未达阈值，且不是当前这个。
+   * 按用量占比升序取剩余最多的那个。
+   */
+  function pickCliReplacement(excludeId: string, limit: number): Account | undefined {
+    return liveAccounts.value
+      .filter(
+        (a) =>
+          a.id !== excludeId &&
+          a.subscription.type !== 'Student' &&
+          a.status !== 'banned' &&
+          a.status !== 'expired' &&
+          a.status !== 'error' &&
+          !!a.credentials.refreshToken &&
+          (a.usage.percentUsed || 0) < limit
+      )
+      .sort((a, b) => (a.usage.percentUsed || 0) - (b.usage.percentUsed || 0))[0]
+  }
+
+  /**
+   * 监控当前 kiro-cli 账号的用量，达到阈值就自动切到一个非 Student 的健康账号。
+   *
+   * 只监控「经本应用写入过 kiro-cli」的账号（cliAccountId）；首次若为空，
+   * 尝试用 whoami 的邮箱反查匹配（社交账号 whoami 不带邮箱，此时无法反查，跳过）。
+   */
+  async function runCliAutoSwitch(): Promise<void> {
+    if (!settingsStore.settings.cliAutoSwitch) return
+
+    let id = cliAccountId.value
+    if (!id) {
+      const info = await window.api.getKiroCliSupport().catch(() => null)
+      const email = info?.success ? info.data?.currentAccount?.email : null
+      const matched = email
+        ? liveAccounts.value.find((a) => a.email.toLowerCase() === email.toLowerCase())
+        : undefined
+      if (!matched) return
+      cliAccountId.value = matched.id
+      persist()
+      id = matched.id
+    }
+
+    if (!get(id)) {
+      cliAccountId.value = null
+      persist()
+      return
+    }
+
+    const limit = cliSwitchLimit()
+    // 先刷新当前 kiro-cli 账号的用量，拿到最新占比再判断
+    await checkStatus(id).catch(() => undefined)
+    const cur = get(id)
+    if (!cur) return
+    if ((cur.usage.percentUsed || 0) < limit) return
+
+    const replacement = pickCliReplacement(id, limit)
+    const pct = ((cur.usage.percentUsed || 0) * 100).toFixed(1)
+    if (!replacement) {
+      console.warn(`[CliAutoSwitch] ${cur.email} 用量 ${pct}% 已达阈值，但没有可切换的非 Student 账号`)
+      message.warning('kiro-cli 账号已用满，但没有可切换的非 Student 账号')
+      return
+    }
+    console.info(
+      `[CliAutoSwitch] ${cur.email} 用量 ${pct}% ≥ 阈值，自动切换到 ${replacement.email}`
+    )
+    const res = await loginToCli(replacement.id)
+    if (res.ok) {
+      message.success(`kiro-cli 账号已用满，已自动切换到 ${replacement.email}`)
+    } else {
+      message.error(`kiro-cli 自动切换失败：${res.error}`)
+    }
   }
 
   async function restartKiroIde(): Promise<{ ok: boolean; message: string }> {
@@ -1225,6 +1312,10 @@ export const useAccountsStore = defineStore('accounts', () => {
   /** 下一轮密钥 / 用量刷新的时间戳，未启用时为 null，供界面展示 */
   const nextKeyRefreshAt = ref<number | null>(null)
   const nextUsageRefreshAt = ref<number | null>(null)
+  /** 下一轮 kiro-cli 用量检查的时间戳，未启用时为 null */
+  const nextCliCheckAt = ref<number | null>(null)
+  /** 已生效的 kiro-cli 自动切换开关，用于判断开关是否真的变了 */
+  let appliedCliAutoSwitch = false
 
   // 已生效的间隔（分钟）。设置对象是整体替换的，换主题、折叠侧边栏这类无关改动
   // 也会触发外部的 watch，靠这两个值判断间隔是否真的变了，避免倒计时被无故清零
@@ -1237,7 +1328,8 @@ export const useAccountsStore = defineStore('accounts', () => {
    */
   const LAST_RUN_STORAGE = {
     key: 'kal:auto-key-refresh-at',
-    usage: 'kal:auto-usage-refresh-at'
+    usage: 'kal:auto-usage-refresh-at',
+    cli: 'kal:auto-cli-check-at'
   } as const
 
   type AutoKind = keyof typeof LAST_RUN_STORAGE
@@ -1259,6 +1351,8 @@ export const useAccountsStore = defineStore('accounts', () => {
   const keyIntervalMs = (): number => Math.max(1, settingsStore.settings.keyRefreshInterval) * 60_000
   const usageIntervalMs = (): number =>
     Math.max(1, settingsStore.settings.usageRefreshInterval) * 60_000
+  /** kiro-cli 检查复用用量刷新间隔的节奏 */
+  const cliIntervalMs = (): number => usageIntervalMs()
 
   /**
    * 只处理即将过期的账号（剩余有效期 < AUTO_REFRESH_WINDOW_MS）。
@@ -1323,7 +1417,8 @@ export const useAccountsStore = defineStore('accounts', () => {
     const at = Date.now()
     const keyDue = nextKeyRefreshAt.value !== null && at >= nextKeyRefreshAt.value
     const usageDue = nextUsageRefreshAt.value !== null && at >= nextUsageRefreshAt.value
-    if (!keyDue && !usageDue) return
+    const cliDue = nextCliCheckAt.value !== null && at >= nextCliCheckAt.value
+    if (!keyDue && !usageDue && !cliDue) return
     // 手动批量操作正占用着全局任务状态：本轮不丢，等它结束后的下一个 tick 立刻补跑
     if (task.value.running) return
 
@@ -1345,6 +1440,13 @@ export const useAccountsStore = defineStore('accounts', () => {
         await refreshAllUsage()
         markRan('usage')
         if (Date.now() >= next) nextUsageRefreshAt.value = Date.now() + usageIntervalMs()
+      }
+      if (cliDue) {
+        const next = at + cliIntervalMs()
+        nextCliCheckAt.value = next
+        await runCliAutoSwitch()
+        markRan('cli')
+        if (Date.now() >= next) nextCliCheckAt.value = Date.now() + cliIntervalMs()
       }
     } catch (e) {
       console.error('[AutoRefresh] 本轮自动刷新异常：', e)
@@ -1399,7 +1501,8 @@ export const useAccountsStore = defineStore('accounts', () => {
    * 不必再干等一个完整间隔。
    */
   function alignNextRun(kind: AutoKind): number {
-    const interval = kind === 'key' ? keyIntervalMs() : usageIntervalMs()
+    const interval =
+      kind === 'key' ? keyIntervalMs() : kind === 'cli' ? cliIntervalMs() : usageIntervalMs()
     const due = readLastRun(kind) + interval
     // 已经欠一轮：统一归到当下，界面显示「本轮正在执行…」而不是一个久远的时间
     return due <= Date.now() ? Date.now() : due
@@ -1425,6 +1528,16 @@ export const useAccountsStore = defineStore('accounts', () => {
     ensureTick()
   }
 
+  function alignCliCheck(): void {
+    appliedCliAutoSwitch = settingsStore.settings.cliAutoSwitch
+    if (!settingsStore.settings.cliAutoSwitch) {
+      nextCliCheckAt.value = null
+      return
+    }
+    nextCliCheckAt.value = alignNextRun('cli')
+    ensureTick()
+  }
+
   /**
    * 按当前设置对齐两条任务：开关刚打开或间隔真的改了才重新计时，
    * 其余设置改动（主题、侧边栏、隐私模式……）不影响已经在跑的倒计时。
@@ -1444,15 +1557,32 @@ export const useAccountsStore = defineStore('accounts', () => {
     else if (nextUsageRefreshAt.value === null || appliedUsageInterval !== usageRefreshInterval) {
       alignUsageRefresh()
     }
+    // kiro-cli 自动切换：开关打开 / 刚被切换时对齐；检查节奏跟随用量刷新间隔
+    const cliOn = settingsStore.settings.cliAutoSwitch
+    if (!cliOn) nextCliCheckAt.value = null
+    else if (
+      nextCliCheckAt.value === null ||
+      appliedCliAutoSwitch !== cliOn ||
+      appliedUsageInterval !== usageRefreshInterval
+    ) {
+      alignCliCheck()
+    }
+    appliedCliAutoSwitch = cliOn
 
-    if (nextKeyRefreshAt.value === null && nextUsageRefreshAt.value === null) stopTick()
-    else ensureTick()
+    if (
+      nextKeyRefreshAt.value === null &&
+      nextUsageRefreshAt.value === null &&
+      nextCliCheckAt.value === null
+    ) {
+      stopTick()
+    } else ensureTick()
   }
 
   function stopAutoRefresh(): void {
     stopTick()
     nextKeyRefreshAt.value = null
     nextUsageRefreshAt.value = null
+    nextCliCheckAt.value = null
   }
 
   return {
@@ -1498,11 +1628,14 @@ export const useAccountsStore = defineStore('accounts', () => {
     runBatch,
     switchTo,
     loginToCli,
+    cliAccountId,
+    runCliAutoSwitch,
     restartKiroIde,
     syncActiveFromIde,
     logoutIde,
     nextKeyRefreshAt,
     nextUsageRefreshAt,
+    nextCliCheckAt,
     scheduleKeyRefresh,
     scheduleUsageRefresh,
     startAutoRefresh,
