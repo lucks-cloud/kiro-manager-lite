@@ -1,9 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { CheckCircleFilled, ExclamationCircleOutlined, LogoutOutlined } from '@ant-design/icons-vue'
+import { CheckCircleFilled, ExclamationCircleOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
-import { confirmDanger } from '@/utils/ui'
 import { useAccountsStore, type AccountTaskType } from '@/stores/accounts'
 import { useKeysStore } from '@/stores/keys'
 import { useSettingsStore } from '@/stores/settings'
@@ -88,29 +87,6 @@ async function detectActiveAccounts(): Promise<void> {
 function openActiveDetail(account: { id: string } | null): void {
   if (account) accountsStore.requestAccountDetail(account.id)
 }
-
-const cliLoggingOut = ref(false)
-
-/** 退出 Kiro CLI / KiroCrew 登录：清理本机 kiro-cli 凭证库 */
-function logoutCli(): void {
-  const account = accountsStore.activeAccountCli
-  const label = account ? `（${displayEmail(account.email, settingsStore.settings.privacyMode)}）` : ''
-  confirmDanger({
-    title: `退出 Kiro CLI 登录${label}`,
-    content: '会清理本机 kiro-cli 的凭证（钥匙串与 data.sqlite3），Kiro CLI / KiroCrew 需要重新登录。',
-    okText: '继续',
-    onOk: async () => {
-      cliLoggingOut.value = true
-      try {
-        const res = await accountsStore.logoutCli()
-        if (res.ok) message.success('已退出 Kiro CLI 登录')
-        else message.error(res.error || '退出 Kiro CLI 失败')
-      } finally {
-        cliLoggingOut.value = false
-      }
-    }
-  })
-}
 </script>
 
 <template>
@@ -175,16 +151,6 @@ function logoutCli(): void {
       <a-tag v-else style="margin: 0">
         <ExclamationCircleOutlined /> Kiro CLI 未匹配到账号
       </a-tag>
-      <a-button
-        v-if="activeCliLabel"
-        size="small"
-        danger
-        :loading="cliLoggingOut"
-        @click="logoutCli"
-      >
-        <template #icon><LogoutOutlined /></template>
-        退出 Kiro CLI
-      </a-button>
       <a-button size="small" :loading="detecting" @click="detectActiveAccounts">重新检测</a-button>
     </template>
 

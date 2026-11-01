@@ -556,6 +556,8 @@ async function loginAll(account: Account): Promise<void> {
     if (!cli.ok || !cli.result) {
       return void Modal.warning({
         title: 'Kiro IDE 已登录，Kiro CLI 失败',
+        centered: true,
+        width: 560,
         content: h('div', { style: 'line-height:1.9;word-break:break-all;font-size:13px' }, [
           h('div', `账号 ${accountLabel(account)} 已写入 Kiro IDE。`),
           h('div', { style: 'color:#faad14' }, `Kiro CLI 失败：${cli.error}`)
@@ -584,6 +586,8 @@ function reportCliResult(account: Account, r: KiroCliLoginResult, quiet = false)
 
   Modal.warning({
     title: '已写入，但校验未通过',
+    centered: true,
+    width: 560,
     content: h(
       'div',
       { style: 'line-height:1.9;word-break:break-all;font-size:13px' },

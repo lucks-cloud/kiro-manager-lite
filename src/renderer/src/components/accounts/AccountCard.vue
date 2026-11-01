@@ -170,15 +170,15 @@ const quotaRows = computed(() => {
       expiry: usage.freeTrialExpiry ? formatDate(usage.freeTrialExpiry) : undefined
     })
   }
-  for (const bonus of usage.bonuses ?? []) {
+  usage.bonuses?.forEach((bonus, i) => {
     rows.push({
-      key: `bonus-${bonus.code}`,
+      key: `bonus-${i}-${bonus.code}`,
       color: '#13c2c2',
-      label: bonus.name,
+      label: bonus.name || '奖励',
       value: formatCreditsPair(bonus.current, bonus.limit, p),
       expiry: bonus.expiresAt ? formatDate(bonus.expiresAt) : undefined
     })
-  }
+  })
   return rows
 })
 
@@ -708,6 +708,11 @@ function onCardClick(): void {
   gap: 8px;
 }
 
+/* 底部那行（总额 + 奖励标签 + 重置时间）统一垂直居中，三者落在同一条水平轴上 */
+.usage-foot {
+  align-items: center;
+}
+
 .usage-title {
   display: flex;
   align-items: baseline;
@@ -760,6 +765,10 @@ function onCardClick(): void {
 
 .usage-number {
   font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 18px;
 }
 
 .usage-foot span:last-child {

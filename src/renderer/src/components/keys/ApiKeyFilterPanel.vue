@@ -73,6 +73,19 @@ const usageMaxPercent = computed<number | null>({
     filter.value.usageMax = v == null ? undefined : Math.max(0, Math.min(100, v)) / 100
   }
 })
+/** 总积分（额度上限）范围，界面与存储同单位，空值收敛成 undefined */
+const creditMin = computed<number | null>({
+  get: () => filter.value.creditMin ?? null,
+  set: (v) => {
+    filter.value.creditMin = v == null ? undefined : Math.max(0, v)
+  }
+})
+const creditMax = computed<number | null>({
+  get: () => filter.value.creditMax ?? null,
+  set: (v) => {
+    filter.value.creditMax = v == null ? undefined : Math.max(0, v)
+  }
+})
 const daysRemainingMin = computed<number | null>({
   get: () => filter.value.daysRemainingMin ?? null,
   set: (v) => {
@@ -126,7 +139,7 @@ function setCreated(from: number | undefined, to: number | undefined): void {
     </div>
 
     <div class="filter-row">
-      <span class="filter-label">使用量</span>
+      <span class="filter-label">使用量 (%)</span>
       <div class="range">
         <a-input-number
           v-model:value="usageMinPercent"
@@ -146,6 +159,28 @@ function setCreated(from: number | undefined, to: number | undefined): void {
           style="width: 88px"
         />
         <span class="muted">%</span>
+      </div>
+    </div>
+
+    <div class="filter-row">
+      <span class="filter-label">积分</span>
+      <div class="range">
+        <a-input-number
+          v-model:value="creditMin"
+          :min="0"
+          placeholder="min"
+          size="small"
+          style="width: 88px"
+        />
+        <span class="muted">-</span>
+        <a-input-number
+          v-model:value="creditMax"
+          :min="0"
+          placeholder="max"
+          size="small"
+          style="width: 88px"
+        />
+        <span class="muted">积分</span>
       </div>
     </div>
 

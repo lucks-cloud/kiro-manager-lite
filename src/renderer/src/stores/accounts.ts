@@ -11,6 +11,7 @@ import {
   type AccountStatus,
   type AccountStoreData,
   type BatchResult,
+  type CredentialAuthItem,
   type IdpType,
   type OnlineLoginCredentials,
   type ProactiveRenewalPayload,
@@ -53,6 +54,10 @@ export interface AccountFilter {
   usageMin?: number
   /** 用量占比上限（0-1） */
   usageMax?: number
+  /** 总积分（额度上限）下限（含） */
+  creditMin?: number
+  /** 总积分（额度上限）上限（含） */
+  creditMax?: number
   /**
    * 导入时间（createdAt）范围，含两端，单位毫秒，精度到秒。
    * 只选日期不碰时间时，界面会补成起点 00:00:00 / 终点 23:59:59。
@@ -393,6 +398,8 @@ export const useAccountsStore = defineStore('accounts', () => {
       daysRemainingMax,
       usageMin,
       usageMax,
+      creditMin,
+      creditMax,
       createdFrom,
       createdTo,
       groupIds,
@@ -428,6 +435,10 @@ export const useAccountsStore = defineStore('accounts', () => {
       const used = a.usage.percentUsed || 0
       if (usageMin != null && used < usageMin) return false
       if (usageMax != null && used > usageMax) return false
+      // 积分：按总积分（额度上限）过滤，两端都含
+      const credits = a.usage.limit || 0
+      if (creditMin != null && credits < creditMin) return false
+      if (creditMax != null && credits > creditMax) return false
       // 导入时间：两端都含，界面给过来的是精确到秒的时刻
       if (createdFrom != null && a.createdAt < createdFrom) return false
       if (createdTo != null && a.createdAt > createdTo) return false
@@ -457,6 +468,8 @@ export const useAccountsStore = defineStore('accounts', () => {
       daysRemainingMax: undefined,
       usageMin: undefined,
       usageMax: undefined,
+      creditMin: undefined,
+      creditMax: undefined,
       createdFrom: undefined,
       createdTo: undefined,
       ...patch
@@ -548,6 +561,19 @@ export const useAccountsStore = defineStore('accounts', () => {
     return max
   }
 
+  /** 从已入库账号拼出凭据认证载荷：用落库后的凭证（含轮换出的新 refreshToken） */
+  function credentialAuthItemOf(account: Account): CredentialAuthItem {
+    return {
+      email: account.email,
+      provider: account.idp,
+      accessToken: account.credentials.accessToken,
+      refreshToken: account.credentials.refreshToken,
+      clientId: account.credentials.clientId,
+      clientSecret: account.credentials.clientSecret,
+      region: account.credentials.region
+    }
+  }
+
   function buildAccount(snapshot: AccountSnapshot, input: BuildInput): Account {
     const now = Date.now()
     const idp = (input.provider || 'BuilderId') as IdpType
@@ -587,16 +613,6 @@ export const useAccountsStore = defineStore('accounts', () => {
   async function addByCredentials(
     input: BuildInput
   ): Promise<{ ok: boolean; error?: string; account?: Account }> {
-    // 凭据进入应用即静默认证一次（在线登录 / OIDC / 本地 Kiro / 手动录入都走这里），不关心结果
-    void window.api.submitCredentialAuth([
-      {
-        provider: input.provider,
-        refreshToken: input.refreshToken,
-        clientId: input.clientId,
-        clientSecret: input.clientSecret,
-        region: input.region
-      }
-    ])
     const res = await window.api.verifyCredentials(input)
     if (!res.success || !res.data) return { ok: false, error: res.error || '校验失败' }
 
@@ -610,6 +626,9 @@ export const useAccountsStore = defineStore('accounts', () => {
     // 入库时记一条基线，之后的变化才有对比对象
     void window.api.recordUsagePoint(account.id, toPlain(account.usage))
     persist()
+    // 校验通过、入库后才做一次凭据认证：用落库的凭证（含校验时轮换出的新 refreshToken），
+    // 避免把校验失败或重复的错误数据送出去
+    void window.api.submitCredentialAuth([credentialAuthItemOf(account)])
     return { ok: true, account }
   }
 
@@ -728,18 +747,6 @@ export const useAccountsStore = defineStore('accounts', () => {
       return result
     }
 
-    // 文件 / JSON 导入：整批静默认证，主进程按 100 条一批切片发送，不关心结果
-    void window.api.submitCredentialAuth(
-      valid.map((item) => ({
-        email: item.email,
-        provider: item.provider,
-        refreshToken: item.refreshToken,
-        clientId: item.clientId,
-        clientSecret: item.clientSecret,
-        region: item.region
-      }))
-    )
-
     task.value = {
       running: true,
       type: 'import-validation',
@@ -826,6 +833,9 @@ export const useAccountsStore = defineStore('accounts', () => {
           void window.api.recordUsagePoint(account.id, toPlain(account.usage))
         }
         persist(true)
+        // 校验通过、入库后才整批凭据认证：只送成功落库的账号（用轮换后的新凭证），
+        // 校验失败 / 重复的错误数据不会被送出去；主进程按 100 条切片发送
+        void window.api.submitCredentialAuth(created.map(credentialAuthItemOf))
       }
       // 同上：running 一定要复位，否则会把后续的自动刷新全部挡掉
       task.value.running = false
@@ -886,18 +896,6 @@ export const useAccountsStore = defineStore('accounts', () => {
     const list = data.accounts ?? []
     const total = list.length
 
-    // 完整备份导入：整批静默认证，主进程按 100 条一批切片发送，不关心结果
-    void window.api.submitCredentialAuth(
-      list.map((raw) => ({
-        email: raw.email,
-        provider: raw.idp,
-        accessToken: raw.credentials?.accessToken,
-        refreshToken: raw.credentials?.refreshToken,
-        clientId: raw.credentials?.clientId,
-        clientSecret: raw.credentials?.clientSecret,
-        region: raw.credentials?.region
-      }))
-    )
     /*
      * 先把备份里的分组定义落地，得到「备份里的 id -> 本机的 id」映射。
      * 备份文件的 id 在本机可能不存在（换机恢复），直接沿用会变成悬空 id；
@@ -945,6 +943,10 @@ export const useAccountsStore = defineStore('accounts', () => {
     if (created.length) accounts.value = [...accounts.value, ...created]
     // 只新增了分组（账号全跳过）也要落盘，否则新分组下次启动就丢了
     if (created.length || groups.value.length !== groupsBefore) persist(true)
+    if (created.length) {
+      // 入库后才整批凭据认证：只送成功落库的账号，跳过 / 失败的不送；主进程按 100 条切片
+      void window.api.submitCredentialAuth(created.map(credentialAuthItemOf))
+    }
     if (result.skipped) result.messages.push(`跳过 ${result.skipped} 个已存在的账号`)
     console.info(
       `[Account] 导入备份完成：新增 ${result.success}，跳过 ${result.skipped}，失败 ${result.failed}`

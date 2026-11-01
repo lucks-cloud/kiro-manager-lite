@@ -491,6 +491,8 @@ function onContextMenu(e: MouseEvent): void {
 .usage-block { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; padding: 10px 12px; box-sizing: border-box; border-radius: 12px; background: var(--kal-block-bg); cursor: pointer; transition: background 0.16s ease; }
 .usage-block:hover { background: var(--kal-code-bg); }
 .usage-head, .usage-foot { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 12.5px; }
+/* 底部那行（总额 + 奖励标签 + 重置时间）统一垂直居中，三者落在同一条水平轴上 */
+.usage-foot { align-items: center; }
 .usage-title { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
 .usage-updated { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .usage-percent { flex: 0 0 auto; font-size: 20px; font-weight: 700; line-height: 1; }
@@ -498,7 +500,7 @@ function onContextMenu(e: MouseEvent): void {
 .usage-bars { display: flex; align-items: stretch; gap: 2px; height: 14px; margin: 8px 0 10px; }
 .bar { flex: 1 1 0; border-radius: 2px; background: var(--kal-bar-off); transition: background 0.2s ease; }
 .bar.on { background: var(--bar-on); }
-.usage-number { font-weight: 600; }
+.usage-number { font-weight: 600; display: inline-flex; align-items: center; gap: 6px; line-height: 18px; }
 /* 右侧的重置日期不允许折行，与账号卡片一致 */
 .usage-foot span:last-child { white-space: nowrap; }
 /* 网关调用统计：四个等宽圆角小块，无边框，背景与上方使用量区块统一 */

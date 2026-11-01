@@ -62,12 +62,12 @@ const END_MARK = '# <<< kiro-manager-lite:shell-auto-approve'
  */
 const MANAGED_CAPABILITIES = ['shell', 'fs_read', 'fs_write', 'web_fetch', 'web_search'] as const
 
-/** 追加的规则块：注释标记用于识别与移除，缩进对齐 rules 列表项 */
+/** 追加的规则块：注释标记用于识别与移除。列表项顶格，effect 相对 capability 再缩进一级 */
 const MANAGED_BLOCK = [
   BEGIN_MARK,
   '# 由 Kiro Manager Lite 添加：不带 match 即无条件放行对应能力。',
   '# 关闭「自动同意」开关会移除本段，请勿手动编辑。',
-  ...MANAGED_CAPABILITIES.flatMap((cap) => [`  - capability: ${cap}`, '    effect: allow']),
+  ...MANAGED_CAPABILITIES.flatMap((cap) => [`- capability: ${cap}`, '  effect: allow']),
   END_MARK
 ].join('\n')
 

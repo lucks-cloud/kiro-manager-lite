@@ -156,6 +156,8 @@ const activeFilterCount = computed(() => {
     // != null：输入框清空时给的是 null，按 !== undefined 判断会把它算成一个生效条件
     (f.usageMin != null ? 1 : 0) +
     (f.usageMax != null ? 1 : 0) +
+    (f.creditMin != null ? 1 : 0) +
+    (f.creditMax != null ? 1 : 0) +
     (f.daysRemainingMin != null ? 1 : 0) +
     (f.daysRemainingMax != null ? 1 : 0) +
     // 导入时间是一个区间，两端一起设置 / 清空，只算一项
@@ -416,6 +418,8 @@ const filteredKeys = computed(() => {
     groupIds,
     usageMin,
     usageMax,
+    creditMin,
+    creditMax,
     daysRemainingMin,
     daysRemainingMax,
     createdFrom,
@@ -471,6 +475,10 @@ const filteredKeys = computed(() => {
       const used = ratioOf(entry)
       if (usageMin != null && used < usageMin) return false
       if (usageMax != null && used > usageMax) return false
+      // 积分：按总积分（额度上限）过滤，两端都含
+      const credits = entry.totalCredits || 0
+      if (creditMin != null && credits < creditMin) return false
+      if (creditMax != null && credits > creditMax) return false
       const days = keyDaysRemaining(entry)
       if (daysRemainingMax != null && (days ?? Number.POSITIVE_INFINITY) > daysRemainingMax) {
         return false

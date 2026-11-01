@@ -280,10 +280,11 @@ body {
 }
 
 .filter-panel .filter-label {
-  flex: 0 0 62px;
+  flex: 0 0 70px;
   padding-top: 3px;
   font-size: 13px;
   color: var(--kal-muted);
+  white-space: nowrap;
 }
 
 .filter-panel .chips {

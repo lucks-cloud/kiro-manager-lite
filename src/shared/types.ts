@@ -1562,6 +1562,10 @@ export interface KeyFilter {
   usageMin?: number
   /** 用量占比上限（0-1） */
   usageMax?: number
+  /** 总积分（额度上限）下限（含） */
+  creditMin?: number
+  /** 总积分（额度上限）上限（含） */
+  creditMax?: number
   /** 额度重置剩余天数下限（含） */
   daysRemainingMin?: number
   /** 额度重置剩余天数上限（含） */

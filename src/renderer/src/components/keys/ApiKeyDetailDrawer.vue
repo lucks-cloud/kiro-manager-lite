@@ -421,10 +421,12 @@ function subscriptionColor(tier?: string): string {
 .section-title { display: flex; align-items: center; margin: 4px 0 8px; font-weight: 600; }
 /*
  * 表格单元格里值占满、右侧操作按钮对齐（区域与凭证复用同一布局）。
- * 值可能是 40+ 字符的长串，用 flex-start 顶部对齐：换成多行时按钮跟着第一行，
- * 不会因为垂直居中而浮到中间，看起来像错位。
+ * 值与右侧「复制/修改」按钮垂直居中，和左侧 label 落在同一条水平轴上。
  */
-.cell-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.cell-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+/* label 与 content 同为垂直居中，避免 label 顶对齐、值居中造成的错位 */
+:deep(.ant-descriptions-item-label),
+:deep(.ant-descriptions-item-content) { vertical-align: middle; }
 /* 完整展示不截断：长串按字符换行，min-width:0 让它能在 flex 里正常收缩 */
 .cell-key { flex: 1 1 auto; min-width: 0; word-break: break-all; white-space: normal; line-height: 1.7; }
 .cell-action { flex: 0 0 auto; padding: 0; height: auto; line-height: 1.7; }
