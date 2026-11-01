@@ -9,12 +9,12 @@
 // 只写文件不够：切到社交账号时，CLI 读 state 表的 api.codewhisperer.profile 取 profileArn，
 // 缺 profile_name 会让 `kiro-cli chat --list-models` 报 "missing field `profile_name`" →
 // KiroCrew 的「加载配置失败 / 只有 1 个模型」。所以三处都要按 CLI 的确切格式写到位。
-import { execFile } from 'child_process'
+import { execFile, spawn } from 'child_process'
 import { existsSync } from 'fs'
 import * as fs from 'fs/promises'
 import * as os from 'os'
 import * as path from 'path'
-import { DatabaseSync } from 'node:sqlite'
+import type { DatabaseSync } from 'node:sqlite'
 import { log } from './logger'
 import { cleanChildEnv } from './childEnv'
 import { KIRO_OIDC_SCOPES, KIRO_START_URL } from './kiroEndpoints'
@@ -132,19 +132,38 @@ async function keychainRead(service: string): Promise<string | null> {
   return code === 0 ? stdout.replace(/\n$/, '') : null
 }
 
-async function keychainWrite(service: string, value: string): Promise<void> {
-  // -U：存在则更新；account 用空串，与 kiro-cli 自身写入保持一致
-  const { code, stderr } = await execCli(SECURITY_BIN, [
-    'add-generic-password',
-    '-U',
-    '-a',
-    '',
-    '-s',
-    service,
-    '-w',
-    value
-  ])
-  if (code !== 0) throw new Error(`写入钥匙串 ${service} 失败：${stderr.trim().slice(0, 200)}`)
+/**
+ * 写钥匙串。凭证不走命令行参数（同用户的任意进程都能从进程参数里读到），
+ * 而是用 `security -i` 交互模式经 stdin 下发命令，密码以 -X 十六进制传入，
+ * 不涉及引号转义。-U：存在则更新；account 用空串，与 kiro-cli 自身写入一致。
+ */
+function keychainWrite(service: string, value: string): Promise<void> {
+  if (!/^[A-Za-z0-9:._-]+$/.test(service)) {
+    return Promise.reject(new Error(`非法的钥匙串条目名：${service}`))
+  }
+  const hex = Buffer.from(value, 'utf-8').toString('hex')
+  const command = `add-generic-password -U -a "" -s ${service} -X ${hex}\n`
+  return new Promise((resolve, reject) => {
+    const child = spawn(SECURITY_BIN, ['-i'], {
+      env: cleanChildEnv(),
+      stdio: ['pipe', 'pipe', 'pipe']
+    })
+    let stderr = ''
+    const timer = setTimeout(() => child.kill('SIGKILL'), 15_000)
+    child.stderr.on('data', (d) => (stderr += String(d)))
+    child.on('error', (e) => {
+      clearTimeout(timer)
+      reject(new Error(`写入钥匙串 ${service} 失败：${errorMessage(e)}`))
+    })
+    child.on('close', async (code) => {
+      clearTimeout(timer)
+      // -i 模式下单条命令失败退出码仍可能为 0，以读回结果为准
+      const got = code === 0 ? await keychainRead(service) : null
+      if (got === value) resolve()
+      else reject(new Error(`写入钥匙串 ${service} 失败：${stderr.trim().slice(0, 200) || '读回不一致'}`))
+    })
+    child.stdin.end(command)
+  })
 }
 
 async function keychainDelete(service: string): Promise<void> {
@@ -160,17 +179,66 @@ interface DbSnapshot {
 }
 
 /**
+ * 惰性取 node:sqlite。
+ * 与 kiroMachineId.ts 同款：用 process.getBuiltinModule 而不是顶层 import——
+ * 打包器会把顶层 import 变成主进程启动时的 require，缺这个较新内置模块的运行环境
+ * 会导致整个主进程起不来，而不只是「写入 kiro-cli」这一个功能失效。
+ */
+function loadSqlite(): typeof import('node:sqlite') {
+  const getBuiltin = (process as NodeJS.Process & {
+    getBuiltinModule?: (id: string) => unknown
+  }).getBuiltinModule
+  const mod = getBuiltin?.('node:sqlite') as typeof import('node:sqlite') | undefined
+  if (!mod?.DatabaseSync) {
+    throw new Error('当前运行环境不支持 node:sqlite，无法读写 kiro-cli 数据库')
+  }
+  return mod
+}
+
+/**
  * 打开 CLI 数据库执行一次操作后关闭。
  * data.sqlite3 可能正被运行中的 kiro-cli / KiroCrew 以 WAL 方式打开，
  * busy_timeout 让并发写入排队而不是直接报 SQLITE_BUSY。
  */
 function withDb<T>(dbPath: string, fn: (db: DatabaseSync) => T): T {
+  const { DatabaseSync } = loadSqlite()
   const db = new DatabaseSync(dbPath)
   try {
     db.exec('PRAGMA busy_timeout=5000')
     return fn(db)
   } finally {
     db.close()
+  }
+}
+
+/** 把一次写入包进事务：中途失败整体回滚，不留半成品 */
+function withDbTxn<T>(dbPath: string, fn: (db: DatabaseSync) => T): T {
+  return withDb(dbPath, (db) => {
+    db.exec('BEGIN')
+    try {
+      const result = fn(db)
+      db.exec('COMMIT')
+      return result
+    } catch (e) {
+      try {
+        db.exec('ROLLBACK')
+      } catch {
+        // 回滚本身失败也只能放弃，原始错误更重要
+      }
+      throw e
+    }
+  })
+}
+
+/** 把 auth_kv / state 恢复到写入前的快照（钥匙串写失败时回滚 sqlite 用） */
+function restoreDb(db: DatabaseSync, snap: DbSnapshot): void {
+  for (const key of TOKEN_KEYS) {
+    if (snap.authKv[key] !== undefined) upsertAuthKv(db, key, snap.authKv[key])
+    else deleteAuthKv(db, key)
+  }
+  for (const key of [STATE_IDC_START_URL, STATE_IDC_REGION, STATE_PROFILE]) {
+    if (snap.state[key] !== undefined) upsertState(db, key, snap.state[key])
+    else deleteState(db, key)
   }
 }
 
@@ -248,7 +316,23 @@ async function backupBefore(
   const file = path.join(dataDir, `kml-cli-backup-${stamp}.json`)
   await fs.writeFile(file, JSON.stringify(backup, null, 2), { mode: 0o600 })
   await fs.chmod(file, 0o600).catch(() => undefined)
+  await pruneBackups(dataDir)
   return file
+}
+
+/** 这些备份是明文凭证副本，只保留最新几份，避免在第三方应用目录里无限堆积 */
+const BACKUP_KEEP = 5
+async function pruneBackups(dataDir: string): Promise<void> {
+  try {
+    const files = (await fs.readdir(dataDir))
+      .filter((f) => /^kml-cli-backup-.*\.json$/.test(f))
+      .sort()
+    for (const f of files.slice(0, Math.max(0, files.length - BACKUP_KEEP))) {
+      await fs.unlink(path.join(dataDir, f)).catch(() => undefined)
+    }
+  } catch {
+    // 清理失败不影响写入主流程
+  }
 }
 
 // ============ 校验 ============
@@ -397,25 +481,12 @@ export async function writeKiroCliAuth(input: WriteKiroCliInput): Promise<KiroCl
     }
   }
 
-  // ---- 钥匙串（macOS）----
-  let keychainWritten = false
-  if (process.platform === 'darwin') {
-    if (isSocial) {
-      await keychainWrite(SOCIAL_TOKEN_KEY, JSON.stringify(socialToken))
-      await keychainDelete(ODIC_TOKEN_KEY)
-      await keychainDelete(ODIC_REG_KEY)
-    } else {
-      await keychainWrite(ODIC_TOKEN_KEY, JSON.stringify(odicToken))
-      await keychainWrite(ODIC_REG_KEY, JSON.stringify(odicReg))
-      await keychainDelete(SOCIAL_TOKEN_KEY)
-    }
-    keychainWritten = true
-  } else {
-    notes.push('当前平台不写钥匙串，仅写入 data.sqlite3（kiro-cli 会从中读取）')
-  }
-
-  // ---- sqlite（auth_kv 镜像 + state）----
-  withDb(dbPath, (db) => {
+  // 先写 sqlite（事务），再写钥匙串。
+  // 顺序很关键：macOS 上钥匙串是首选来源，放到最后写——万一钥匙串写失败，
+  // CLI 读到的仍是旧钥匙串、停在上一个可用账号，而不是出现「钥匙串新、state 旧」
+  // 导致 chat --list-models 报 missing field profile_name 的错配态。
+  // sqlite 这步再失败（典型是 CLI 持锁 busy_timeout 超时）会整体回滚，不留半成品。
+  withDbTxn(dbPath, (db) => {
     if (isSocial) {
       upsertAuthKv(db, SOCIAL_TOKEN_KEY, JSON.stringify(socialToken))
       deleteAuthKv(db, ODIC_TOKEN_KEY)
@@ -433,13 +504,42 @@ export async function writeKiroCliAuth(input: WriteKiroCliInput): Promise<KiroCl
       upsertAuthKv(db, ODIC_TOKEN_KEY, JSON.stringify(odicToken))
       upsertAuthKv(db, ODIC_REG_KEY, JSON.stringify(odicReg))
       deleteAuthKv(db, SOCIAL_TOKEN_KEY)
-      // state 值是 JSON 字符串，字符串本身也要再 JSON 一层
-      upsertState(db, STATE_IDC_START_URL, JSON.stringify(input.startUrl || KIRO_START_URL))
+      // state 值是 JSON 字符串，字符串本身也要再 JSON 一层。
+      // 只有拿到真实 startUrl（自建 IdC）才写，否则别凭空补公共地址，交给 CLI 自行处理
+      if (input.startUrl) upsertState(db, STATE_IDC_START_URL, JSON.stringify(input.startUrl))
+      else deleteState(db, STATE_IDC_START_URL)
       upsertState(db, STATE_IDC_REGION, JSON.stringify(region))
       // 清掉社交账号的固定 profile，让 CLI 对 IdC 自行解析
       deleteState(db, STATE_PROFILE)
     }
   })
+
+  // ---- 钥匙串（macOS，主来源，最后写）----
+  let keychainWritten = false
+  if (process.platform === 'darwin') {
+    try {
+      if (isSocial) {
+        await keychainWrite(SOCIAL_TOKEN_KEY, JSON.stringify(socialToken))
+        await keychainDelete(ODIC_TOKEN_KEY)
+        await keychainDelete(ODIC_REG_KEY)
+      } else {
+        await keychainWrite(ODIC_TOKEN_KEY, JSON.stringify(odicToken))
+        await keychainWrite(ODIC_REG_KEY, JSON.stringify(odicReg))
+        await keychainDelete(SOCIAL_TOKEN_KEY)
+      }
+      keychainWritten = true
+    } catch (e) {
+      // 钥匙串写失败：把刚写进 sqlite 的内容回滚到快照，保持两边一致（停在旧账号）
+      try {
+        withDbTxn(dbPath, (db) => restoreDb(db, snapshot))
+      } catch {
+        // 回滚失败只能靠备份人工恢复
+      }
+      throw new Error(`写入钥匙串失败，已回滚 sqlite：${errorMessage(e)}`)
+    }
+  } else {
+    notes.push('当前平台不写钥匙串，仅写入 data.sqlite3（kiro-cli 会从中读取）')
+  }
 
   log('info', `[KiroCLI] 已写入账号凭证到 kiro-cli（${input.provider} / ${input.authMethod}）`)
 

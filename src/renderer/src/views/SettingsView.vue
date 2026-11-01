@@ -41,6 +41,7 @@ import PathMenu from '@/components/common/PathMenu.vue'
 import { useAccountsStore } from '@/stores/accounts'
 import { useKeysStore } from '@/stores/keys'
 import { formatCheckedAt } from '@/utils/format'
+import { displayEmail } from '@/utils/display'
 import { now } from '@/utils/now'
 import { bodyPopupContainer, confirmDanger } from '@/utils/ui'
 
@@ -74,6 +75,29 @@ function nextRefreshText(at: number | null): string {
 const nextKeyRefreshText = computed(() => nextRefreshText(accountsStore.nextKeyRefreshAt))
 const nextUsageRefreshText = computed(() => nextRefreshText(accountsStore.nextUsageRefreshAt))
 const nextCliCheckText = computed(() => nextRefreshText(accountsStore.nextCliCheckAt))
+
+/** Windows 上 kiro-cli 用凭据管理器存储，写入暂不支持，相关设置不显示 */
+const cliSupported = computed(() => settingsStore.appInfo?.platform !== 'win32')
+
+const cliGroupOptions = computed(() =>
+  accountsStore.groups.map((g) => ({ value: g.id, label: g.name }))
+)
+
+const cliAccountOptions = computed(() =>
+  accountsStore.liveAccounts
+    .filter((a) => a.subscription.type !== 'Student')
+    .map((a) => ({
+      value: a.id,
+      label:
+        displayEmail(a.email, settings.value.privacyMode) +
+        (a.nickname && !settings.value.privacyMode ? `（${a.nickname}）` : '')
+    }))
+)
+
+function setCliScope(e: { target: { value?: unknown } }): void {
+  const v = e.target.value
+  if (v === 'all' || v === 'group' || v === 'selected') update({ cliSwitchScope: v })
+}
 const nextApiKeyUsageRefreshText = computed(() => nextRefreshText(keysStore.nextUsageRefreshAt))
 
 watch(
@@ -513,11 +537,57 @@ function resetAll(): void {
           />
           <span class="muted">并发过高容易被限流</span>
         </a-form-item>
+        <template v-if="cliSupported">
         <a-form-item label="kiro-cli 用完自动切换" class="field-inline">
           <SettingSwitch field="cliAutoSwitch" />
           <span class="muted">
-            监控已「写入 Kiro CLI」的账号用量，达到阈值后自动换一个非 Student 的健康账号
+            监控 kiro-cli 当前账号用量，达到阈值后在下面的范围里换一个非 Student 的健康账号
           </span>
+        </a-form-item>
+        <a-form-item label="可切换范围" class="field-inline">
+          <a-radio-group
+            :value="settings.cliSwitchScope"
+            :disabled="!settings.cliAutoSwitch"
+            @change="setCliScope"
+          >
+            <a-radio-button value="all">全部账号</a-radio-button>
+            <a-radio-button value="group">指定分组</a-radio-button>
+            <a-radio-button value="selected">指定账号</a-radio-button>
+          </a-radio-group>
+        </a-form-item>
+        <a-form-item
+          v-if="settings.cliSwitchScope === 'group'"
+          label="允许换入的分组"
+          class="field-inline"
+        >
+          <a-select
+            mode="multiple"
+            :value="settings.cliSwitchGroupIds"
+            :options="cliGroupOptions"
+            placeholder="选择分组（为空则没有可换入的账号）"
+            style="width: 420px"
+            :disabled="!settings.cliAutoSwitch"
+            :get-popup-container="bodyPopupContainer"
+            @change="(v: unknown) => update({ cliSwitchGroupIds: (v as string[]) ?? [] })"
+          />
+        </a-form-item>
+        <a-form-item
+          v-if="settings.cliSwitchScope === 'selected'"
+          label="允许换入的账号"
+          class="field-inline"
+        >
+          <a-select
+            mode="multiple"
+            show-search
+            option-filter-prop="label"
+            :value="settings.cliSwitchAccountIds"
+            :options="cliAccountOptions"
+            placeholder="选择账号（Student 账号不在列表中）"
+            style="width: 420px"
+            :disabled="!settings.cliAutoSwitch"
+            :get-popup-container="bodyPopupContainer"
+            @change="(v: unknown) => update({ cliSwitchAccountIds: (v as string[]) ?? [] })"
+          />
         </a-form-item>
         <a-form-item label="自动切换阈值" class="field-inline">
           <a-input-number
@@ -535,15 +605,18 @@ function resetAll(): void {
             <span class="next-refresh">{{ nextCliCheckText }}</span>
           </span>
         </a-form-item>
+        </template>
         <a-form-item label="删除前确认">
           <SettingSwitch field="confirmBeforeDelete" />
         </a-form-item>
       </a-form>
       <ul class="tips">
         <li>自动刷新密钥只处理 30 分钟内即将过期的账号；自动刷新用量会覆盖全部非封禁账号。</li>
-        <li>
-          kiro-cli 用完自动切换只监控经「写入 Kiro CLI」按钮登录过的账号；换号时在非 Student
-          账号里挑用量占比最低的那个写入 kiro-cli / KiroCrew。
+        <li v-if="cliSupported">
+          kiro-cli 用完自动切换监控经「写入 Kiro CLI」登录的账号；若没有记录，会按 kiro-cli
+          当前登录邮箱匹配本应用里的账号并接管。换号时只在「可切换范围」内、非 Student、
+          最近校验正常且有余量的账号里挑用量占比最低的那个，换入前会再刷新一次它的用量。
+          换号后已在运行的 KiroCrew 代理仍握着旧账号，必要时重启 KiroCrew。
         </li>
         <li>两个间隔各自独立计时，撞在一起时按「密钥 → 用量」先后串行执行，不会丢轮。</li>
         <li>账号很多时建议把用量刷新间隔调大一些，全量拉取用量的请求量随账号数线性增长。</li>

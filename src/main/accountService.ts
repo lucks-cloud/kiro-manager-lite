@@ -687,7 +687,9 @@ export async function loginAccountToCli(input: KiroCliLoginInput): Promise<KiroC
   let finalRefreshToken = refreshToken
   let expiresIn = DEFAULT_EXPIRES_IN
 
-  if (refreshToken) {
+  // 渲染层已走统一入口刷新过（并同步了 IDE）时跳过，直接用传入凭证；
+  // 否则在此刷新一次（轮换式 refreshToken，必须刷新后再落盘）
+  if (refreshToken && !input.skipRefresh) {
     const refreshed = await refreshWithRetry(
       '写入 kiro-cli 前刷新 Token',
       { refreshToken, clientId, clientSecret, region, authMethod },

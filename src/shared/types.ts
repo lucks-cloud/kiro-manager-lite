@@ -482,6 +482,11 @@ export interface KiroCliLoginInput {
   authMethod?: AuthMethod
   provider?: IdpType
   profileArn?: string
+  /**
+   * 渲染层已经通过统一刷新入口刷过 token（并同步给了 IDE）时置 true，
+   * 主进程这边不再重复刷新、直接用传入的凭证写盘。
+   */
+  skipRefresh?: boolean
 }
 
 /** writeKiroCliAuth 的结果（不含刷新后的凭证，由 accountService 合并） */
@@ -1281,6 +1286,9 @@ export type ThemeMode = 'auto' | 'light' | 'dark'
 /** 布局风格：side 左侧导航栏，top 顶部导航栏 */
 export type LayoutMode = 'side' | 'top'
 
+/** kiro-cli 自动切换可换入账号的范围 */
+export type CliSwitchScope = 'all' | 'group' | 'selected'
+
 /** 默认主题色：紫罗兰 */
 export const DEFAULT_PRIMARY_COLOR = '#7c3aed'
 
@@ -1336,6 +1344,12 @@ export interface AppSettings {
   cliAutoSwitch: boolean
   /** kiro-cli 自动切换的触发阈值（百分比 0-100），用量占比达到即换号 */
   cliAutoSwitchThreshold: number
+  /** 自动切换时可换入账号的范围：全部 / 指定分组 / 指定账号（均在非 Student、健康、有余量的基础上） */
+  cliSwitchScope: CliSwitchScope
+  /** scope=group 时允许换入的分组 id */
+  cliSwitchGroupIds: string[]
+  /** scope=selected 时允许换入的账号 id */
+  cliSwitchAccountIds: string[]
   /** 批量并发 */
   concurrency: number
   /** 用量接口类型 */
@@ -1423,6 +1437,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   usageRefreshInterval: 5,
   cliAutoSwitch: false,
   cliAutoSwitchThreshold: 99,
+  cliSwitchScope: 'all',
+  cliSwitchGroupIds: [],
+  cliSwitchAccountIds: [],
   concurrency: 5,
   usageApiType: 'rest',
   importConcurrency: 50,

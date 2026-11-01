@@ -24,6 +24,7 @@ import { shouldSkipAccountUsageRefresh } from '@shared/refreshPolicy'
 import { DEFAULT_REGION } from '@shared/regions'
 import { runPool } from '@/utils/format'
 import { countByGroup, matchesGroupFilter } from '@/utils/groups'
+import { displayEmail } from '@/utils/display'
 import { runBatchQuery, type BatchQueryResult } from '@/utils/batchQuery'
 import { createScopedSearchText } from '@/utils/searchText'
 import {
@@ -662,6 +663,8 @@ export const useAccountsStore = defineStore('accounts', () => {
     })
     if (changed) {
       accounts.value = next
+      // 放进回收站的若是当前 kiro-cli 账号，停止把它当监控对象
+      if (trashed && cliAccountId.value && target.has(cliAccountId.value)) cliAccountId.value = null
       // 两边视图互不可见，勾选状态跨视图没有意义
       selectedIds.value = selectedIds.value.filter((id) => !target.has(id))
       // 立即落盘：反代按账号选号时直接读主进程的数据
@@ -689,6 +692,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     }
     accounts.value = res.data.accounts.accounts ?? []
     activeAccountId.value = res.data.accounts.activeAccountId ?? null
+    if (cliAccountId.value && removingSet.has(cliAccountId.value)) cliAccountId.value = null
     selectedIds.value = selectedIds.value.filter((id) => !removingSet.has(id))
     if (res.data.removed) {
       console.warn(`[Account] 已删除 ${res.data.removed} 个账号（${emails.join('、')}）`)
@@ -1137,40 +1141,40 @@ export const useAccountsStore = defineStore('accounts', () => {
     const account = get(id)
     if (!account) return { ok: false, error: '账号不存在' }
 
+    // 先走统一刷新入口再写盘：refreshToken 是轮换式的，这一步会把新凭证同步给 IDE
+    //（若该账号正是 IDE 激活账号，否则跳过），并与主进程主动续期共用去重，
+    // 避免两边各拿旧 token 去刷导致互相作废、或把 IDE 手里那份刷成废票而被登出。
+    if (account.credentials.refreshToken) {
+      const refreshed = await refreshToken(id)
+      if (!refreshed.ok) {
+        console.warn(`[Account] 写入 kiro-cli 前刷新失败（${account.email}）：${refreshed.error}`)
+        return { ok: false, error: refreshed.error }
+      }
+    }
+    const fresh = get(id) ?? account
+
     const res = await window.api.loginKiroCli({
       accountId: id,
-      accessToken: account.credentials.accessToken,
-      refreshToken: account.credentials.refreshToken,
-      clientId: account.credentials.clientId,
-      clientSecret: account.credentials.clientSecret,
-      region: account.credentials.region,
-      startUrl: account.credentials.startUrl,
-      authMethod: authMethodOf(account.idp),
-      provider: account.idp,
-      profileArn: account.profileArn || account.credentials.profileArn
+      accessToken: fresh.credentials.accessToken,
+      refreshToken: fresh.credentials.refreshToken,
+      clientId: fresh.credentials.clientId,
+      clientSecret: fresh.credentials.clientSecret,
+      region: fresh.credentials.region,
+      startUrl: fresh.credentials.startUrl,
+      authMethod: authMethodOf(fresh.idp),
+      provider: fresh.idp,
+      profileArn: fresh.profileArn || fresh.credentials.profileArn,
+      // 上面已刷新并同步过，主进程不要再刷一次
+      skipRefresh: true
     })
     if (!res.success || !res.data) {
-      console.warn(`[Account] 写入 kiro-cli 失败（${account.email}）：${res.error}`)
+      console.warn(`[Account] 写入 kiro-cli 失败（${fresh.email}）：${res.error}`)
       return { ok: false, error: res.error }
     }
 
     const result = res.data
     console.info(
-      `[Account] 已写入 kiro-cli：${account.email}（${result.accountType || '未知'}，校验${result.verified ? '通过' : '未通过'}）`
-    )
-    // 刷新轮换出的新凭证回写内存，否则下次用旧 refreshToken 会失败
-    accounts.value = accounts.value.map((a) =>
-      a.id === id
-        ? {
-            ...a,
-            credentials: {
-              ...a.credentials,
-              accessToken: result.accessToken,
-              refreshToken: result.refreshToken,
-              expiresAt: Date.now() + result.expiresIn * 1000
-            }
-          }
-        : a
+      `[Account] 已写入 kiro-cli：${fresh.email}（${result.accountType || '未知'}，校验${result.verified ? '通过' : '未通过'}）`
     )
     // 记下当前 kiro-cli 账号，供「用完自动切换」监控
     cliAccountId.value = id
@@ -1186,31 +1190,48 @@ export const useAccountsStore = defineStore('accounts', () => {
     return pct / 100
   }
 
+  /** 替补账号是否落在用户设定的切换范围内（全部 / 指定分组 / 指定账号） */
+  function cliScopeAllows(a: Account): boolean {
+    const s = settingsStore.settings
+    if (s.cliSwitchScope === 'group') {
+      const sel = new Set(s.cliSwitchGroupIds || [])
+      return sel.size > 0 && groupIdsOf(a).some((g) => sel.has(g))
+    }
+    if (s.cliSwitchScope === 'selected') {
+      return (s.cliSwitchAccountIds || []).includes(a.id)
+    }
+    return true
+  }
+
   /**
-   * 选一个可切换的替补账号：
-   * 非 Student、未封禁 / 未过期 / 无错误、有 refreshToken、用量未达阈值，且不是当前这个。
-   * 按用量占比升序取剩余最多的那个。
+   * 可切换的替补账号列表（按用量占比升序，剩余最多的在前）。
+   * 条件：在切换范围内、非 Student、最近校验成功（status=active）、用量确实查过
+   * （lastUpdated>0，避免把「从未检查、占比默认 0」的号当成还有余量）、有 refreshToken、
+   * 占比低于阈值，且不是当前这个。
    */
-  function pickCliReplacement(excludeId: string, limit: number): Account | undefined {
+  function cliReplacementCandidates(excludeId: string, limit: number): Account[] {
     return liveAccounts.value
       .filter(
         (a) =>
           a.id !== excludeId &&
           a.subscription.type !== 'Student' &&
-          a.status !== 'banned' &&
-          a.status !== 'expired' &&
-          a.status !== 'error' &&
+          a.status === 'active' &&
+          (a.usage.lastUpdated || 0) > 0 &&
           !!a.credentials.refreshToken &&
-          (a.usage.percentUsed || 0) < limit
+          (a.usage.percentUsed || 0) < limit &&
+          cliScopeAllows(a)
       )
-      .sort((a, b) => (a.usage.percentUsed || 0) - (b.usage.percentUsed || 0))[0]
+      .sort((a, b) => (a.usage.percentUsed || 0) - (b.usage.percentUsed || 0))
   }
 
+  /** 没有可用替补时只提示一次，恢复正常后复位，避免每个间隔重复弹窗 */
+  let cliNoCandidateWarned = false
+
   /**
-   * 监控当前 kiro-cli 账号的用量，达到阈值就自动切到一个非 Student 的健康账号。
+   * 监控当前 kiro-cli 账号的用量，达到阈值就自动切到范围内的一个健康账号。
    *
    * 只监控「经本应用写入过 kiro-cli」的账号（cliAccountId）；首次若为空，
-   * 尝试用 whoami 的邮箱反查匹配（社交账号 whoami 不带邮箱，此时无法反查，跳过）。
+   * 尝试用 whoami 的邮箱反查匹配本应用里的账号并接管（社交账号 whoami 不带邮箱，无法反查）。
    */
   async function runCliAutoSwitch(): Promise<void> {
     if (!settingsStore.settings.cliAutoSwitch) return
@@ -1228,7 +1249,8 @@ export const useAccountsStore = defineStore('accounts', () => {
       id = matched.id
     }
 
-    if (!get(id)) {
+    const current = get(id)
+    if (!current || isTrashed(current)) {
       cliAccountId.value = null
       persist()
       return
@@ -1238,25 +1260,43 @@ export const useAccountsStore = defineStore('accounts', () => {
     // 先刷新当前 kiro-cli 账号的用量，拿到最新占比再判断
     await checkStatus(id).catch(() => undefined)
     const cur = get(id)
-    if (!cur) return
-    if ((cur.usage.percentUsed || 0) < limit) return
-
-    const replacement = pickCliReplacement(id, limit)
-    const pct = ((cur.usage.percentUsed || 0) * 100).toFixed(1)
-    if (!replacement) {
-      console.warn(`[CliAutoSwitch] ${cur.email} 用量 ${pct}% 已达阈值，但没有可切换的非 Student 账号`)
-      message.warning('kiro-cli 账号已用满，但没有可切换的非 Student 账号')
+    if (!cur || isTrashed(cur)) return
+    if ((cur.usage.percentUsed || 0) < limit) {
+      cliNoCandidateWarned = false
       return
     }
-    console.info(
-      `[CliAutoSwitch] ${cur.email} 用量 ${pct}% ≥ 阈值，自动切换到 ${replacement.email}`
-    )
-    const res = await loginToCli(replacement.id)
-    if (res.ok) {
-      message.success(`kiro-cli 账号已用满，已自动切换到 ${replacement.email}`)
-    } else {
-      message.error(`kiro-cli 自动切换失败：${res.error}`)
+
+    const pct = ((cur.usage.percentUsed || 0) * 100).toFixed(1)
+    const candidates = cliReplacementCandidates(id, limit)
+    if (!candidates.length) {
+      console.warn(`[CliAutoSwitch] ${cur.email} 用量 ${pct}% 已达阈值，但范围内没有可切换的账号`)
+      if (!cliNoCandidateWarned) {
+        message.warning('kiro-cli 账号已用满，但切换范围内没有可用账号（检查范围 / 非 Student / 用量）')
+        cliNoCandidateWarned = true
+      }
+      return
     }
+
+    // 依次尝试候选，第一个写入成功即止；都失败才报错
+    for (const rep of candidates) {
+      // 候选的用量可能是上一轮全量刷新的旧值：换入前先刷新一次，确认仍健康且有余量
+      await checkStatus(rep.id).catch(() => undefined)
+      const latest = get(rep.id)
+      if (!latest || latest.status !== 'active' || (latest.usage.percentUsed || 0) >= limit) {
+        console.info(`[CliAutoSwitch] 候选 ${rep.email} 刷新后不再可用，跳过`)
+        continue
+      }
+      console.info(`[CliAutoSwitch] ${cur.email} 用量 ${pct}% ≥ 阈值，尝试切换到 ${rep.email}`)
+      const res = await loginToCli(rep.id)
+      if (res.ok) {
+        cliNoCandidateWarned = false
+        const label = displayEmail(rep.email, settingsStore.settings.privacyMode)
+        message.success(`kiro-cli 账号已用满，已自动切换到 ${label}`)
+        return
+      }
+      console.warn(`[CliAutoSwitch] 切换到 ${rep.email} 失败：${res.error}，尝试下一个候选`)
+    }
+    message.error('kiro-cli 自动切换失败：范围内候选账号都写入失败')
   }
 
   async function restartKiroIde(): Promise<{ ok: boolean; message: string }> {
@@ -1314,8 +1354,9 @@ export const useAccountsStore = defineStore('accounts', () => {
   const nextUsageRefreshAt = ref<number | null>(null)
   /** 下一轮 kiro-cli 用量检查的时间戳，未启用时为 null */
   const nextCliCheckAt = ref<number | null>(null)
-  /** 已生效的 kiro-cli 自动切换开关，用于判断开关是否真的变了 */
+  /** 已生效的 kiro-cli 自动切换开关与间隔，用于判断是否真的变了（间隔复用用量刷新间隔） */
   let appliedCliAutoSwitch = false
+  let appliedCliInterval = 0
 
   // 已生效的间隔（分钟）。设置对象是整体替换的，换主题、折叠侧边栏这类无关改动
   // 也会触发外部的 watch，靠这两个值判断间隔是否真的变了，避免倒计时被无故清零
@@ -1530,6 +1571,7 @@ export const useAccountsStore = defineStore('accounts', () => {
 
   function alignCliCheck(): void {
     appliedCliAutoSwitch = settingsStore.settings.cliAutoSwitch
+    appliedCliInterval = settingsStore.settings.usageRefreshInterval
     if (!settingsStore.settings.cliAutoSwitch) {
       nextCliCheckAt.value = null
       return
@@ -1559,15 +1601,16 @@ export const useAccountsStore = defineStore('accounts', () => {
     }
     // kiro-cli 自动切换：开关打开 / 刚被切换时对齐；检查节奏跟随用量刷新间隔
     const cliOn = settingsStore.settings.cliAutoSwitch
-    if (!cliOn) nextCliCheckAt.value = null
-    else if (
+    if (!cliOn) {
+      nextCliCheckAt.value = null
+      appliedCliAutoSwitch = false
+    } else if (
       nextCliCheckAt.value === null ||
       appliedCliAutoSwitch !== cliOn ||
-      appliedUsageInterval !== usageRefreshInterval
+      appliedCliInterval !== usageRefreshInterval
     ) {
       alignCliCheck()
     }
-    appliedCliAutoSwitch = cliOn
 
     if (
       nextKeyRefreshAt.value === null &&

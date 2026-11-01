@@ -246,12 +246,17 @@ const actions = computed<CardAction[]>(() => [
       { key: 'refresh-usage', label: '刷新用量与积分', icon: SyncOutlined }
     ]
   },
-  {
-    id: 'cli-login',
-    action: 'cli-login',
-    title: '写入 Kiro CLI（命令行版 kiro-cli / KiroCrew）',
-    icon: CodeOutlined
-  },
+  // Windows 上 kiro-cli 用凭据管理器存储，暂不支持写入，不显示该按钮
+  ...(settingsStore.appInfo?.platform === 'win32'
+    ? []
+    : [
+        {
+          id: 'cli-login',
+          action: 'cli-login' as const,
+          title: '写入 Kiro CLI（命令行版 kiro-cli / KiroCrew）',
+          icon: CodeOutlined
+        }
+      ]),
   { id: 'copy-token', action: 'copy-token', title: '复制凭证 JSON', icon: CopyOutlined },
   { id: 'test', action: 'test', title: '测活（发一次真实对话）', icon: ThunderboltOutlined },
   { id: 'create-api-key', action: 'create-api-key', title: 'API Key 管理', icon: KeyOutlined },
