@@ -353,6 +353,17 @@ export interface ParsedUsage {
   subscription: AccountSubscription
 }
 
+/**
+ * 奖励额度是否应被丢弃（不计入总额、不展示）。
+ * 只丢已过期 / 已撤销的；用完（上游可能标成 INACTIVE 等非 ACTIVE 状态）仍要保留，
+ * 这样奖励积分用光后，总积分与总用量依然把这部分算进去。
+ */
+function isDroppedBonusStatus(status?: string): boolean {
+  if (!status) return false
+  const s = status.toUpperCase()
+  return s === 'EXPIRED' || s === 'REVOKED' || s === 'CANCELLED' || s === 'CANCELED'
+}
+
 /** 把 REST / CBOR 两种响应统一解析成账号用量 + 订阅 */
 export function parseUsageResponse(res: UsageResponse): ParsedUsage {
   const credit =
@@ -378,7 +389,9 @@ export function parseUsageResponse(res: UsageResponse): ParsedUsage {
   let bonusLimit = 0
   let bonusCurrent = 0
   for (const b of credit?.bonuses ?? []) {
-    if (b.status && b.status !== 'ACTIVE') continue
+    // 只排除已过期 / 已撤销的奖励；用完的奖励上游常把 status 从 ACTIVE 改成 INACTIVE 等，
+    // 若按「非 ACTIVE 就跳过」会让额度用光后奖励凭空消失、总积分缩回基础额度，这里保留它。
+    if (isDroppedBonusStatus(b.status)) continue
     const current = b.currentUsageWithPrecision ?? b.currentUsage ?? 0
     const limit = b.usageLimitWithPrecision ?? b.usageLimit ?? 0
     bonusCurrent += current

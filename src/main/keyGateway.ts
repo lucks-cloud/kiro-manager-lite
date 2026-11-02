@@ -363,10 +363,10 @@ export interface AccountInfo {
   /** 基础额度已用 / 上限（CREDIT 明细本身，不含奖励） */
   baseUsed: number | null
   baseLimit: number | null
-  /** 奖励额度已用 / 上限（ACTIVE 奖励合计） */
+  /** 奖励额度已用 / 上限（有效奖励合计，含已用完但未过期的） */
   bonusUsed: number | null
   bonusLimit: number | null
-  /** 各条 ACTIVE 奖励明细 */
+  /** 各条有效奖励明细（含已用完但未过期的） */
   bonuses: BonusUsage[]
   /** 该 Key 绑定的注册邮箱，仅在上游返回时有值 */
   email: string | null
@@ -389,7 +389,7 @@ function parseResetAt(value: unknown): number | null {
   return null
 }
 /**
- * 从 CREDIT 明细拆出基础额度与奖励额度（仅 ACTIVE 奖励）。
+ * 从 CREDIT 明细拆出基础额度与奖励额度（含已用完但未过期的奖励，仅排除过期 / 撤销）。
  * 与账号侧 parseUsageResponse 口径一致：基础取该明细本身，奖励是它 bonuses 的合计。
  */
 function extractBreakdown(data: Record<string, unknown> | null): {
@@ -415,7 +415,10 @@ function extractBreakdown(data: Record<string, unknown> | null): {
   const bonuses: BonusUsage[] = []
   const rawBonuses = Array.isArray(credit?.bonuses) ? (credit.bonuses as Record<string, unknown>[]) : []
   for (const b of rawBonuses) {
-    if (b.status && b.status !== 'ACTIVE') continue
+    // 只排除已过期 / 已撤销的奖励；用完的奖励上游常把 status 从 ACTIVE 改成 INACTIVE 等，
+    // 若按「非 ACTIVE 就跳过」会让额度用光后奖励凭空消失、总积分缩回基础额度，这里保留它。
+    const bonusStatus = typeof b.status === 'string' ? b.status.toUpperCase() : ''
+    if (['EXPIRED', 'REVOKED', 'CANCELLED', 'CANCELED'].includes(bonusStatus)) continue
     const u = pickNum(b, ['currentUsageWithPrecision', 'currentUsage'])
     const l = pickNum(b, ['usageLimitWithPrecision', 'usageLimit'])
     if (u != null) bonusUsed = (bonusUsed || 0) + u
