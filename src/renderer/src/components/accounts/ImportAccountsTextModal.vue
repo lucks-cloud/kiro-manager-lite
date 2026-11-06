@@ -5,13 +5,20 @@
  */
 import { computed, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
-import { CodeOutlined, CopyOutlined } from '@ant-design/icons-vue'
+import {
+  CodeOutlined,
+  CopyOutlined,
+  DownOutlined,
+  ExportOutlined,
+  ImportOutlined,
+  RedoOutlined
+} from '@ant-design/icons-vue'
 import { useAccountsStore } from '@/stores/accounts'
 import { useSettingsStore } from '@/stores/settings'
 import { copyText } from '@/utils/ui'
-import { parseImportContent } from '@/utils/transfer'
+import { buildImportItemsJson, failedItemsFilename, parseImportContent } from '@/utils/transfer'
 import { DEFAULT_SETTINGS } from '@shared/types'
-import type { BatchResult } from '@shared/types'
+import type { AccountImportItem, BatchResult } from '@shared/types'
 
 const props = defineProps<{ open: boolean }>()
 const emit = defineEmits<{ 'update:open': [boolean] }>()
@@ -22,6 +29,10 @@ const settingsStore = useSettingsStore()
 const text = ref('')
 const importing = ref(false)
 const result = ref<BatchResult | null>(null)
+/** 累积的失败条目，供重试 / 导出 */
+const failedItems = ref<AccountImportItem[]>([])
+/** 导出失败账号的进行态 */
+const exporting = ref(false)
 
 const placeholder = `支持以下任意一种格式：
 
@@ -76,6 +87,7 @@ watch(
     if (open) {
       text.value = ''
       result.value = null
+      failedItems.value = []
     }
   }
 )
@@ -91,9 +103,10 @@ async function submit(): Promise<void> {
   importing.value = true
   try {
     if (data.fullData) {
-      // 完整备份直接恢复，不逐个联网校验
+      // 完整备份直接恢复，不逐个联网校验（也不产生可重试的失败条目）
       const res = accountsStore.importFullData(data.fullData)
       result.value = res
+      failedItems.value = []
       message.success(`恢复完成：新增 ${res.success}，跳过 ${res.skipped}`)
       if (!res.failed) close()
       return
@@ -104,15 +117,57 @@ async function submit(): Promise<void> {
     }
     const res = await accountsStore.importItems(data.items)
     result.value = res
+    failedItems.value = res.failedItems ?? []
     if (res.success) {
       message.success(`导入完成：成功 ${res.success}，跳过 ${res.skipped}，失败 ${res.failed}`)
     } else {
       message.warning(`没有成功导入的账号（跳过 ${res.skipped}，失败 ${res.failed}）`)
     }
-    // 全部处理成功则直接关闭；有失败时保留弹窗，方便查看导入日志
+    // 全部处理成功则直接关闭；有失败时保留弹窗，方便查看导入日志与重试
     if (res.success && !res.failed) close()
   } finally {
     importing.value = false
+  }
+}
+
+/** 重试失败账号：只把上次失败的条目再跑一遍，结果合并进日志，失败清单替换为新一轮的失败 */
+async function retryFailed(): Promise<void> {
+  const retryList = failedItems.value
+  if (retryList.length === 0) return
+  importing.value = true
+  try {
+    const single = await accountsStore.importItems(retryList)
+    const base = result.value ?? { success: 0, failed: 0, skipped: 0, messages: [] }
+    base.success += single.success
+    base.skipped += single.skipped
+    // 失败数以本轮为准（重试成功的要从失败里扣掉）
+    base.failed = base.failed - retryList.length + single.failed
+    base.messages.push(
+      `【重试 ${retryList.length} 个失败账号】成功 ${single.success}，跳过 ${single.skipped}，失败 ${single.failed}`,
+      ...single.messages.map((line) => `  ${line}`)
+    )
+    result.value = { ...base }
+    failedItems.value = single.failedItems ?? []
+    const summary = `成功 ${single.success}，跳过 ${single.skipped}，失败 ${single.failed}`
+    if (single.success) message.success(`重试完成：${summary}`)
+    else message.warning(`重试没有新增成功（${summary}）`)
+  } finally {
+    importing.value = false
+  }
+}
+
+/** 导出失败账号 JSON（精简 JSON，格式与账号管理导出一致，可再次导入） */
+async function exportFailed(): Promise<void> {
+  if (failedItems.value.length === 0) return
+  exporting.value = true
+  try {
+    const content = buildImportItemsJson(failedItems.value)
+    const res = await window.api.exportToFile(content, failedItemsFilename(failedItems.value.length))
+    if (!res.success) return void message.error(res.error || '导出失败')
+    if (!res.data?.saved) return
+    message.success(`已导出 ${failedItems.value.length} 个失败账号`)
+  } finally {
+    exporting.value = false
   }
 }
 </script>
@@ -122,11 +177,9 @@ async function submit(): Promise<void> {
     :open="props.open"
     width="700px"
     centered
-    :confirm-loading="importing"
-    ok-text="开始导入"
-    cancel-text="关闭"
+    :footer="null"
     :mask-closable="!importing"
-    @ok="submit"
+    :closable="!importing"
     @cancel="close"
   >
     <template #title>
@@ -171,6 +224,34 @@ async function submit(): Promise<void> {
         </div>
       </div>
     </template>
+
+    <div class="footer-bar">
+      <a-space :size="8" wrap>
+        <a-button :disabled="importing" @click="close">关闭</a-button>
+        <a-dropdown v-if="failedItems.length" :disabled="importing || exporting">
+          <a-button :loading="importing || exporting">
+            操作失败项（{{ failedItems.length }}）
+            <DownOutlined />
+          </a-button>
+          <template #overlay>
+            <a-menu>
+              <a-menu-item key="retry" @click="retryFailed">
+                <RedoOutlined />
+                重试失败
+              </a-menu-item>
+              <a-menu-item key="export" @click="exportFailed">
+                <ExportOutlined />
+                导出失败 JSON
+              </a-menu-item>
+            </a-menu>
+          </template>
+        </a-dropdown>
+      </a-space>
+      <a-button type="primary" :loading="importing" :disabled="!parsed" @click="submit">
+        <template #icon><ImportOutlined /></template>
+        开始导入
+      </a-button>
+    </div>
   </a-modal>
 </template>
 
@@ -187,5 +268,15 @@ async function submit(): Promise<void> {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+}
+
+/* 底部操作栏：左侧关闭 / 操作失败项，右侧开始导入；放不下时整体换行 */
+.footer-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 16px;
 }
 </style>

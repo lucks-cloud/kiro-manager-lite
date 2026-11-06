@@ -11,6 +11,7 @@ import {
 import PathMenu from '@/components/common/PathMenu.vue'
 import { useSettingsStore } from '@/stores/settings'
 import MachineIdCard from '@/components/tools/MachineIdCard.vue'
+import OutboundDomainsCard from '@/components/tools/OutboundDomainsCard.vue'
 import NetworkCheckCard from '@/components/tools/NetworkCheckCard.vue'
 import { RETRYABLE_STATUS_OPTIONS, normalizeRetryStatuses } from '@shared/retryPolicy'
 import type { ShellAutoApproveStatus, ShellAutoApproveTarget } from '@shared/types'
@@ -323,6 +324,8 @@ onMounted(() => void refresh())
     </a-card>
 
     <MachineIdCard />
+
+    <OutboundDomainsCard />
 
     <NetworkCheckCard />
 

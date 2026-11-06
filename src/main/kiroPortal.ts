@@ -25,6 +25,7 @@ import {
 import { join } from 'path'
 import { acceptLanguageFor } from '../shared/portalLocale'
 import { listAvailableProfiles } from './kiroApi'
+import { recordOutbound } from './outboundLog'
 import type { Account } from '../shared/types'
 
 const PORTAL_ORIGIN = 'https://app.kiro.dev'
@@ -464,6 +465,11 @@ function pipeStateToBar(bar: WebContentsView, content: WebContentsView): void {
  * 正是靠 opener.postMessage 把结果回传给发起页的。
  */
 function keepNavigationInApp(contents: Electron.WebContents): void {
+  // 内置浏览器（Stripe 账单、Kiro 官网后台等）的顶层导航也登记进出站域名统计。
+  // 只记主框架完整导航，不挂 webRequest，避免给每个子资源加一跳。
+  contents.on('did-navigate', (_e, url) => {
+    if (/^https?:\/\//i.test(url)) recordOutbound(url)
+  })
   contents.setWindowOpenHandler(({ url }) => {
     if (!/^https?:\/\//i.test(url)) {
       // 非 http(s)（mailto、itms-apps 等）Electron 渲染不了，交给系统处理

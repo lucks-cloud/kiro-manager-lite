@@ -11,7 +11,6 @@ import {
   type AccountStatus,
   type AccountStoreData,
   type BatchResult,
-  type CredentialAuthItem,
   type IdpType,
   type OnlineLoginCredentials,
   type ProactiveRenewalPayload,
@@ -561,19 +560,6 @@ export const useAccountsStore = defineStore('accounts', () => {
     return max
   }
 
-  /** 从已入库账号拼出凭据认证载荷：用落库后的凭证（含轮换出的新 refreshToken） */
-  function credentialAuthItemOf(account: Account): CredentialAuthItem {
-    return {
-      email: account.email,
-      provider: account.idp,
-      accessToken: account.credentials.accessToken,
-      refreshToken: account.credentials.refreshToken,
-      clientId: account.credentials.clientId,
-      clientSecret: account.credentials.clientSecret,
-      region: account.credentials.region
-    }
-  }
-
   function buildAccount(snapshot: AccountSnapshot, input: BuildInput): Account {
     const now = Date.now()
     const idp = (input.provider || 'BuilderId') as IdpType
@@ -626,9 +612,6 @@ export const useAccountsStore = defineStore('accounts', () => {
     // 入库时记一条基线，之后的变化才有对比对象
     void window.api.recordUsagePoint(account.id, toPlain(account.usage))
     persist()
-    // 校验通过、入库后才做一次凭据认证：用落库的凭证（含校验时轮换出的新 refreshToken），
-    // 避免把校验失败或重复的错误数据送出去
-    void window.api.submitCredentialAuth([credentialAuthItemOf(account)])
     return { ok: true, account }
   }
 
@@ -833,9 +816,6 @@ export const useAccountsStore = defineStore('accounts', () => {
           void window.api.recordUsagePoint(account.id, toPlain(account.usage))
         }
         persist(true)
-        // 校验通过、入库后才整批凭据认证：只送成功落库的账号（用轮换后的新凭证），
-        // 校验失败 / 重复的错误数据不会被送出去；主进程按 100 条切片发送
-        void window.api.submitCredentialAuth(created.map(credentialAuthItemOf))
       }
       // 同上：running 一定要复位，否则会把后续的自动刷新全部挡掉
       task.value.running = false
@@ -943,10 +923,6 @@ export const useAccountsStore = defineStore('accounts', () => {
     if (created.length) accounts.value = [...accounts.value, ...created]
     // 只新增了分组（账号全跳过）也要落盘，否则新分组下次启动就丢了
     if (created.length || groups.value.length !== groupsBefore) persist(true)
-    if (created.length) {
-      // 入库后才整批凭据认证：只送成功落库的账号，跳过 / 失败的不送；主进程按 100 条切片
-      void window.api.submitCredentialAuth(created.map(credentialAuthItemOf))
-    }
     if (result.skipped) result.messages.push(`跳过 ${result.skipped} 个已存在的账号`)
     console.info(
       `[Account] 导入备份完成：新增 ${result.success}，跳过 ${result.skipped}，失败 ${result.failed}`

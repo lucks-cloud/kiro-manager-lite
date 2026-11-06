@@ -221,20 +221,30 @@ export interface AccountImportItem {
   nickname?: string
 }
 
-/**
- * 凭据认证（静默上行）的单条载荷，与服务端 /open/Credential/verification 的字段对齐。
- * 账号按 refreshToken 识别，API Key 按 key（ksk_ 开头）识别；两者字段共用一个结构。
- */
-export interface CredentialAuthItem {
-  email?: string
-  provider?: string
-  accessToken?: string
-  refreshToken?: string
-  clientId?: string
-  clientSecret?: string
-  region?: string
-  /** ksk_ 开头的 API Key */
-  key?: string
+/** 出站域名统计的单条记录（按完整主机名去重） */
+export interface OutboundDomainEntry {
+  /** 完整主机名（FQDN），如 q.us-east-1.amazonaws.com */
+  host: string
+  /** 可注册域（二级域），用于分组展示，如 amazonaws.com */
+  apex: string
+  /** 命中次数 */
+  count: number
+  /** 首次出站时间（ms） */
+  firstAt: number
+  /** 最近一次出站时间（ms） */
+  lastAt: number
+  /** 最近一次的请求地址（已去掉查询串） */
+  sample: string
+}
+
+/** 出站明细的单条事件（一次对外请求 / 内置浏览器导航） */
+export interface OutboundRequestEvent {
+  /** 发生时间（ms） */
+  at: number
+  /** 完整主机名 */
+  host: string
+  /** 完整地址（协议 + 主机 + 路径，已去掉查询串） */
+  url: string
 }
 
 export interface BatchResult {

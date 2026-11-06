@@ -1,5 +1,6 @@
 // 网络层：统一 fetch + 可选代理
 import { Agent, ProxyAgent, fetch as undiciFetch, type Dispatcher, type RequestInit as UndiciRequestInit } from 'undici'
+import { recordOutbound } from './outboundLog'
 
 /**
  * 连接保持时间，由反代参数「上游连接保持」设置，默认 60 秒。
@@ -189,6 +190,7 @@ export async function httpStream(
   } = {}
 ): Promise<HttpStreamResponse> {
   const { method = 'POST', headers, body, signal, connectTimeoutMs = 30_000 } = options
+  recordOutbound(url)
   const controller = new AbortController()
   const onAbort = (): void => controller.abort(signal?.reason)
   if (signal) {
@@ -227,6 +229,7 @@ export async function httpRequest(
   } = {}
 ): Promise<HttpResponse> {
   const { method = 'GET', headers, body, timeoutMs = 30_000 } = options
+  recordOutbound(url)
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {

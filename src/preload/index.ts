@@ -94,8 +94,6 @@ const api = {
 
   // 账号操作
   verifyCredentials: (input: unknown) => invoke('accounts:verify', input),
-  /** 凭据认证（静默上行）：即发即忘，不关心返回 */
-  submitCredentialAuth: (items: unknown) => invoke('credential:auth', items),
   refreshAccountToken: (account: unknown) => invoke('accounts:refresh-token', account),
   checkAccountStatus: (account: unknown) => invoke('accounts:check-status', account),
 
@@ -185,6 +183,9 @@ const api = {
   // 常用工具：网络检测
   getIpInfo: () => invoke('tools:ip-info'),
   testSite: (id: string) => invoke('tools:site-test', id),
+  getOutboundDomains: () => invoke('tools:outbound-domains'),
+  getOutboundEvents: (host?: string) => invoke('tools:outbound-events', host),
+  clearOutboundDomains: () => invoke('tools:outbound-clear'),
 
   // 本地反代
   getProxyState: () => invoke('proxy:state'),

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/logo.png" width="128" height="128" alt="Kiro Manager Lite Logo">
+  <img src="docs/image/logo.png" width="128" height="128" alt="Kiro Manager Lite Logo">
 </p>
 
 <h1 align="center">Kiro Manager Lite</h1>
@@ -13,8 +13,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.0.41-6c5ce7" alt="version">
-  <img src="https://img.shields.io/badge/updated-2026--10--29-2f9e44" alt="updated">
+  <img src="https://img.shields.io/badge/version-1.0.45-6c5ce7" alt="version">
+  <img src="https://img.shields.io/badge/updated-2026--11--06-2f9e44" alt="updated">
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="license">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="platform">
   <img src="https://img.shields.io/badge/Vue-3-42b883" alt="vue">
@@ -89,7 +89,7 @@
 
 把账号池转成标准的大模型接口，Claude Code、Codex、Cursor、VS Code 等客户端直接当作自己的模型服务来用。
 
-12 个客户端的接入效果见 **[一键接入实测截图](docs/proxy-clients.md)**。
+12 个客户端的接入效果见 **[一键接入实测截图](docs/proxy/proxy-clients.md)**。
 
 **接口与协议**
 
@@ -270,7 +270,7 @@ Windows 与 Linux 暂不提供 arm64 包：原生依赖 `cbor-extract` 没有对
 
 ![本地反代](docs/screenshots/proxy.png)
 
-各客户端一键接入后的实测截图见 [一键接入实测](docs/proxy-clients.md)。
+各客户端一键接入后的实测截图见 [一键接入实测](docs/proxy/proxy-clients.md)。
 
 ### 常用工具
 
@@ -423,7 +423,7 @@ src/
 ## 💬 交流群
 
 <p align="center">
-  <img src="docs/qq-group.png" width="260" alt="QQ 交流群">
+  <img src="docs/image/qq-group.png" width="260" alt="QQ 交流群">
 </p>
 
 ---

@@ -21,7 +21,6 @@ import {
   verifyCredentials
 } from './accountService'
 import { kiroCliSupport, logoutKiroCli, readKiroCliActive } from './kiroCliAuth'
-import { submitCredentialAuth } from './credentialAuth'
 import { createAccountApiKey, deleteAccountApiKey, listAccountApiKeys } from './kiroApiKey'
 import { openAccountPortal, openInAppUrl } from './kiroPortal'
 import { createSubscriptionCheckout, getSubscriptionEntry, listSubscriptionPlans } from './kiroSubscription'
@@ -68,6 +67,7 @@ import {
   restoreMachineId
 } from './kiroMachineId'
 import { getIpInfo, testSite } from './networkCheck'
+import { clearOutboundDomains, listOutboundDomains, listOutboundEvents } from './outboundLog'
 import {
   applyProxyConfig,
   clearProxyLogs,
@@ -179,7 +179,6 @@ import type {
   AppSettings,
   ApiKeyChatTestInput,
   ChatTestInput,
-  CredentialAuthItem,
   IpcResult,
   KiroCliLoginInput,
   KiroModelInfo,
@@ -277,12 +276,6 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   handle('accounts:verify', async (_e, input: VerifyCredentialsInput) =>
     ok(await verifyCredentials(input))
   )
-
-  // 凭据认证（静默上行）：即发即忘，主进程内部切片分批发送，立即返回
-  handle('credential:auth', (_e, items: CredentialAuthItem[]) => {
-    submitCredentialAuth(Array.isArray(items) ? items : [])
-    return ok()
-  })
 
   handle('accounts:refresh-token', async (_e, account: Account) => {
     const result = await refreshAccountToken(account)
@@ -732,6 +725,16 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   // ============ 常用工具：网络检测 ============
   handle('tools:ip-info', async () => ok(await getIpInfo()))
   handle('tools:site-test', async (_e, id: SiteTestId) => ok(await testSite(id)))
+
+  // 出站域名统计：去重域名列表 / 明细事件（可按域名过滤）/ 清空
+  handle('tools:outbound-domains', () => ok(listOutboundDomains()))
+  handle('tools:outbound-events', (_e, host?: string) =>
+    ok(listOutboundEvents(typeof host === 'string' && host ? host : undefined))
+  )
+  handle('tools:outbound-clear', () => {
+    clearOutboundDomains()
+    return ok()
+  })
 
   // ============ 本地反代 ============
   handle('proxy:state', () =>

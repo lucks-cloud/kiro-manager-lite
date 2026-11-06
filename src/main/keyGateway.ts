@@ -23,6 +23,7 @@ import {
 import { parseModelEffort } from '../shared/modelSchema'
 import type { BonusUsage, KeyModelInfo } from '../shared/types'
 import { clearRpmWindows, createUsageCollector, recordRequest, recordResponse } from './gatewayStats'
+import { recordOutbound } from './outboundLog'
 
 const HEALTH_PATH = '/__kiro_key_health'
 const HEALTH_MARKER = 'kiro-manager-key-ok'
@@ -259,6 +260,7 @@ function apiGet(base: string, urlPath: string, key: string): Promise<ApiResponse
     } catch (e) {
       return reject(e as Error)
     }
+    recordOutbound(target.href)
     const req = https.request(
       {
         method: 'GET',
@@ -577,6 +579,7 @@ function forwardGeneric(
       // 到这里凭证已经注入即将发往上游，记录本次真实转发使用的不可变快照。
       recordForwarded(credential)
       recordRequest(credential.id, chat)
+      recordOutbound(target.href)
       const upReq = https.request(
         {
           method: req.method,

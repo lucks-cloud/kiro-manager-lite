@@ -10,7 +10,7 @@
 
 以下是 12 个客户端接入后的实测截图，顺序与应用内一致：先命令行 Agent，再桌面应用。
 
-[← 返回 README](../README.md)
+[← 返回 README](../../README.md)
 
 ## 命令行 Agent
 
@@ -18,19 +18,19 @@
 
 提供商：Anthropic（ <https://claude.com/product/claude-code> ）
 
-![Claude Code CLI](screenshots/proxy/claude-code-cli.png)
+![Claude Code CLI](../screenshots/proxy/claude-code-cli.png)
 
 ### Codex CLI
 
 提供商：OpenAI（ <https://developers.openai.com/codex/cli> ）
 
-![Codex CLI](screenshots/proxy/codex-cli.png)
+![Codex CLI](../screenshots/proxy/codex-cli.png)
 
 ### DeepSeek Harness Web
 
 提供商：DeepSeek（ <https://github.com/deepseek-ai/deepseek-harness> ）
 
-![DeepSeek Harness Web](screenshots/proxy/deepseek-harness-web.png)
+![DeepSeek Harness Web](../screenshots/proxy/deepseek-harness-web.png)
 
 ## 桌面应用
 
@@ -38,52 +38,52 @@
 
 提供商：Anthropic（ <https://claude.ai/download> ）
 
-![Claude Code](screenshots/proxy/claude-code.png)
+![Claude Code](../screenshots/proxy/claude-code.png)
 
 ### Codex
 
 提供商：OpenAI（ <https://openai.com/codex> ）
 
-![Codex](screenshots/proxy/codex.png)
+![Codex](../screenshots/proxy/codex.png)
 
 ### DeepSeek Harness
 
 提供商：DeepSeek（ <https://deepseek.com/harness> ）
 
-![DeepSeek Harness](screenshots/proxy/deepseek-harness.png)
+![DeepSeek Harness](../screenshots/proxy/deepseek-harness.png)
 
 ### Cursor
 
 提供商：Anysphere（ <https://cursor.com> ）
 
-![Cursor](screenshots/proxy/cursor.png)
+![Cursor](../screenshots/proxy/cursor.png)
 
 ### VS Code
 
 提供商：Microsoft（ <https://code.visualstudio.com> ）
 
-![VS Code](screenshots/proxy/vscode.png)
+![VS Code](../screenshots/proxy/vscode.png)
 
 ### WorkBuddy
 
 提供商：Tencent（ <https://www.workbuddy.cn> ）
 
-![WorkBuddy](screenshots/proxy/workbuddy.png)
+![WorkBuddy](../screenshots/proxy/workbuddy.png)
 
 ### Qoder CN
 
 提供商：Alibaba（ <https://qoder.com.cn> ）
 
-![Qoder CN](screenshots/proxy/qoder.png)
+![Qoder CN](../screenshots/proxy/qoder.png)
 
 ### ZCode
 
 提供商：Z.ai（ <https://zcode.z.ai> ）
 
-![ZCode](screenshots/proxy/zcode.png)
+![ZCode](../screenshots/proxy/zcode.png)
 
 ### Kimi Code
 
 提供商：Moonshot AI（ <https://www.kimi.com/code> ）
 
-![Kimi Code](screenshots/proxy/kimicode.png)
+![Kimi Code](../screenshots/proxy/kimicode.png)

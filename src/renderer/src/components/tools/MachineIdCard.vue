@@ -54,6 +54,26 @@ async function refresh(): Promise<void> {
   }
 }
 
+/**
+ * 点「重新读取」按钮：读取本就很快，这里至少转 1 秒并在完成后给成功提示，
+ * 让用户能感知到这次重新读取确实执行了（onMounted 的首次加载走 refresh，不提示）。
+ */
+async function reread(): Promise<void> {
+  if (loading.value || busy.value) return
+  loading.value = true
+  try {
+    const started = Date.now()
+    const res = await window.api.getMachineIdStatus()
+    const wait = 1000 - (Date.now() - started)
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait))
+    if (!res.success || !res.data) return void message.error(res.error || '读取机器码失败')
+    status.value = res.data
+    message.success('已重新读取机器码')
+  } finally {
+    loading.value = false
+  }
+}
+
 async function reveal(field: MachineIdField): Promise<void> {
   const res = await window.api.revealMachineIdLocation(field)
   if (!res.success) message.error(res.error || '打开目录失败')
@@ -129,7 +149,7 @@ onMounted(() => void refresh())
       <span class="spacer" />
       <!-- 操作按钮与标题同一行、靠右：卡片下方只留参数，整体更紧凑 -->
       <a-space :size="8" wrap>
-        <a-button size="small" :loading="loading" :disabled="!!busy" @click="refresh">
+        <a-button size="small" :loading="loading" :disabled="!!busy" @click="reread">
           <template #icon><ReloadOutlined /></template>
           重新读取
         </a-button>

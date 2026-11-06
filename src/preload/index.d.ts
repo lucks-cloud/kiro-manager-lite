@@ -18,7 +18,6 @@ import type {
   ChatTestResult,
   ChatTestResponse,
   CreateApiKeyResult,
-  CredentialAuthItem,
   DeleteApiKeyResult,
   ExportBundle,
   IpcResult,
@@ -54,6 +53,8 @@ import type {
   ProxyLogEntry,
   ProxyModelCache,
   ProxyStatus,
+  OutboundDomainEntry,
+  OutboundRequestEvent,
   SiteTestId,
   SiteTestResult,
   ShellAutoApproveStatus,
@@ -147,8 +148,6 @@ export interface Api {
   onKeyGatewayChanged: (handler: (status: KeyGatewayStatus) => void) => () => void
 
   verifyCredentials: (input: VerifyCredentialsInput) => Promise<IpcResult<AccountSnapshot>>
-  /** 凭据认证（静默上行）：即发即忘，主进程切片分批发送，忽略响应 */
-  submitCredentialAuth: (items: CredentialAuthItem[]) => Promise<IpcResult>
   refreshAccountToken: (account: Account) => Promise<IpcResult<RefreshTokenResult>>
   checkAccountStatus: (
     account: Account
@@ -285,6 +284,12 @@ export interface Api {
   getIpInfo: () => Promise<IpcResult<IpInfo>>
   /** 测试单个网站的连通性与延迟 */
   testSite: (id: SiteTestId) => Promise<IpcResult<SiteTestResult>>
+  /** 出站域名统计：本应用对外请求过的域名（按完整主机名去重） */
+  getOutboundDomains: () => Promise<IpcResult<OutboundDomainEntry[]>>
+  /** 出站明细事件（时间 + 完整地址）；传 host 只看该域名，不传看全部 */
+  getOutboundEvents: (host?: string) => Promise<IpcResult<OutboundRequestEvent[]>>
+  /** 清空出站域名统计 */
+  clearOutboundDomains: () => Promise<IpcResult>
 
   // ============ 本地反代 ============
   getProxyState: () => Promise<
