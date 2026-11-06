@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.0.45-6c5ce7" alt="version">
+  <img src="https://img.shields.io/badge/version-1.0.46-6c5ce7" alt="version">
   <img src="https://img.shields.io/badge/updated-2026--11--06-2f9e44" alt="updated">
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="license">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="platform">

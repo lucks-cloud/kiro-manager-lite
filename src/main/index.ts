@@ -33,6 +33,7 @@ import { initializeKeyService, shutdownKeyServiceSync } from './keyService'
 import { initProxyServer, shutdownProxySync } from './proxyServer'
 import { applyThemeMode, windowBackground } from './appearance'
 import { initBackupScheduler, stopBackupScheduler } from './backupScheduler'
+import { warmKiroMachineId } from './kiroEndpoints'
 
 /*
  * 按设置里的地区指定 Chromium 区域。
@@ -229,6 +230,8 @@ app.whenReady().then(() => {
   // 日志中心要最先启动，后面各模块的启动日志才不会漏
   initLogger((total) => sendToRenderer(mainWindow, 'log:appended', total))
   installConsoleBridge()
+  // UA 里的机器码首次计算要跑 ioreg / REG，提前异步算好，免得第一个请求同步阻塞主线程
+  warmKiroMachineId()
 
   // 开发态的 Dock 图标默认是 Electron 的，手动换成应用图标。
   // 打包后由 .app 里的 icns 提供，这里不覆盖，避免二次缩放变糊。

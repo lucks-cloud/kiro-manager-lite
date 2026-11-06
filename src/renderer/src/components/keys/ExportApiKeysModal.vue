@@ -91,30 +91,30 @@ async function saveFile(): Promise<void> {
 <template>
   <a-modal :open="props.open" width="560px" :footer="null" @cancel="close">
     <template #title>
-      <span class="export-title">
+      <span class="kal-export-title">
         <DownloadOutlined />
         导出 API Key
         <a-tag style="margin: 0">{{ scopeText }}</a-tag>
       </span>
     </template>
 
-    <div class="format-grid">
+    <div class="kal-export-formats">
       <button
         v-for="item in formats"
         :key="item.value"
-        class="format-card"
+        class="kal-export-format"
         :class="{ selected: format === item.value }"
         @click="format = item.value"
       >
-        <span class="format-head">
+        <span class="kal-export-format-head">
           <component :is="item.icon" />
           {{ item.label }}
         </span>
-        <span class="format-desc muted">{{ item.desc }}</span>
+        <span class="kal-export-format-desc muted">{{ item.desc }}</span>
       </button>
     </div>
 
-    <div class="credential-box muted" style="font-size: 12px">
+    <div class="kal-export-credential muted" style="font-size: 12px">
       两种格式都包含可直接使用的完整 API Key，导出后请妥善保管，不要上传到公开位置。
     </div>
 
@@ -132,61 +132,10 @@ async function saveFile(): Promise<void> {
   </a-modal>
 </template>
 
+<!-- 格式卡片、说明块等与导出账号共用的样式在 assets/styles.css 的 .kal-export-* 段 -->
 <style scoped>
-.export-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.format-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.format-card {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 12px 14px;
-  text-align: left;
-  cursor: pointer;
-  border-radius: 10px;
-  border: 2px solid var(--kal-border);
-  background: transparent;
-  transition: border-color 0.15s ease, background 0.15s ease;
-}
-
-.format-card:hover {
+.kal-export-format.selected {
   border-color: var(--kal-primary);
-}
-
-.format-card.selected {
-  border-color: var(--kal-primary);
-  background: var(--kal-block-bg);
-}
-
-.format-head {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 600;
-}
-
-.format-card.selected .format-head {
-  color: var(--kal-primary);
-}
-
-.format-desc {
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.credential-box {
-  margin-top: 14px;
-  padding: 10px 12px;
-  border-radius: 10px;
   background: var(--kal-block-bg);
 }
 </style>

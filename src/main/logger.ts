@@ -68,12 +68,25 @@ async function pruneFiles(): Promise<void> {
   }
 }
 
-/** 把待落盘队列写出去，按分片上限自动换文件 */
-async function flush(): Promise<void> {
-  if (pending.length === 0) return
+/** 进行中的那一轮落盘；null 表示空闲 */
+let flushing: Promise<void> | null = null
+
+/**
+ * 把待落盘队列写出去，按分片上限自动换文件。
+ * 上一轮还没写完时直接跳过本轮：两轮并发会往同一个分片交错追加、行数也会算错。
+ * 跳过不丢数据，新日志留在 pending 里等下一轮。
+ */
+function flush(): Promise<void> {
+  if (flushing || pending.length === 0) return Promise.resolve()
   const batch = pending
   pending = []
+  flushing = writeBatch(batch).finally(() => {
+    flushing = null
+  })
+  return flushing
+}
 
+async function writeBatch(batch: LogEntry[]): Promise<void> {
   try {
     await fs.mkdir(getLogDir(), { recursive: true })
     let rest = batch
@@ -287,5 +300,7 @@ export function initLogger(onAppend: (total: number) => void): void {
 export async function shutdownLogger(): Promise<void> {
   if (flushTimer) clearInterval(flushTimer)
   flushTimer = null
+  // 定时器那一轮可能还没写完：等它结束，再把剩下的刷出去
+  while (flushing) await flushing
   await flush()
 }

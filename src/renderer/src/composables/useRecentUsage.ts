@@ -10,7 +10,7 @@ import { RECENT_SORT_FIELDS, parseSortKey, type SortField, type SortKey } from '
 
 const REFRESH_MS = 60_000
 
-export interface RecentUsageValue {
+interface RecentUsageValue {
   m30: number
   m60: number
 }

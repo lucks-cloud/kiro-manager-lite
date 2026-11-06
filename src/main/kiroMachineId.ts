@@ -25,6 +25,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { kiroUserDataDir } from './kiroSettings'
 import { closeKiroIde, isKiroRunning, openKiroIde } from './kiroProcess'
 import { getMachineIdBackup, setMachineIdBackup } from './store'
+import { writeFileAtomic } from './utils'
 import { errorMessage } from '../shared/errors'
 import type {
   MachineIdActionResult,
@@ -115,19 +116,6 @@ async function readTextIfExists(file: string): Promise<string | undefined> {
   }
 }
 
-/** 原子写：临时文件 + rename，避免 IDE 读到写入一半的内容 */
-async function writeAtomic(file: string, content: string): Promise<void> {
-  await fs.mkdir(path.dirname(file), { recursive: true })
-  const tmp = `${file}.kiro-manager.tmp`
-  await fs.writeFile(tmp, content, 'utf-8')
-  try {
-    await fs.rename(tmp, file)
-  } catch {
-    await fs.writeFile(file, content, 'utf-8')
-    await fs.unlink(tmp).catch(() => undefined)
-  }
-}
-
 /** 值为 undefined 时删除文件，对应「备份时该文件本来就不存在」 */
 async function writeOrRemove(file: string, value: string | undefined): Promise<void> {
   if (value === undefined) {
@@ -136,7 +124,8 @@ async function writeOrRemove(file: string, value: string | undefined): Promise<v
     })
     return
   }
-  await writeAtomic(file, value)
+  // 原子写：避免 IDE 读到写入一半的内容
+  await writeFileAtomic(file, value)
 }
 
 function run(cmd: string, args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string }> {
@@ -170,7 +159,7 @@ async function writeStorageIds(ids: MachineIdSnapshot): Promise<void> {
     else data[key] = value
   }
   // 与 VS Code 自己写盘时的格式一致：4 空格缩进
-  await writeAtomic(storageJsonPath(), JSON.stringify(data, null, 4))
+  await writeFileAtomic(storageJsonPath(), JSON.stringify(data, null, 4))
 }
 
 // ============ state.vscdb ============

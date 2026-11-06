@@ -81,9 +81,19 @@ function normalizeProxyUrl(url: string): string {
   return `http://${trimmed}`
 }
 
+/** 是否已经应用过一次代理配置；首次调用不论取值都照常生效 */
+let proxyConfigApplied = false
+
 export function setProxyConfig(enabled: boolean, url: string): void {
+  const normalized = normalizeProxyUrl(url)
+  /*
+   * settings:get / settings:save 每次都会调到这里。配置没变就不动连接池，
+   * 否则每读一次设置，keep-alive 连接就被全部丢掉重建一遍。
+   */
+  if (proxyConfigApplied && enabled === proxyEnabled && normalized === proxyUrl) return
+  proxyConfigApplied = true
   proxyEnabled = enabled
-  proxyUrl = normalizeProxyUrl(url)
+  proxyUrl = normalized
   // 配置变了就丢弃旧连接池，下一次请求按新地址重建
   for (const agent of agentCache.values()) void agent?.close?.()
   agentCache.clear()
@@ -165,7 +175,7 @@ export interface HttpResponse {
   arrayBuffer: () => Promise<ArrayBuffer>
 }
 
-export interface HttpStreamResponse {
+interface HttpStreamResponse {
   ok: boolean
   status: number
   headers: HttpHeaders

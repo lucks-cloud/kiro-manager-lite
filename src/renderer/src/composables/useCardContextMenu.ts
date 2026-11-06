@@ -7,6 +7,9 @@
 // 目标（targetIds）在关闭后保留到下次打开——点菜单项时菜单先关、动作后执行，动作里还要用到它。
 import { nextTick, reactive, ref, shallowRef, type Ref } from 'vue'
 
+/** 菜单关闭时的高亮集合：共用一个空集，不必每次关闭都新建 */
+const NO_HIGHLIGHT: ReadonlySet<string> = new Set()
+
 export function useCardContextMenu<T extends { id: string }>(options: {
   selectedIds: Ref<string[]>
 }): {
@@ -23,7 +26,8 @@ export function useCardContextMenu<T extends { id: string }>(options: {
   const state = reactive({ open: false, x: 0, y: 0 })
   const target = shallowRef(null) as Ref<T | null>
   const targetIds = ref<string[]>([])
-  const highlight = ref<ReadonlySet<string>>(new Set())
+  // 只整体替换，用浅层响应式：Set 不必再包一层集合代理，卡片判断高亮时也不用逐个追踪
+  const highlight = shallowRef<ReadonlySet<string>>(NO_HIGHLIGHT)
 
   async function show(event: MouseEvent, item: T): Promise<void> {
     event.preventDefault()
@@ -48,7 +52,7 @@ export function useCardContextMenu<T extends { id: string }>(options: {
 
   function hide(): void {
     state.open = false
-    highlight.value = new Set()
+    highlight.value = NO_HIGHLIGHT
   }
 
   return { state, target, targetIds, highlight, show: (e, item) => void show(e, item), hide }

@@ -14,7 +14,7 @@ import * as os from 'os'
 import * as path from 'path'
 import { log } from './logger'
 import { cleanChildEnv } from './childEnv'
-import { sleep } from './utils'
+import { sleep, writeFileAtomic } from './utils'
 import { findBinary, installLabel, locateCliSync, locateClient } from './proxyClientInstall'
 import {
   getProxyClientBackup,
@@ -157,14 +157,17 @@ async function readTextIfExists(file: string): Promise<string | null> {
   }
 }
 
+/** 是不是普通对象（排除 null 与数组） */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
 async function readJsonObject(file: string): Promise<Record<string, unknown>> {
   const text = await readTextIfExists(file)
   if (!text || !text.trim()) return {}
   try {
     const parsed = JSON.parse(text)
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>
-    }
+    if (isPlainObject(parsed)) return parsed
   } catch {
     // 解析失败时不能覆盖：里面可能是用户手写的带注释配置
     throw new Error(`${file} 不是合法的 JSON，请先手动检查`)
@@ -172,16 +175,22 @@ async function readJsonObject(file: string): Promise<Record<string, unknown>> {
   return {}
 }
 
-async function writeFileAtomic(file: string, content: string): Promise<void> {
-  await fs.mkdir(path.dirname(file), { recursive: true })
-  const tmp = `${file}.kiro-manager.tmp`
-  await fs.writeFile(tmp, content, 'utf-8')
-  try {
-    await fs.rename(tmp, file)
-  } catch {
-    await fs.writeFile(file, content, 'utf-8')
-    await fs.unlink(tmp).catch(() => undefined)
-  }
+/**
+ * JSON 配置写盘：默认 2 空格缩进、末尾补一个换行。
+ * mode600：文件里有 API Key，写完收紧成只给本人读写（失败不影响写入结果）。
+ */
+async function writeJsonFile(
+  file: string,
+  value: unknown,
+  opts: { indent?: string | number; mode600?: boolean } = {}
+): Promise<void> {
+  await writeFileAtomic(file, `${JSON.stringify(value, null, opts.indent ?? 2)}\n`)
+  if (opts.mode600) await fs.chmod(file, 0o600).catch(() => undefined)
+}
+
+/** 原文用的换行符：有 CRLF 就沿用 CRLF，否则 LF */
+function eolOf(content: string): string {
+  return content.includes('\r\n') ? '\r\n' : '\n'
 }
 
 /**
@@ -304,10 +313,7 @@ function claudeCapabilities(m: KiroModelInfo | undefined): string | undefined {
 async function applyClaudeCode(info: ProxyTargetInfo): Promise<void> {
   const file = claudeSettingsPath()
   const config = await readJsonObject(file)
-  const env =
-    config.env && typeof config.env === 'object' && !Array.isArray(config.env)
-      ? (config.env as Record<string, unknown>)
-      : {}
+  const env = isPlainObject(config.env) ? config.env : {}
 
   // 还没刷新过模型列表时只有默认模型这一条，至少保证它能用
   const models: KiroModelInfo[] = info.models.length ? info.models : [{ modelId: info.model }]
@@ -362,7 +368,7 @@ async function applyClaudeCode(info: ProxyTargetInfo): Promise<void> {
     })
   }
 
-  await writeFileAtomic(file, `${JSON.stringify(config, null, 2)}\n`)
+  await writeJsonFile(file, config)
 }
 
 async function claudeCodeApplied(info: ProxyTargetInfo): Promise<boolean> {
@@ -504,9 +510,9 @@ async function setDshSearchKey(value: string | null): Promise<void> {
   const file = dshCredentialsPath()
   const existing = await readTextIfExists(file)
   if (existing === null && value === null) return
-  const keyLine = (line: string): boolean => new RegExp(`^\\s+${DSH_SEARCH_KEY_REF}\\s*:`).test(line)
+  const keyPattern = new RegExp(`^\\s+${DSH_SEARCH_KEY_REF}\\s*:`)
 
-  const lines = (existing ?? 'version: 1\n').split(/\r?\n/).filter((line) => !keyLine(line))
+  const lines = (existing ?? 'version: 1\n').split(/\r?\n/).filter((line) => !keyPattern.test(line))
   const refsIndex = lines.findIndex((line) => /^refs:\s*(\{\s*\})?\s*$/.test(line))
 
   if (value !== null) {
@@ -730,41 +736,17 @@ const deepseekAppApplied = (info: ProxyTargetInfo): Promise<boolean> =>
   dshProfileApplied(DSH_DESKTOP_PROFILE, info)
 
 /** 桌面版进程名就是 app 名，带空格 */
-async function deepseekAppRunning(): Promise<boolean> {
-  if (process.platform === 'win32') return winAppRunning('deepseekApp')
-  if (process.platform !== 'darwin') return false
-  try {
-    await run('pgrep', ['-x', 'DeepSeek Harness'], 5_000)
-    return true
-  } catch {
-    return false
-  }
-}
+const deepseekAppRunning = appProbe('deepseekApp', ['-x', 'DeepSeek Harness'])
 
 /**
  * 重启 / 打开桌面版。
  * 热重载已经能让配置生效，这里主要是给「还没开」的情况，以及热重载没赶上时的兜底。
  */
-async function restartDeepseekApp(): Promise<void> {
-  if (process.platform === 'win32') return restartWinApp('DeepSeek Harness', 'deepseekApp')
-  if (process.platform !== 'darwin') {
-    throw new Error('代为重启目前只支持 macOS 和 Windows，请手动退出后重新打开 DeepSeek Harness')
-  }
-  const app = await requireApp('deepseekApp')
-  if (await deepseekAppRunning()) {
-    await run('osascript', ['-e', 'tell application "DeepSeek Harness" to quit']).catch(
-      () => undefined
-    )
-    for (let i = 0; i < 24; i++) {
-      if (!(await deepseekAppRunning())) break
-      await sleep(500)
-    }
-    if (await deepseekAppRunning()) {
-      throw new Error('DeepSeek Harness 没能自动退出，请手动退出后再打开')
-    }
-  }
-  await run('open', [app])
-  log('info', '[Proxy] 已重启 DeepSeek Harness 桌面版')
+function restartDeepseekApp(): Promise<void> {
+  return restartMacApp('DeepSeek Harness', 'deepseekApp', { name: 'DeepSeek Harness' }, deepseekAppRunning, {
+    unsupported: '代为重启目前只支持 macOS 和 Windows，请手动退出后重新打开 DeepSeek Harness',
+    done: '[Proxy] 已重启 DeepSeek Harness 桌面版'
+  })
 }
 
 /** 启动命令：写过默认 profile 就不用带 --profile */
@@ -844,6 +826,27 @@ function modelTakesImages(m: KiroModelInfo): boolean {
   return m.inputTypes ? m.inputTypes.includes('IMAGE') : true
 }
 
+/**
+ * Qoder、ZCode、Kimi Code、Claude 桌面版认的推理档位，四家是同一套，从低到高。
+ *  - Qoder：它界面上给的就是这套；
+ *  - ZCode、Kimi Code：Kiro GPT 系的 none 在 Anthropic 协议下没有对应写法；
+ *  - Claude 桌面版：它内部的闭集，见 claudeMaxEffort 上面的说明。
+ * 所以 none 一律不写。
+ */
+const CLIENT_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
+
+/** 该模型的档位里客户端认得的那些（按 CLIENT_EFFORTS 过滤，保持模型自己的顺序） */
+function clientEfforts(m: KiroModelInfo): string[] {
+  return (m.effort?.options ?? []).filter((e) => CLIENT_EFFORTS.includes(e))
+}
+
+/** 默认档位：上游标注的默认值在给定档位里就用它，否则取中间那一档 */
+function defaultEffortOf(m: KiroModelInfo, efforts: string[]): string {
+  return m.effort?.default && efforts.includes(m.effort.default)
+    ? m.effort.default
+    : efforts[Math.floor(efforts.length / 2)]
+}
+
 // ============ WorkBuddy（腾讯） ============
 //
 // WorkBuddy 是 CodeBuddy 同一套内核的办公版，自定义模型读 ~/.workbuddy/models.json
@@ -914,7 +917,7 @@ async function readWorkbuddyDoc(): Promise<WorkbuddyDoc> {
 
 async function writeWorkbuddyDoc(doc: WorkbuddyDoc): Promise<void> {
   const content = doc.shape === 'array' ? doc.models : { ...doc.root, models: doc.models }
-  await writeFileAtomic(workbuddyModelsPath(), `${JSON.stringify(content, null, 2)}\n`)
+  await writeJsonFile(workbuddyModelsPath(), content)
 }
 
 const isWorkbuddyOurs = (m: Record<string, unknown>): boolean => m.vendor === WORKBUDDY_VENDOR
@@ -939,9 +942,7 @@ function workbuddyModels(info: ProxyTargetInfo): Record<string, unknown>[] {
             // Kiro 的推理模型都能不带档位直接调，所以允许关思考
             onlyReasoning: false,
             reasoning: {
-              defaultEffort: m.effort?.default && efforts.includes(m.effort.default)
-                ? m.effort.default
-                : efforts[Math.floor(efforts.length / 2)],
+              defaultEffort: defaultEffortOf(m, efforts),
               supportedEfforts: efforts,
               canDisableThinking: true
             }
@@ -1015,16 +1016,7 @@ async function workbuddyApplied(info: ProxyTargetInfo): Promise<boolean> {
  * 进程探测：WorkBuddy 的可执行文件名就叫 Electron（没改名），pgrep -x 认不出，
  * 只能按 .app 里的路径匹配。
  */
-async function workbuddyRunning(): Promise<boolean> {
-  if (process.platform === 'win32') return winAppRunning('workbuddy')
-  if (process.platform !== 'darwin') return false
-  try {
-    await run('pgrep', ['-f', `${WORKBUDDY_APP_NAME}/Contents/MacOS/`], 5_000)
-    return true
-  } catch {
-    return false
-  }
-}
+const workbuddyRunning = appProbe('workbuddy', ['-f', `${WORKBUDDY_APP_NAME}/Contents/MacOS/`])
 
 // ============ Qoder CN（阿里） ============
 //
@@ -1044,8 +1036,6 @@ async function workbuddyRunning(): Promise<boolean> {
  */
 const QODER_PROVIDER_ID = 'qoder-custom-6b1d6f3e-4a7c-4e2b-9f1a-4b6c5a0d1e2f'
 const QODER_BUNDLE_ID = 'com.qodercn.app'
-/** Qoder 的档位只认这几种（它界面上给的就是这套），Kiro GPT 系的 none 不写 */
-const QODER_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 
 function qoderSettingsPath(): string {
   return path.join(home(), '.qoder-cn', 'settings.json')
@@ -1053,7 +1043,8 @@ function qoderSettingsPath(): string {
 
 function qoderModels(info: ProxyTargetInfo): Record<string, unknown>[] {
   return orderedModels(info).map((m) => {
-    const efforts = (m.effort?.options ?? []).filter((e) => QODER_EFFORTS.includes(e))
+    // Qoder 的档位只认 CLIENT_EFFORTS 这几种
+    const efforts = clientEfforts(m)
     return {
       model: m.modelId,
       // 加前缀：Qoder 自带同名的 Claude 模型，选择器里得分得清
@@ -1088,10 +1079,7 @@ function qoderModels(info: ProxyTargetInfo): Record<string, unknown>[] {
 async function applyQoder(info: ProxyTargetInfo): Promise<void> {
   const file = qoderSettingsPath()
   const settings = await readJsonObject(file)
-  const providers =
-    settings.providers && typeof settings.providers === 'object' && !Array.isArray(settings.providers)
-      ? (settings.providers as Record<string, unknown>)
-      : {}
+  const providers = isPlainObject(settings.providers) ? settings.providers : {}
   providers[QODER_PROVIDER_ID] = {
     baseUrl: info.baseUrl,
     apiKey: info.apiKey,
@@ -1103,9 +1091,8 @@ async function applyQoder(info: ProxyTargetInfo): Promise<void> {
     models: qoderModels(info)
   }
   settings.providers = providers
-  await writeFileAtomic(file, `${JSON.stringify(settings, null, 2)}\n`)
   // 文件里有 API Key，和它自己写的一样只给本人读写
-  await fs.chmod(file, 0o600).catch(() => undefined)
+  await writeJsonFile(file, settings, { mode600: true })
 }
 
 /** 只摘我们那一条；摘完 providers 空了就连键一起删，回到它没加过自定义模型时的样子 */
@@ -1116,8 +1103,7 @@ async function restoreQoder(): Promise<void> {
   if (!settings || !providers || typeof providers !== 'object' || !(QODER_PROVIDER_ID in providers)) return
   delete providers[QODER_PROVIDER_ID]
   if (!Object.keys(providers).length) delete settings.providers
-  await writeFileAtomic(file, `${JSON.stringify(settings, null, 2)}\n`)
-  await fs.chmod(file, 0o600).catch(() => undefined)
+  await writeJsonFile(file, settings, { mode600: true })
 }
 
 async function qoderApplied(info: ProxyTargetInfo): Promise<boolean> {
@@ -1127,16 +1113,7 @@ async function qoderApplied(info: ProxyTargetInfo): Promise<boolean> {
 }
 
 /** 可执行文件名同样没改（Electron 默认名），按 .app 里的路径匹配 */
-async function qoderRunning(): Promise<boolean> {
-  if (process.platform === 'win32') return winAppRunning('qoder')
-  if (process.platform !== 'darwin') return false
-  try {
-    await run('pgrep', ['-f', 'Qoder CN.app/Contents/MacOS/'], 5_000)
-    return true
-  } catch {
-    return false
-  }
-}
+const qoderRunning = appProbe('qoder', ['-f', 'Qoder CN.app/Contents/MacOS/'])
 
 // ============ ZCode（智谱） ============
 //
@@ -1154,8 +1131,6 @@ async function qoderRunning(): Promise<boolean> {
 
 const ZCODE_PROVIDER_ID = 'kiro-manager-lite'
 const ZCODE_BUNDLE_ID = 'dev.zcode.app'
-/** 和 Qoder 一样只写这几档；GPT 系的 none 在 Anthropic 协议下没有对应写法 */
-const ZCODE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 
 /**
  * 和 ZCode 自己找主目录的顺序一致：ZCODE_DESKTOP_HOME_DIR → HOME → USERPROFILE。
@@ -1174,8 +1149,7 @@ function zcodeSections(doc: Record<string, unknown>): {
   providers: Record<string, unknown>[]
   manualModels: Record<string, unknown>[]
 } {
-  const obj = (v: unknown): Record<string, unknown> =>
-    v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {}
+  const obj = (v: unknown): Record<string, unknown> => (isPlainObject(v) ? v : {})
   const config = obj(doc.config)
   const providerRules = obj(config.providerConfigRules)
   const modelRules = obj(config.modelConfigRules)
@@ -1215,7 +1189,8 @@ function dropZcodeEntries(doc: Record<string, unknown>): boolean {
 }
 
 function zcodeModelRule(m: KiroModelInfo): Record<string, unknown> {
-  const efforts = (m.effort?.options ?? []).filter((e) => ZCODE_EFFORTS.includes(e))
+  // 和 Qoder 一样只写 CLIENT_EFFORTS 这几档
+  const efforts = clientEfforts(m)
   return {
     providerId: ZCODE_PROVIDER_ID,
     modelId: m.modelId,
@@ -1266,17 +1241,15 @@ async function applyZcode(info: ProxyTargetInfo): Promise<void> {
     }
   })
   manualModels.push(...models.map(zcodeModelRule))
-  await writeFileAtomic(file, `${JSON.stringify(doc, null, 2)}\n`)
   // 文件里有 API Key，和它自己写的一样只给本人读写
-  await fs.chmod(file, 0o600).catch(() => undefined)
+  await writeJsonFile(file, doc, { mode600: true })
 }
 
 async function restoreZcode(): Promise<void> {
   const file = zcodeConfigPath()
   const doc = await readJsonObject(file).catch(() => null)
   if (!doc || !dropZcodeEntries(doc)) return
-  await writeFileAtomic(file, `${JSON.stringify(doc, null, 2)}\n`)
-  await fs.chmod(file, 0o600).catch(() => undefined)
+  await writeJsonFile(file, doc, { mode600: true })
 }
 
 async function zcodeApplied(info: ProxyTargetInfo): Promise<boolean> {
@@ -1287,16 +1260,7 @@ async function zcodeApplied(info: ProxyTargetInfo): Promise<boolean> {
   return !!cfg && cfg.api?.baseUrl === info.baseUrl && cfg.access?.apiKey === info.apiKey
 }
 
-async function zcodeRunning(): Promise<boolean> {
-  if (process.platform === 'win32') return winAppRunning('zcode')
-  if (process.platform !== 'darwin') return false
-  try {
-    await run('pgrep', ['-f', 'ZCode.app/Contents/MacOS/ZCode'], 5_000)
-    return true
-  } catch {
-    return false
-  }
-}
+const zcodeRunning = appProbe('zcode', ['-f', 'ZCode.app/Contents/MacOS/ZCode'])
 
 // ============ Kimi Code（月之暗面） ============
 //
@@ -1320,8 +1284,6 @@ async function zcodeRunning(): Promise<boolean> {
 
 const KIMI_PROVIDER_ID = 'kiro-manager-lite'
 const KIMI_BUNDLE_ID = 'com.kimi.code.desktop'
-/** 它界面上认的档位；Kiro GPT 系的 none 在 Anthropic 协议下没有对应写法，不写 */
-const KIMI_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 
 function kimiConfigPath(): string {
   const dir = process.env.KIMI_CODE_HOME?.trim()
@@ -1340,22 +1302,23 @@ function isKimiOurHeader(line: string): boolean {
     header.startsWith(`[providers."${KIMI_PROVIDER_ID}"]`) ||
     header.startsWith(`[providers."${KIMI_PROVIDER_ID}".`) ||
     header.startsWith(`[models."${KIMI_PROVIDER_ID}/`) ||
-    header === KIMI_SEARCH_HEADER ||
-    header.startsWith('[services.moonshot_search.')
+    isKimiSearchHeader(header)
   )
 }
 
 const KIMI_SEARCH_HEADER = '[services.moonshot_search]'
+
+/** （已 trim 的）表头是不是搜索服务那张表或它的子表 */
+function isKimiSearchHeader(header: string): boolean {
+  return header === KIMI_SEARCH_HEADER || header.startsWith('[services.moonshot_search.')
+}
 
 /** 从一段 TOML 里取出 [services.moonshot_search] 及其子表的原文；没有就是空串 */
 function kimiSearchSection(content: string): string {
   const out: string[] = []
   let inside = false
   for (const line of content.split(/\r?\n/)) {
-    if (/^\s*\[/.test(line)) {
-      const header = line.trim()
-      inside = header === KIMI_SEARCH_HEADER || header.startsWith('[services.moonshot_search.')
-    }
+    if (/^\s*\[/.test(line)) inside = isKimiSearchHeader(line.trim())
     if (inside) out.push(line)
   }
   return out.join('\n').trimEnd()
@@ -1363,7 +1326,7 @@ function kimiSearchSection(content: string): string {
 
 /** 摘掉我们名下的所有表，其余逐行原样保留 */
 function dropKimiSections(content: string): string {
-  const newline = content.includes('\r\n') ? '\r\n' : '\n'
+  const newline = eolOf(content)
   const out: string[] = []
   let skipping = false
   for (const line of content ? content.split(/\r?\n/) : []) {
@@ -1389,17 +1352,15 @@ function kimiSections(info: ProxyTargetInfo): string {
     `api_key = "${tomlString(info.apiKey)}"`
   ]
   for (const m of orderedModels(info)) {
-    const efforts = (m.effort?.options ?? []).filter((e) => KIMI_EFFORTS.includes(e))
+    // 只写它界面上认的 CLIENT_EFFORTS 这几档
+    const efforts = clientEfforts(m)
     const capabilities = [
       // 有档位才声明能思考；没档位的模型反代控制不了思考，声明了也只是个摆设开关
       ...(efforts.length ? ['thinking'] : []),
       ...(modelTakesImages(m) ? ['image_in'] : []),
       'tool_use'
     ]
-    const defaultEffort =
-      m.effort?.default && efforts.includes(m.effort.default)
-        ? m.effort.default
-        : efforts[Math.floor(efforts.length / 2)]
+    const defaultEffort = defaultEffortOf(m, efforts)
     lines.push(
       '',
       `[models."${KIMI_PROVIDER_ID}/${tomlString(m.modelId)}"]`,
@@ -1459,24 +1420,15 @@ async function kimiApplied(info: ProxyTargetInfo): Promise<boolean> {
     if (/^\s*\[/.test(line)) break
     body.push(line)
   }
-  const value = (key: string): string | undefined =>
-    body
-      .map((l) => l.match(new RegExp(`^\\s*${key}\\s*=\\s*["']([^"']*)["']`))?.[1])
-      .find((v) => v !== undefined)
+  const value = (key: string): string | undefined => {
+    const pattern = new RegExp(`^\\s*${key}\\s*=\\s*["']([^"']*)["']`)
+    return body.map((l) => l.match(pattern)?.[1]).find((v) => v !== undefined)
+  }
   return value('base_url') === info.baseUrl && value('api_key') === info.apiKey
 }
 
-async function kimiRunning(): Promise<boolean> {
-  if (process.platform === 'win32') return winAppRunning('kimi')
-  if (process.platform !== 'darwin') return false
-  try {
-    // 同一台机器上常常还装着 Kimi.app（聊天版），按完整路径匹配，别认错
-    await run('pgrep', ['-f', 'Kimi Code.app/Contents/MacOS/Kimi Code'], 5_000)
-    return true
-  } catch {
-    return false
-  }
-}
+// 同一台机器上常常还装着 Kimi.app（聊天版），按完整路径匹配，别认错
+const kimiRunning = appProbe('kimi', ['-f', 'Kimi Code.app/Contents/MacOS/Kimi Code'])
 
 // ============ Windows：检测运行状态、正常退出、重新打开 ============
 //
@@ -1506,11 +1458,26 @@ function winInstallRoot(exe: string): string {
  * 当前所有进程的可执行文件路径。
  * 一次 PowerShell 查完再在这边逐个比对：刷新客户端列表时九个桌面应用各起一次 PowerShell，
  * 每次冷启动约一秒，列表要多等近十秒。结果缓存 3 秒，重启后会清掉缓存。
+ *
+ * 缓存的是 Promise：各目标并行检查时，查询还没结束的那一次也直接复用，不会同时起好几个 PowerShell。
+ * 3 秒从查完那一刻起算；查询失败按空列表处理，同样缓存。
  */
-let winProcCache: { at: number; paths: string[] } | null = null
+let winProcCache: { at: number; paths: Promise<string[]> } | null = null
 
-async function winProcessPaths(): Promise<string[]> {
+function winProcessPaths(): Promise<string[]> {
   if (winProcCache && Date.now() - winProcCache.at < 3_000) return winProcCache.paths
+  const paths = queryWinProcessPaths()
+  // 查询中：at 记成无穷大，期间一律复用
+  winProcCache = { at: Infinity, paths }
+  // 查完按完成时刻重新写一次，3 秒从这里起算
+  void paths.then(() => {
+    winProcCache = { at: Date.now(), paths }
+  })
+  return paths
+}
+
+/** 跑一次 PowerShell 列出进程路径；失败返回空列表，不抛错 */
+async function queryWinProcessPaths(): Promise<string[]> {
   let paths: string[] = []
   try {
     const out = await run(
@@ -1530,7 +1497,6 @@ async function winProcessPaths(): Promise<string[]> {
   } catch {
     paths = []
   }
-  winProcCache = { at: Date.now(), paths }
   return paths
 }
 
@@ -1549,6 +1515,24 @@ async function winAppRunning(target: ProxyClientTarget): Promise<boolean> {
   const exe = (await locateClient(target)).path
   if (!exe) return false
   return (await winProcessPaths()).some((p) => isWinAppProcess(p, exe))
+}
+
+/**
+ * 生成桌面应用的「是否在运行」探测：Windows 按安装路径认进程（见 winAppRunning），
+ * macOS 用 pgrep（没匹配到时退出码非零、run 会 reject），其余平台一律当没在跑。
+ * 各应用只差 pgrep 的参数：进程名能认准的用 -x 精确匹配，可执行文件没改名（Electron）的按 .app 里的路径 -f 匹配。
+ */
+function appProbe(target: ProxyClientTarget, pgrepArgs: string[]): () => Promise<boolean> {
+  return async () => {
+    if (process.platform === 'win32') return winAppRunning(target)
+    if (process.platform !== 'darwin') return false
+    try {
+      await run('pgrep', pgrepArgs, 5_000)
+      return true
+    } catch {
+      return false
+    }
+  }
 }
 
 /**
@@ -1634,30 +1618,35 @@ async function restartWinApp(label: string, target: ProxyClientTarget): Promise<
 }
 
 /**
- * 重启 / 打开一个按 bundle id 定位的桌面应用。
- * 用 AppleScript 正常退出，让它自己收尾（保存会话、落库），不直接杀进程。
+ * 重启 / 打开一个桌面应用（Windows 走 restartWinApp）。
+ * 用 AppleScript 正常退出，让它自己收尾（保存会话、落库），不直接杀进程；
+ * 有未保存的文件时应用会自己弹确认框，不会丢东西。
+ * @param app AppleScript 里怎么指代它：按 bundle id，或按应用名
+ * @param texts 个别应用自己的提示文案，不传就用下面的通用说法
  */
 async function restartMacApp(
   label: string,
   target: ProxyClientTarget,
-  bundleId: string,
-  running: () => Promise<boolean>
+  app: { id: string } | { name: string },
+  running: () => Promise<boolean>,
+  texts: { unsupported?: string; stuck?: string; done?: string } = {}
 ): Promise<void> {
   if (process.platform === 'win32') return restartWinApp(label, target)
   if (process.platform !== 'darwin') {
-    throw new Error(`代为重启目前只支持 macOS 和 Windows，请手动退出 ${label} 后重新打开`)
+    throw new Error(texts.unsupported ?? `代为重启目前只支持 macOS 和 Windows，请手动退出 ${label} 后重新打开`)
   }
-  const app = await requireApp(target)
+  const appPath = await requireApp(target)
   if (await running()) {
-    await run('osascript', ['-e', `tell application id "${bundleId}" to quit`]).catch(() => undefined)
+    const scriptTarget = 'id' in app ? `application id "${app.id}"` : `application "${app.name}"`
+    await run('osascript', ['-e', `tell ${scriptTarget} to quit`]).catch(() => undefined)
     for (let i = 0; i < 24; i++) {
       if (!(await running())) break
       await sleep(500)
     }
-    if (await running()) throw new Error(`${label} 没能自动退出，请手动退出后再打开`)
+    if (await running()) throw new Error(texts.stuck ?? `${label} 没能自动退出，请手动退出后再打开`)
   }
-  await run('open', [app])
-  log('info', `[Proxy] 已重启 ${label}`)
+  await run('open', [appPath])
+  log('info', texts.done ?? `[Proxy] 已重启 ${label}`)
 }
 
 // ============ VS Code（Copilot 的自定义端点） ============
@@ -1719,7 +1708,7 @@ async function readVscodeGroups(): Promise<Record<string, unknown>[]> {
 
 async function writeVscodeGroups(groups: Record<string, unknown>[]): Promise<void> {
   // 和 VS Code 自己写出来的格式保持一致（制表符缩进），用户打开对比时不会一整份都是 diff
-  await writeFileAtomic(vscodeModelsPath(), `${JSON.stringify(groups, null, '\t')}\n`)
+  await writeJsonFile(vscodeModelsPath(), groups, { indent: '\t' })
 }
 
 /** 我们那一组的模型条目：字段名与取值范围照 customendpoint 的 JSON Schema */
@@ -1799,41 +1788,18 @@ async function vscodeApplied(info: ProxyTargetInfo): Promise<boolean> {
 
 const VSCODE_BUNDLE_ID = 'com.microsoft.VSCode'
 
-async function vscodeRunning(): Promise<boolean> {
-  if (process.platform === 'win32') return winAppRunning('vscode')
-  if (process.platform !== 'darwin') return false
-  try {
-    // 主进程名就叫 Code（Electron 的可执行文件名），不是 Visual Studio Code
-    await run('pgrep', ['-x', 'Code'], 5_000)
-    return true
-  } catch {
-    return false
-  }
-}
+// 主进程名就叫 Code（Electron 的可执行文件名），不是 Visual Studio Code
+const vscodeRunning = appProbe('vscode', ['-x', 'Code'])
 
 /**
  * 重启 / 打开 VS Code。
  * chatLanguageModels.json 改了它一般会自己重新加载；这里给「没出现 / 还是旧的」时兜底。
  * 用 AppleScript 正常退出：有未保存的文件时它会自己弹窗确认，不会丢东西。
  */
-async function restartVscode(): Promise<void> {
-  if (process.platform === 'win32') return restartWinApp('VS Code', 'vscode')
-  if (process.platform !== 'darwin') {
-    throw new Error('代为重启目前只支持 macOS 和 Windows，请手动退出 VS Code 后重新打开')
-  }
-  const app = await requireApp('vscode')
-  if (await vscodeRunning()) {
-    await run('osascript', ['-e', `tell application id "${VSCODE_BUNDLE_ID}" to quit`]).catch(() => undefined)
-    for (let i = 0; i < 24; i++) {
-      if (!(await vscodeRunning())) break
-      await sleep(500)
-    }
-    if (await vscodeRunning()) {
-      throw new Error('VS Code 没能自动退出（可能有未保存的文件在等你确认），请手动退出后再打开')
-    }
-  }
-  await run('open', [app])
-  log('info', '[Proxy] 已重启 VS Code')
+function restartVscode(): Promise<void> {
+  return restartMacApp('VS Code', 'vscode', { id: VSCODE_BUNDLE_ID }, vscodeRunning, {
+    stuck: 'VS Code 没能自动退出（可能有未保存的文件在等你确认），请手动退出后再打开'
+  })
 }
 
 /** 3P 配置目录；和主程序的 Application Support/Claude 是两个目录，不要混 */
@@ -1866,19 +1832,14 @@ function claude3pMetaPath(): string {
 }
 
 /**
- * Claude 桌面版认的档位，从低到高。
+ * 取该模型能开放到的最高档。
  *
- * 这是它内部的闭集（app.asar 里 `Go=["low","medium","high","xhigh","max"]`），
- * 没有 Kiro 那边的 none。两处会用到：
+ * Claude 桌面版认的档位就是 CLIENT_EFFORTS（从低到高），这是它内部的闭集
+ * （app.asar 里 `Go=["low","medium","high","xhigh","max"]`），没有 Kiro 那边的 none。两处会用到：
  *  - 条目的 maxEffort（该模型最高开放到哪一档）
  *  - 顶层 defaultModelEffort（默认模型的起始档位）
  * 两者的 schema 都是 `.catch("low")`：给了它不认的值不会报错，而是**静默降到 low**，
  * 所以宁可不写也不能瞎写。
- */
-const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
-
-/**
- * 取该模型能开放到的最高档。
  *
  * maxEffort 只能封顶，没法做白名单，所以中间缺档的模型（比如 4.6 有
  * low/medium/high/max 但没有 xhigh）仍会在选择器里露出 xhigh。
@@ -1887,10 +1848,10 @@ const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
  */
 function claudeMaxEffort(options: string[] | undefined): string | undefined {
   const ranked = (options ?? [])
-    .map((option) => CLAUDE_EFFORTS.indexOf(option))
+    .map((option) => CLIENT_EFFORTS.indexOf(option))
     .filter((rank) => rank >= 0)
   if (!ranked.length) return undefined
-  return CLAUDE_EFFORTS[Math.max(...ranked)]
+  return CLIENT_EFFORTS[Math.max(...ranked)]
 }
 
 /**
@@ -1910,7 +1871,7 @@ async function applyClaudeApp(info: ProxyTargetInfo): Promise<void> {
   // 1. 打开 3P 模式。这个文件可能已有别的字段（用户配过 MCP 等），只加不覆盖
   const mode = await readJsonObject(claude3pModePath()).catch(() => ({}) as Record<string, unknown>)
   mode.deploymentMode = '3p'
-  await writeFileAtomic(claude3pModePath(), `${JSON.stringify(mode, null, 2)}\n`)
+  await writeJsonFile(claude3pModePath(), mode)
 
   /*
    * 2. 网关配置。auth scheme 用 bearer（默认），和我们反代的鉴权方式一致。
@@ -1940,44 +1901,30 @@ async function applyClaudeApp(info: ProxyTargetInfo): Promise<void> {
       /*
        * 档位上限。它是「最高档」而不是白名单：高于它的档位在选择器里隐藏、也绝不会被请求。
        * 注意 schema 是 .catch("low") —— 写了个它不认的值会**静默**降到 low，
-       * 所以只能给 CLAUDE_EFFORTS 里的值，拿不到就整个省掉（交给它内置目录）。
+       * 所以只能给 CLIENT_EFFORTS 里的值，拿不到就整个省掉（交给它内置目录）。
        */
       ...(cap ? { maxEffort: cap } : {})
     }
   })
 
   // 默认模型的起始档位。同样必须落在它的枚举内，Kiro 的 none 之类一律省掉
-  const defaultEffort = CLAUDE_EFFORTS.includes(info.effort) ? info.effort : undefined
+  const defaultEffort = CLIENT_EFFORTS.includes(info.effort) ? info.effort : undefined
 
-  await writeFileAtomic(
-    claude3pConfigPath(),
-    `${JSON.stringify(
-      {
-        inferenceProvider: 'gateway',
-        inferenceCredentialKind: 'static',
-        inferenceGatewayBaseUrl: info.baseUrl,
-        inferenceGatewayApiKey: info.apiKey,
-        inferenceGatewayAuthScheme: 'bearer',
-        inferenceModels: models.length ? models : [{ name: claudeAppModelName(info.model) }],
-        ...(defaultEffort ? { defaultModelEffort: defaultEffort } : {})
-      },
-      null,
-      2
-    )}\n`
-  )
+  await writeJsonFile(claude3pConfigPath(), {
+    inferenceProvider: 'gateway',
+    inferenceCredentialKind: 'static',
+    inferenceGatewayBaseUrl: info.baseUrl,
+    inferenceGatewayApiKey: info.apiKey,
+    inferenceGatewayAuthScheme: 'bearer',
+    inferenceModels: models.length ? models : [{ name: claudeAppModelName(info.model) }],
+    ...(defaultEffort ? { defaultModelEffort: defaultEffort } : {})
+  })
 
   // 3. 注册表：告诉它当前生效的是哪一份
-  await writeFileAtomic(
-    claude3pMetaPath(),
-    `${JSON.stringify(
-      {
-        appliedId: CLAUDE_3P_CONFIG_ID,
-        entries: [{ id: CLAUDE_3P_CONFIG_ID, name: 'Kiro Manager Lite' }]
-      },
-      null,
-      2
-    )}\n`
-  )
+  await writeJsonFile(claude3pMetaPath(), {
+    appliedId: CLAUDE_3P_CONFIG_ID,
+    entries: [{ id: CLAUDE_3P_CONFIG_ID, name: 'Kiro Manager Lite' }]
+  })
 }
 
 async function claudeAppApplied(info: ProxyTargetInfo): Promise<boolean> {
@@ -1988,36 +1935,14 @@ async function claudeAppApplied(info: ProxyTargetInfo): Promise<boolean> {
 }
 
 /** Claude 桌面版是否在运行 */
-async function claudeAppRunning(): Promise<boolean> {
-  if (process.platform === 'win32') return winAppRunning('claudeApp')
-  if (process.platform !== 'darwin') return false
-  try {
-    await run('pgrep', ['-x', 'Claude'], 5_000)
-    return true
-  } catch {
-    return false
-  }
-}
+const claudeAppRunning = appProbe('claudeApp', ['-x', 'Claude'])
 
 /** 退出并重新打开 Claude 桌面版：3P 配置只在启动时读一次 */
-async function restartClaudeApp(): Promise<void> {
-  if (process.platform === 'win32') return restartWinApp('Claude', 'claudeApp')
-  if (process.platform !== 'darwin') {
-    throw new Error('代为重启目前只支持 macOS 和 Windows，请手动完全退出后重新打开 Claude')
-  }
-  const app = await requireApp('claudeApp')
-  if (await claudeAppRunning()) {
-    await run('osascript', ['-e', 'tell application "Claude" to quit']).catch(() => undefined)
-    for (let i = 0; i < 24; i++) {
-      if (!(await claudeAppRunning())) break
-      await sleep(500)
-    }
-    if (await claudeAppRunning()) {
-      throw new Error('Claude 没能自动退出，请手动退出后再打开')
-    }
-  }
-  await run('open', [app])
-  log('info', '[Proxy] 已重启 Claude 桌面版')
+function restartClaudeApp(): Promise<void> {
+  return restartMacApp('Claude', 'claudeApp', { name: 'Claude' }, claudeAppRunning, {
+    unsupported: '代为重启目前只支持 macOS 和 Windows，请手动完全退出后重新打开 Claude',
+    done: '[Proxy] 已重启 Claude 桌面版'
+  })
 }
 
 // ============ Cursor (CCursor BYOK) ============
@@ -2082,7 +2007,7 @@ async function cursorInstallPath(): Promise<string | null> {
 }
 
 /** 写入过程中的进度回调，用来把安装日志实时显示在界面上 */
-export type ProgressFn = (line: string) => void
+type ProgressFn = (line: string) => void
 
 const findNodeBin = (name: 'node' | 'npx'): string | null => findBinary(name)
 
@@ -2339,7 +2264,7 @@ async function disableCursorHttp2(): Promise<void> {
   const settings = await readJsonObject(file).catch(() => ({}) as Record<string, unknown>)
   if (settings['cursor.general.disableHttp2'] === true) return
   settings['cursor.general.disableHttp2'] = true
-  await writeFileAtomic(file, `${JSON.stringify(settings, null, 4)}\n`)
+  await writeJsonFile(file, settings, { indent: 4 })
   log('info', '[Proxy] 已为 Cursor 关闭 HTTP/2（CCursor 的路由器只认 HTTP/1.1）')
 }
 
@@ -2363,10 +2288,7 @@ async function applyCursor(info: ProxyTargetInfo, onProgress?: ProgressFn): Prom
   onProgress?.('写入模型目录与 provider 配置…')
   // 先确保目录里有我们的模型，再写 providers
   await ensureCcursorCatalog(info.models)
-  await writeFileAtomic(
-    ccursorProvidersPath(),
-    `${JSON.stringify(buildCcursorProviders(info), null, 2)}\n`
-  )
+  await writeJsonFile(ccursorProvidersPath(), buildCcursorProviders(info))
   // 没这一步 CCursor 拦不到对话请求，原因见 disableCursorHttp2
   onProgress?.('关闭 Cursor 的 HTTP/2…')
   await disableCursorHttp2()
@@ -2396,7 +2318,7 @@ async function setCcursorByokMode(mode: 0 | 1): Promise<void> {
   if (routes.byokMode === mode) return
   routes.byokMode = mode
   delete routes.redirect
-  await writeFileAtomic(file, `${JSON.stringify(routes, null, 2)}\n`)
+  await writeJsonFile(file, routes)
   log('info', `[Proxy] CCursor BYOK 模式已${mode ? '开启' : '关闭'}`)
 }
 
@@ -2428,7 +2350,7 @@ async function restoreCursor(files: ProxyClientBackupFile[], onProgress?: Progre
   if (doc && Array.isArray(doc.providers)) {
     const rest = (doc.providers as Record<string, unknown>[]).filter((p) => p?.id !== CCURSOR_PROVIDER_ID)
     others = rest.length
-    await writeFileAtomic(providersFile, `${JSON.stringify({ ...doc, providers: rest }, null, 2)}\n`)
+    await writeJsonFile(providersFile, { ...doc, providers: rest })
   }
 
   // 还有用户自己的 provider 就别关：关了他那些也一起用不了
@@ -2451,7 +2373,7 @@ async function restoreCursor(files: ProxyClientBackupFile[], onProgress?: Progre
   if (settings && key in settings) {
     if (key in original) settings[key] = original[key]
     else delete settings[key]
-    await writeFileAtomic(settingsFile, `${JSON.stringify(settings, null, 4)}\n`)
+    await writeJsonFile(settingsFile, settings, { indent: 4 })
   }
   onProgress?.('完成，重启 Cursor 后 HTTP/2 设置生效')
 }
@@ -2459,16 +2381,7 @@ async function restoreCursor(files: ProxyClientBackupFile[], onProgress?: Progre
 /** Cursor 的 bundle id：它用 ToDesktop 打包，所以是这么一串看着像乱码的东西 */
 const CURSOR_BUNDLE_ID = 'com.todesktop.230313mzl4w4u92'
 
-async function cursorRunning(): Promise<boolean> {
-  if (process.platform === 'win32') return winAppRunning('cursor')
-  if (process.platform !== 'darwin') return false
-  try {
-    await run('pgrep', ['-x', 'Cursor'], 5_000)
-    return true
-  } catch {
-    return false
-  }
-}
+const cursorRunning = appProbe('cursor', ['-x', 'Cursor'])
 
 /**
  * 代为重启 Cursor。
@@ -2477,29 +2390,13 @@ async function cursorRunning(): Promise<boolean> {
  * 都只在启动时读一次。
  *
  * 请求由 CCursor 在进程内接管后转发到本机反代。
+ * 用 AppleScript 正常退出，给它保存工作区的机会（有未保存文件时它会自己弹确认框）。
  */
-async function restartCursorApp(): Promise<void> {
-  if (process.platform === 'win32') return restartWinApp('Cursor', 'cursor')
-  if (process.platform !== 'darwin') {
-    throw new Error('代为重启目前只支持 macOS 和 Windows，请手动完全退出 Cursor 后重新打开')
-  }
-  const app = await requireApp('cursor')
-
-  if (await cursorRunning()) {
-    // 用 AppleScript 正常退出，给它保存工作区的机会（有未保存文件时它会自己弹确认框）
-    await run('osascript', ['-e', `tell application id "${CURSOR_BUNDLE_ID}" to quit`]).catch(
-      () => undefined
-    )
-    for (let i = 0; i < 24; i++) {
-      if (!(await cursorRunning())) break
-      await sleep(500)
-    }
-    if (await cursorRunning()) {
-      throw new Error('Cursor 没能自动退出（可能有未保存的文件在等你确认），请手动退出后再打开')
-    }
-  }
-  await run('open', [app])
-  log('info', '[Proxy] 已重启 Cursor')
+function restartCursorApp(): Promise<void> {
+  return restartMacApp('Cursor', 'cursor', { id: CURSOR_BUNDLE_ID }, cursorRunning, {
+    unsupported: '代为重启目前只支持 macOS 和 Windows，请手动完全退出 Cursor 后重新打开',
+    stuck: 'Cursor 没能自动退出（可能有未保存的文件在等你确认），请手动退出后再打开'
+  })
 }
 
 /** provider 写了、Cursor 本体也打着补丁，才算真的指向本反代；缺补丁时 Cursor 根本不读 providers.json */
@@ -2521,7 +2418,7 @@ async function cursorApplied(info: ProxyTargetInfo): Promise<boolean> {
 
 /** 删掉指定的表（含其下所有键），用于重写我们自己那段 */
 function removeSection(content: string, section: string): string {
-  const newline = content.includes('\r\n') ? '\r\n' : '\n'
+  const newline = eolOf(content)
   const escaped = section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const header = new RegExp(`^\\s*\\[(${escaped}|"${escaped}")\\]\\s*$`)
   const out: string[] = []
@@ -2710,9 +2607,7 @@ function codexEffort(
     defaults && defaults.model === model.modelId && options.includes(defaults.effort)
       ? defaults.effort
       : undefined
-  const fallback = model.effort?.default && options.includes(model.effort.default)
-    ? model.effort.default
-    : options[Math.floor(options.length / 2)]
+  const fallback = defaultEffortOf(model, options)
   return {
     levels: options.map((effort) => ({
       effort,
@@ -2825,10 +2720,7 @@ async function writeCodexCatalog(
   const found = await codexTemplateModel()
   if (!found) return false
   const file = codexCatalogPath()
-  await writeFileAtomic(
-    file,
-    `${JSON.stringify(buildCodexCatalog(found.model, models, defaults), null, 2)}\n`
-  )
+  await writeJsonFile(file, buildCodexCatalog(found.model, models, defaults))
   try {
     const rendered = JSON.parse(
       await runCodex(found.binary, [
@@ -2867,10 +2759,7 @@ export async function syncCodexCatalogFile(
 ): Promise<void> {
   const template = getProxyCodexTemplate()
   if (!template || !existsSync(codexCatalogPath())) return
-  await writeFileAtomic(
-    codexCatalogPath(),
-    `${JSON.stringify(buildCodexCatalog(template, models, defaults), null, 2)}\n`
-  )
+  await writeJsonFile(codexCatalogPath(), buildCodexCatalog(template, models, defaults))
 }
 
 // ============ Codex 桌面版 ============
@@ -2900,7 +2789,8 @@ const MANAGED_ROOT_KEYS = ['model', 'model_provider', 'web_search'] as const
 /** 取根级某个键的整行（含注释），用于记录改之前的值 */
 function rootKeyLine(content: string, key: string): string | undefined {
   const root = stripSections(content)
-  return root.split(/\r?\n/).find((line) => new RegExp(`^\\s*${key}\\s*=`).test(line))
+  const pattern = new RegExp(`^\\s*${key}\\s*=`)
+  return root.split(/\r?\n/).find((line) => pattern.test(line))
 }
 
 /** 摘掉我们写入的标记块 */
@@ -2914,7 +2804,7 @@ function stripManagedBlock(content: string): string {
   return stripped
     .split(/\r?\n/)
     .filter((line) => line !== MANAGED_BEGIN && !MANAGED_COMMENTS.includes(line))
-    .join(content.includes('\r\n') ? '\r\n' : '\n')
+    .join(eolOf(content))
 }
 
 /** 标记块开头的两行说明，与 applyCodexApp 写入的保持一致 */
@@ -2932,42 +2822,36 @@ function removeRootKey(content: string, key: string): string {
   const lines = content.split(/\r?\n/)
   const sectionIndex = lines.findIndex((line) => /^\s*\[/.test(line))
   const end = sectionIndex === -1 ? lines.length : sectionIndex
-  const kept = lines.filter(
-    (line, index) => index >= end || !new RegExp(`^\\s*${key}\\s*=`).test(line)
-  )
-  return kept.join(content.includes('\r\n') ? '\r\n' : '\n')
+  const pattern = new RegExp(`^\\s*${key}\\s*=`)
+  const kept = lines.filter((line, index) => index >= end || !pattern.test(line))
+  return kept.join(eolOf(content))
 }
 
-async function applyCodexApp(info: ProxyTargetInfo): Promise<void> {
-  const file = codexConfigPath()
-  const existing = (await readTextIfExists(file)) ?? ''
-  const newline = existing.includes('\r\n') ? '\r\n' : '\n'
-
-  // 先摘掉上一次写的那段与我们设过的根键，再整段重写，避免重复累积
-  let content = stripManagedBlock(existing)
-  for (const key of MANAGED_ROOT_KEYS) content = removeRootKey(content, key)
-  content = removeSection(content, `model_providers.${CODEX_PROVIDER}`)
-
-  /*
-   * 根级键必须排在所有 [表] 之前，否则会被算进最后一个表里。
-   * 所以这一段整体插到第一个 [section] 之前。
-   */
+/**
+ * 把一段根级内容插到第一个 [表] 之前：根级键必须排在所有表之前，否则会被算进最后一个表里。
+ * 三段之间空一行，空的段直接省掉。
+ */
+function insertBeforeSections(content: string, middle: string, newline: string): string {
   const lines = content.split(/\r?\n/)
   const sectionIndex = lines.findIndex((line) => /^\s*\[/.test(line))
   const head = (sectionIndex === -1 ? lines : lines.slice(0, sectionIndex)).join(newline).trimEnd()
   const tail = sectionIndex === -1 ? '' : lines.slice(sectionIndex).join(newline)
+  return [head, middle, tail].filter((part) => part.trim()).join(`${newline}${newline}`)
+}
 
-  const block = [
-    MANAGED_BEGIN,
-    ...MANAGED_COMMENTS,
+/**
+ * Codex 的 provider 定义，两个 Codex 目标共用；连接符与前后包裹由调用方决定
+ * （桌面版用原文件的换行符并包在标记块里，命令行版的 profile 文件用 \n）。
+ */
+function codexProviderLines(info: ProxyTargetInfo): string[] {
+  return [
     `model = "${tomlString(info.model)}"`,
     `model_provider = "${CODEX_PROVIDER}"`,
     /*
      * 联网搜索开关。WebSearchMode 的合法值是 live / cached。
-     * 注意：开了它 Codex 才会把 web_search 工具挂上去，但真正能不能搜还取决于反代——
-     * web_search 是 OpenAI 服务端执行的托管工具，Kiro 上游没有这个能力，
-     * 目前 proxyConvert 会把它过滤掉（见那里的注释）。
-     * 也就是说这一行是必要条件，不是充分条件。
+     * 开了它 Codex 才会把 web_search 工具挂上去。这个工具是 OpenAI 设计成服务端执行的托管工具，
+     * Kiro 上游不执行它：proxyConvert 会跳过客户端挂上来的这一个，
+     * 改由反代注入同名工具、拦下调用后自己去搜（见下面 supports_standalone_web_search 的说明）。
      */
     'web_search = "live"',
     '',
@@ -2982,11 +2866,24 @@ async function applyCodexApp(info: ProxyTargetInfo): Promise<void> {
      * 搜索实际由反代执行（打 Kiro 的 MCP 端点），见 kiroWebSearch.ts。
      */
     'supports_standalone_web_search = true',
-    `http_headers = { Authorization = "Bearer ${tomlString(info.apiKey)}" }`,
-    MANAGED_END
-  ].join(newline)
+    `http_headers = { Authorization = "Bearer ${tomlString(info.apiKey)}" }`
+  ]
+}
 
-  const body = [head, block, tail].filter((part) => part.trim()).join(`${newline}${newline}`)
+async function applyCodexApp(info: ProxyTargetInfo): Promise<void> {
+  const file = codexConfigPath()
+  const existing = (await readTextIfExists(file)) ?? ''
+  const newline = eolOf(existing)
+
+  // 先摘掉上一次写的那段与我们设过的根键，再整段重写，避免重复累积
+  let content = stripManagedBlock(existing)
+  for (const key of MANAGED_ROOT_KEYS) content = removeRootKey(content, key)
+  content = removeSection(content, `model_providers.${CODEX_PROVIDER}`)
+
+  const block = [MANAGED_BEGIN, ...MANAGED_COMMENTS, ...codexProviderLines(info), MANAGED_END].join(newline)
+
+  // 根级键必须排在所有 [表] 之前，所以这一段整体插到第一个 [section] 之前
+  const body = insertBeforeSections(content, block, newline)
   await writeFileAtomic(file, `${body}${newline}`)
 
   // 目录文件也写一份：桌面版的模型选择器与命令行版共用同一份元数据
@@ -3006,7 +2903,7 @@ async function restoreCodexApp(): Promise<void> {
   if (current === null) return
 
   const snapshot = getProxyClientBackup('codexApp')?.files.find((f) => f.path === file)
-  const newline = current.includes('\r\n') ? '\r\n' : '\n'
+  const newline = eolOf(current)
 
   let content = stripManagedBlock(current)
   for (const key of MANAGED_ROOT_KEYS) content = removeRootKey(content, key)
@@ -3018,13 +2915,7 @@ async function restoreCodexApp(): Promise<void> {
         .filter((line): line is string => !!line)
         .join(newline)
     : ''
-  if (previous) {
-    const lines = content.split(/\r?\n/)
-    const sectionIndex = lines.findIndex((line) => /^\s*\[/.test(line))
-    const head = (sectionIndex === -1 ? lines : lines.slice(0, sectionIndex)).join(newline).trimEnd()
-    const tail = sectionIndex === -1 ? '' : lines.slice(sectionIndex).join(newline)
-    content = [head, previous, tail].filter((part) => part.trim()).join(`${newline}${newline}`)
-  }
+  if (previous) content = insertBeforeSections(content, previous, newline)
 
   /*
    * 原本没有 config.toml（用户只用桌面版、从没配过命令行）时，
@@ -3041,11 +2932,14 @@ async function codexAppApplied(info: ProxyTargetInfo): Promise<boolean> {
   const content = (await readTextIfExists(codexConfigPath())) ?? ''
   if (!content) return false
   const root = stripSections(content)
-  return (
-    new RegExp(`^\\s*model_provider\\s*=\\s*"${escapeRegExp(CODEX_PROVIDER)}"`, 'm').test(root) &&
-    content.includes(`${info.baseUrl}/v1`)
-  )
+  return CODEX_OUR_PROVIDER_LINE.test(root) && content.includes(`${info.baseUrl}/v1`)
 }
+
+/**
+ * 根级 model_provider 指向我们的那一行（桌面版处于写入状态的标志）。
+ * 没有 g / y 标志，test 不读写 lastIndex，可以共用一个实例。
+ */
+const CODEX_OUR_PROVIDER_LINE = new RegExp(`^\\s*model_provider\\s*=\\s*"${escapeRegExp(CODEX_PROVIDER)}"`, 'm')
 
 /** 本应用早期版本写进 config.toml 的那一行注释，清理时一并去掉 */
 const LEGACY_MARKER = /^# 以下两段由 Kiro Manager Lite 写入.*$\r?\n?/m
@@ -3065,16 +2959,13 @@ async function applyCodex(info: ProxyTargetInfo): Promise<void> {
      * 同名 provider 表是桌面版那段的一部分，删了它桌面版和 `codex` 都会报
      * 「Model provider not found」起不来，所以这时只清 profiles 与旧名字。
      */
-    const desktopOwned = new RegExp(
-      `^\\s*model_provider\\s*=\\s*"${escapeRegExp(CODEX_PROVIDER)}"`,
-      'm'
-    ).test(stripSections(existing))
+    const desktopOwned = CODEX_OUR_PROVIDER_LINE.test(stripSections(existing))
     for (const name of [CODEX_PROVIDER, ...LEGACY_CODEX_NAMES]) {
       cleaned = removeSection(cleaned, `profiles.${name}`)
       if (name === CODEX_PROVIDER && desktopOwned) continue
       cleaned = removeSection(cleaned, `model_providers.${name}`)
     }
-    const newline = existing.includes('\r\n') ? '\r\n' : '\n'
+    const newline = eolOf(existing)
     if (cleaned.trimEnd() !== existing.trimEnd()) {
       await writeFileAtomic(configFile, `${cleaned.trimEnd()}${newline}`)
     }
@@ -3108,21 +2999,11 @@ async function applyCodex(info: ProxyTargetInfo): Promise<void> {
    */
   await writeCodexCatalog(info.models, { model: info.model, effort: info.effort })
 
+  // provider 定义与桌面版同一份（联网搜索两行的说明见 codexProviderLines）
   const content = [
     `# 由 Kiro Manager Lite 写入，使用：codex --profile ${CODEX_PROVIDER}`,
     `# 在「本地反代」页面点「还原」即可撤销`,
-    `model = "${tomlString(info.model)}"`,
-    `model_provider = "${CODEX_PROVIDER}"`,
-    // 与桌面版保持一致；能不能真正联网搜索取决于反代，说明见 applyCodexApp 里的注释
-    'web_search = "live"',
-    '',
-    `[model_providers.${CODEX_PROVIDER}]`,
-    'name = "Kiro Manager Lite"',
-    `base_url = "${tomlString(info.baseUrl)}/v1"`,
-    'wire_api = "responses"',
-    // 没这一行 Codex 不会把 web_search 工具挂上来，原因见 applyCodexApp 里的注释
-    'supports_standalone_web_search = true',
-    `http_headers = { Authorization = "Bearer ${tomlString(info.apiKey)}" }`,
+    ...codexProviderLines(info),
     ''
   ].join('\n')
   await writeFileAtomic(codexProfilePath(), content)
@@ -3172,18 +3053,8 @@ function run(command: string, args: string[], timeout = 15_000): Promise<string>
   })
 }
 
-/** 桌面版是否在跑 */
-async function codexAppRunning(): Promise<boolean> {
-  if (process.platform === 'win32') return winAppRunning('codexApp')
-  if (process.platform !== 'darwin') return false
-  try {
-    // -x 精确匹配进程名，避免把我们自己或别的 helper 算进来
-    await run('pgrep', ['-x', 'ChatGPT'], 5_000)
-    return true
-  } catch {
-    return false
-  }
-}
+/** 桌面版是否在跑；-x 精确匹配进程名，避免把我们自己或别的 helper 算进来 */
+const codexAppRunning = appProbe('codexApp', ['-x', 'ChatGPT'])
 
 /**
  * 让桌面版正常退出，返回它原本是否在运行。
@@ -3211,11 +3082,8 @@ async function quitCodexApp(): Promise<boolean> {
  * 启动 Codex 桌面版。
  *
  * 已经在运行时必须先退出：macOS 对同一个 bundle 只会激活现有实例，
- * 不退出就等于什么都没做，新配置读不进去。
- *
- * 已经在运行时必须先退出：macOS 对同一个 bundle 只会激活现有实例，
- * 我们注入的环境变量就白费了。用 AppleScript 正常退出（而不是 kill），
- * 让它有机会存盘。
+ * 不退出就等于什么都没做，新配置读不进去。用 AppleScript 正常退出（而不是 kill），
+ * 让它有机会存盘（见 quitCodexApp）。
  */
 async function launchCodexApp(): Promise<void> {
   const binary = await codexAppBinary()
@@ -3226,7 +3094,7 @@ async function launchCodexApp(): Promise<void> {
         : '代为启动目前只支持 macOS，请手动完全退出后重新打开 Codex 桌面版'
     )
   }
-  // 已经在跑的话必须先退出：macOS 对同一个 bundle 只会激活现有实例，注入的变量就白费了
+  // 已经在跑的话必须先退出：macOS 对同一个 bundle 只会激活现有实例，新配置读不进去
   await quitCodexApp()
 
   const child = spawn(binary, [], { detached: true, stdio: 'ignore', env: cleanChildEnv() })
@@ -3395,11 +3263,11 @@ export async function openProxyClient(target: ProxyClientTarget): Promise<void> 
   if (target === 'deepseekApp') return restartDeepseekApp()
   if (target === 'vscode') return restartVscode()
   if (target === 'workbuddy') {
-    return restartMacApp('WorkBuddy', 'workbuddy', WORKBUDDY_BUNDLE_ID, workbuddyRunning)
+    return restartMacApp('WorkBuddy', 'workbuddy', { id: WORKBUDDY_BUNDLE_ID }, workbuddyRunning)
   }
-  if (target === 'qoder') return restartMacApp('Qoder CN', 'qoder', QODER_BUNDLE_ID, qoderRunning)
-  if (target === 'zcode') return restartMacApp('ZCode', 'zcode', ZCODE_BUNDLE_ID, zcodeRunning)
-  if (target === 'kimi') return restartMacApp('Kimi Code', 'kimi', KIMI_BUNDLE_ID, kimiRunning)
+  if (target === 'qoder') return restartMacApp('Qoder CN', 'qoder', { id: QODER_BUNDLE_ID }, qoderRunning)
+  if (target === 'zcode') return restartMacApp('ZCode', 'zcode', { id: ZCODE_BUNDLE_ID }, zcodeRunning)
+  if (target === 'kimi') return restartMacApp('Kimi Code', 'kimi', { id: KIMI_BUNDLE_ID }, kimiRunning)
   // 和卡片上展示的启动命令同一份：手动指定了位置的会带完整路径
   if (target === 'claudeCode') return openInTerminal(cliInvoke('claudeCode', 'claude'))
   if (target === 'codex') return openInTerminal(codexCommand())
@@ -3636,60 +3504,75 @@ export async function proxyClientStates(info: ProxyTargetInfo): Promise<ProxyCli
     'kimi'
   ]
   const proxyIssue = await proxyLoopbackWarning(info.baseUrl).catch(() => undefined)
-  const states: ProxyClientState[] = []
-  for (const target of targets) {
-    /*
-     * Cursor 不写入任何文件（API Key 在它的 UI 里填，存进了钥匙串加密项），
-     * 所以没有 applied / hasBackup 状态，卡片只展示复制信息。
-     */
-    if (target === 'cursor') {
-      const cursorInstall = await detectInstall('cursor')
-      const applied = await cursorApplied(info).catch(() => false)
-      states.push({
-        target: 'cursor',
+  /*
+   * 安装检测：Windows 上各目标共用 proxyClientInstall 里「查完才写」的注册表缓存，
+   * 并发去查会同时起好几个 PowerShell，所以那里先按顺序查一遍；其余平台没有共享缓存，跟着下面一起并行。
+   */
+  const installs = new Map<ProxyClientTarget, ClientInstall>()
+  if (process.platform === 'win32') {
+    for (const target of targets) installs.set(target, await detectInstall(target))
+  }
+  const installOf = async (target: ProxyClientTarget): Promise<ClientInstall> =>
+    installs.get(target) ?? detectInstall(target)
+
+  // 各目标的检查互不依赖（只读文件、探进程），并行跑；结果顺序由 map 保证
+  const settled = await Promise.allSettled(
+    targets.map(async (target): Promise<ProxyClientState> => {
+      /*
+       * Cursor 不写入任何文件（API Key 在它的 UI 里填，存进了钥匙串加密项），
+       * 所以没有 applied / hasBackup 状态，卡片只展示复制信息。
+       */
+      if (target === 'cursor') {
+        const cursorInstall = await installOf('cursor')
+        const applied = await cursorApplied(info).catch(() => false)
+        return {
+          target: 'cursor',
+          paths: displayFiles(target),
+          appRunning: await cursorRunning().catch(() => false),
+          installed: cursorInstall.installed,
+          installPath: cursorInstall.installPath,
+          customPath: cursorInstall.customPath,
+          applied,
+          hasBackup: getProxyClientBackup(target) !== null,
+          command: undefined,
+          /*
+           * 没装 Cursor 本体是硬前提，优先提示。
+           * 没装 CCursor 不算隐患：点写入时会自动装，这里只说明一下会多花点时间。
+           */
+          warning:
+            cursorInstall.hint ??
+            ((await cursorPatched(cursorInstall.installPath ?? null))
+              ? undefined
+              : existsSync(ccursorProvidersPath())
+                ? 'Cursor 更新后 CCursor 补丁被还原了，Cursor 里只剩官方模型。点「一键写入」会重新打补丁（约一两分钟）'
+                : '首次写入会自动下载安装 CCursor（约 33MB，需要 Node.js 与网络），耗时一两分钟')
+        }
+      }
+      const install = await installOf(target)
+      const applied = await APPLIED_CHECKS[target](info).catch(() => false)
+      // 只有图形界面客户端才探测进程，命令行版由用户自己开终端，不显示「重启」
+      const probe = APP_RUNNING_CHECKS[target]
+      // Claude Code 与各桌面版直接读默认配置；命令行版走 profile，必须显式带参数
+      const command = CLIENT_COMMANDS[target]
+      return {
+        target,
         paths: displayFiles(target),
-        appRunning: await cursorRunning().catch(() => false),
-        installed: cursorInstall.installed,
-        installPath: cursorInstall.installPath,
-        customPath: cursorInstall.customPath,
+        appRunning: probe ? await probe().catch(() => false) : undefined,
+        installed: install.installed,
+        installPath: install.installPath,
+        customPath: install.customPath,
         applied,
         hasBackup: getProxyClientBackup(target) !== null,
-        command: undefined,
-        /*
-         * 没装 Cursor 本体是硬前提，优先提示。
-         * 没装 CCursor 不算隐患：点写入时会自动装，这里只说明一下会多花点时间。
-         */
-        warning:
-          cursorInstall.hint ??
-          ((await cursorPatched(cursorInstall.installPath ?? null))
-            ? undefined
-            : existsSync(ccursorProvidersPath())
-              ? 'Cursor 更新后 CCursor 补丁被还原了，Cursor 里只剩官方模型。点「一键写入」会重新打补丁（约一两分钟）'
-              : '首次写入会自动下载安装 CCursor（约 33MB，需要 Node.js 与网络），耗时一两分钟')
-      })
-      continue
-    }
-    const install = await detectInstall(target)
-    const applied = await APPLIED_CHECKS[target](info).catch(() => false)
-    // 只有图形界面客户端才探测进程，命令行版由用户自己开终端，不显示「重启」
-    const probe = APP_RUNNING_CHECKS[target]
-    // Claude Code 与各桌面版直接读默认配置；命令行版走 profile，必须显式带参数
-    const command = CLIENT_COMMANDS[target]
-    states.push({
-      target,
-      paths: displayFiles(target),
-      appRunning: probe ? await probe().catch(() => false) : undefined,
-      installed: install.installed,
-      installPath: install.installPath,
-      customPath: install.customPath,
-      applied,
-      hasBackup: getProxyClientBackup(target) !== null,
-      command: command ? await command().catch(() => undefined) : undefined,
-      // 没装是最根本的问题，优先于系统代理等其它提示
-      warning: install.hint ?? (await clientWarning(target, proxyIssue).catch(() => undefined))
+        command: command ? await command().catch(() => undefined) : undefined,
+        // 没装是最根本的问题，优先于系统代理等其它提示
+        warning: install.hint ?? (await clientWarning(target, proxyIssue).catch(() => undefined))
+      }
     })
-  }
-  return states
+  )
+  // 出错时和逐个检查时一样，报排在最前的那个目标的错
+  const failed = settled.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+  if (failed) throw failed.reason
+  return settled.map((result) => (result as PromiseFulfilledResult<ProxyClientState>).value)
 }
 
 /**

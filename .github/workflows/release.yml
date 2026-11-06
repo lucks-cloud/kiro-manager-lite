@@ -105,16 +105,39 @@ jobs:
           if [ ! -s NOTES.md ]; then
             echo "本次发布未在 CHANGELOG.md 中找到 $version 的条目。" > NOTES.md
           fi
+          # 下载表的「快捷下载」列：直链指向本次 Release 的附件，用户不必再去 Assets 里翻。
+          # 文件名取自 artifacts 里实际要上传的文件，不手写版本号与包名；
+          # 找不到就让这一步失败，免得发出一份带失效链接的说明（通常是改了 electron-builder.yml 的 artifactName）
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          pick() {
+            for f in artifacts/*"$1"; do
+              [ -f "$f" ] && { echo "${f##*/}"; return 0; }
+            done
+            echo "::error::artifacts 里没有 *$1，发布说明的下载链接与 electron-builder.yml 的 artifactName 对不上" >&2
+            return 1
+          }
+          mac_arm_pkg=$(pick -mac-arm64.pkg)
+          mac_arm_dmg=$(pick -mac-arm64.dmg)
+          mac_x64_pkg=$(pick -mac-x64.pkg)
+          mac_x64_dmg=$(pick -mac-x64.dmg)
+          win_exe=$(pick -win-x64-setup.exe)
+          linux_appimage=$(pick -linux-x86_64.AppImage)
+          # link 名称 文件名
+          link() { printf '[%s](%s/%s)' "$1" "$base" "$2"; }
+          # row 平台 文件 快捷下载
+          row() { printf '| %s | %s | %s |\n' "$1" "$2" "$3"; }
+          {
+            printf '\n## 📦 下载\n\n'
+            row '平台' '文件' '快捷下载'
+            row '---' '---' '---'
+            row 'macOS (Apple Silicon)' '`*-mac-arm64.pkg`（推荐）或 `*-mac-arm64.dmg`' \
+              "$(link '.pkg 安装包（推荐）' "$mac_arm_pkg") · $(link '.dmg 镜像' "$mac_arm_dmg")"
+            row 'macOS (Intel)' '`*-mac-x64.pkg`（推荐）或 `*-mac-x64.dmg`' \
+              "$(link '.pkg 安装包（推荐）' "$mac_x64_pkg") · $(link '.dmg 镜像' "$mac_x64_dmg")"
+            row 'Windows' '`*-win-x64-setup.exe`' "$(link '.exe 安装包' "$win_exe")"
+            row 'Linux' '`*-linux-x86_64.AppImage`' "$(link '.AppImage' "$linux_appimage")"
+          } >> NOTES.md
           cat >> NOTES.md <<'EOF'
-
-          ## 📦 下载
-
-          | 平台 | 文件 |
-          | --- | --- |
-          | macOS (Apple Silicon) | `*-mac-arm64.pkg`（推荐）或 `*-mac-arm64.dmg` |
-          | macOS (Intel) | `*-mac-x64.pkg`（推荐）或 `*-mac-x64.dmg` |
-          | Windows | `*-win-x64-setup.exe` |
-          | Linux | `*-linux-x86_64.AppImage` |
 
           macOS 推荐用 `.pkg`：双击按向导安装，装好后打开应用不会再提示「已损坏」。
           安装包未做签名与公证，首次双击 `.pkg` 若被拦截，请在「系统设置 - 隐私与安全性」中点击「仍要打开」。

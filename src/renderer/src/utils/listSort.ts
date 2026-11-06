@@ -56,7 +56,7 @@ export function sortLabelOf(fields: SortFieldOption[], key: SortKey): string {
 }
 
 /** 取字段值的函数：返回 undefined / 空串表示缺值 */
-export type SortGetter<T> = (item: T, field: SortField) => number | string | undefined
+type SortGetter<T> = (item: T, field: SortField) => number | string | undefined
 
 /**
  * 按排序项比较两条记录。缺值固定排最后；邮箱按本地化字母序、不分大小写。

@@ -4,7 +4,7 @@ import { RestOutlined } from '@ant-design/icons-vue'
 import { defineComponent, h, ref, type VNode } from 'vue'
 
 /** store 里各操作统一返回的结果形状 */
-export interface ActionResult {
+interface ActionResult {
   ok: boolean
   error?: string
 }

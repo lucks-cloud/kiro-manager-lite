@@ -412,7 +412,6 @@ function onContextMenu(e: MouseEvent): void {
 
 <style scoped>
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
-.muted { color: var(--kal-muted); }
 /* 整卡可点选；连着点几十张卡时不留下一片蓝色选中文字，要复制走详情抽屉或复制按钮 */
 .key-card {
   width: 100%;
@@ -447,10 +446,6 @@ function onContextMenu(e: MouseEvent): void {
   flex-direction: column;
   row-gap: 8px;
 }
-.key-card:not(.mode-list) .tag-row,
-.key-card:not(.mode-list) .usage-block,
-.key-card:not(.mode-list) .stat-grid,
-.key-card:not(.mode-list) .error-line { margin-top: 0; }
 .key-card:not(.mode-list) .key-actions { margin-top: auto; }
 .key-card.selected { border-color: var(--kal-primary); box-shadow: 0 0 0 1px var(--kal-primary) inset; }
 .key-card.active { border-color: #52c41a; box-shadow: none; }
@@ -470,14 +465,13 @@ function onContextMenu(e: MouseEvent): void {
 .key-value { font-size: 13px; font-weight: 600; transition: color 0.15s ease; }
 /* 悬停 key 区域时高亮 key 值，与账户卡片悬停邮箱一致 */
 .key-identity:hover .key-value { color: var(--kal-primary); }
-.key-email { margin-top: 2px; font-size: 12px; }
-.key-note { margin-top: 2px; font-size: 12px; }
+.key-email, .key-note { margin-top: 2px; font-size: 12px; }
 .status-tag { flex: 0 0 auto; margin: 0; }
 /*
  * 标签排不下时自动换行：一个 Key 可以属于多个分组，挤在一行只能全部截成省略号。
  * 每个标签保持完整宽度，放不下就整个挪到下一行（列表模式另有单行规则，见下方）。
  */
-.tag-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 22px; min-width: 0; margin-top: 10px; }
+.tag-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 22px; min-width: 0; }
 .tag-row :deep(.ant-tag) { margin: 0; flex: 0 0 auto; }
 /*
  * 分组名是用户自己填的，长度不可控：一般完整显示，
@@ -488,7 +482,7 @@ function onContextMenu(e: MouseEvent): void {
 .region-chip { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 4px; margin-left: auto; padding: 1px 8px; border: 1px solid var(--kal-border); border-radius: 10px; background: transparent; color: var(--kal-muted); font-size: 11.5px; line-height: 18px; cursor: pointer; transition: border-color 0.15s ease, color 0.15s ease; }
 .region-chip:hover { border-color: var(--kal-primary); color: var(--kal-primary); }
 /* 高度按内容自然撑开：各卡结构相同、高度本来就一致，写死 105px 只会多留几像素空白 */
-.usage-block { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; padding: 10px 12px; box-sizing: border-box; border-radius: 12px; background: var(--kal-block-bg); cursor: pointer; transition: background 0.16s ease; }
+.usage-block { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; box-sizing: border-box; border-radius: 12px; background: var(--kal-block-bg); cursor: pointer; transition: background 0.16s ease; }
 .usage-block:hover { background: var(--kal-code-bg); }
 .usage-head, .usage-foot { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 12.5px; }
 /* 底部那行（总额 + 奖励标签 + 重置时间）统一垂直居中，三者落在同一条水平轴上 */
@@ -504,7 +498,7 @@ function onContextMenu(e: MouseEvent): void {
 /* 右侧的重置日期不允许折行，与账号卡片一致 */
 .usage-foot span:last-child { white-space: nowrap; }
 /* 网关调用统计：四个等宽圆角小块，无边框，背景与上方使用量区块统一 */
-.stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 8px; }
+.stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
 .stat-cell {
   display: flex;
   flex-direction: column;
@@ -528,7 +522,7 @@ function onContextMenu(e: MouseEvent): void {
 .error-line { padding: 3px 8px; overflow: hidden; color: #ff4d4f; border-radius: 8px; background: rgba(255, 77, 79, 0.08); font-size: 11.5px; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; cursor: help; }
 /* 卡片里一行截断，Tooltip 里完整换行展示 */
 .error-tip { white-space: pre-wrap; word-break: break-all; }
-.key-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 18px; padding: 8px 0 0; border-top: 1px solid var(--kal-border); }
+.key-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 0 0; border-top: 1px solid var(--kal-border); }
 .action-row { display: flex; flex: 0 0 auto; align-items: center; gap: 0; }
 .action-btn { width: 24px; min-width: 24px; height: 24px; padding: 0; }
 /* ============ 紧凑卡片 ============ */
@@ -567,7 +561,6 @@ function onContextMenu(e: MouseEvent): void {
  *
  * 真正的布局容器是 a-card 的 body（卡片自己只是外壳），所以规则打在 :deep 上。
  */
-.key-card.mode-list { cursor: pointer; }
 .key-card.mode-list :deep(.ant-card-body) {
   display: grid;
   grid-template-columns: 400px minmax(190px, 1fr) 350px 320px;
@@ -579,11 +572,11 @@ function onContextMenu(e: MouseEvent): void {
 }
 /* 每块写死落位：报错行跨整行、自动摆放的游标不能回退，不写死会把操作区顶到下一行 */
 .key-card.mode-list .key-head { grid-area: 1 / 1 / 2 / 2; }
-.key-card.mode-list .tag-row { grid-area: 1 / 2 / 2 / 3; margin-top: 0; }
-.key-card.mode-list .usage-block { grid-area: 1 / 3 / 2 / 4; margin-top: 0; }
-.key-card.mode-list .key-actions { grid-area: 1 / 4 / 2 / 5; margin-top: 0; padding-top: 0; border-top: none; }
+.key-card.mode-list .tag-row { grid-area: 1 / 2 / 2 / 3; }
+.key-card.mode-list .usage-block { grid-area: 1 / 3 / 2 / 4; }
+.key-card.mode-list .key-actions { grid-area: 1 / 4 / 2 / 5; padding-top: 0; border-top: none; }
 .key-card.mode-list .stat-grid { display: none; }
-.key-card.mode-list .error-line { grid-column: 1 / -1; margin-top: 0; }
+.key-card.mode-list .error-line { grid-column: 1 / -1; }
 /* 区域标签在窄列里不必再靠右顶开 */
 .key-card.mode-list .region-chip { margin-left: 0; }
 .key-card.mode-list .tag-row { flex-wrap: nowrap; min-width: 0; margin-left: 6px; overflow: hidden; }
@@ -604,7 +597,6 @@ function onContextMenu(e: MouseEvent): void {
   .key-card.mode-list :deep(.ant-card-body) {
     grid-template-columns: minmax(0, 400px) minmax(0, 1fr) 350px;
   }
-  .key-card.mode-list .usage-block { grid-area: 1 / 3 / 2 / 4; }
   .key-card.mode-list .tag-row { grid-area: 2 / 1 / 3 / 3; }
   .key-card.mode-list .key-actions { grid-area: 2 / 3 / 3 / 4; }
 }

@@ -7,7 +7,8 @@
  *    其余两处只做选择，不显示拖动手柄与三点，也不响应长按和右键。
  *  - multiple：选中语义，筛选与管理是多选，批量设置是单选。
  */
-import { onBeforeUnmount, nextTick, ref } from 'vue'
+import { computed, onBeforeUnmount, nextTick, ref, type FunctionalComponent } from 'vue'
+import { Dropdown } from 'ant-design-vue'
 import { EditOutlined, DeleteOutlined, HolderOutlined, MoreOutlined } from '@ant-design/icons-vue'
 import type { AccountGroup } from '@shared/types'
 
@@ -39,8 +40,27 @@ const emit = defineEmits<{
   reorder: [orderedIds: string[]]
 }>()
 
+/** 选中判断每个格子都要做一次，先转成 Set */
+const selectedSet = computed(() => new Set(props.selected))
+
 /** 哪个分组的菜单是打开的：右键与三点两条入口共用 */
 const menuOpenId = ref('')
+
+/**
+ * 只读模式下格子外面不需要下拉菜单：原样渲染子节点的空壳，代替一个永远打不开的 a-dropdown。
+ * a-dropdown 本身也只是克隆子节点、不产生额外元素，两种模式下格子的元素结构一致。
+ */
+const Passthrough: FunctionalComponent = (_props, { slots }) => slots.default?.()
+
+/** 可编辑时包在格子外的下拉菜单：右键唤出，开关受 menuOpenId 控制 */
+function menuProps(group: AccountGroup): Record<string, unknown> {
+  return {
+    trigger: ['contextmenu'],
+    placement: 'bottomRight',
+    open: menuOpenId.value === group.id,
+    onOpenChange: (v: boolean) => (menuOpenId.value = v ? group.id : '')
+  }
+}
 /**
  * 哪个分组的删除气泡是打开的。菜单点「删除分组」后菜单收起，再由这里弹出气泡，
  * 气泡挂在该分组的三点上：右键和三点两条入口都从同一位置弹出确认。
@@ -353,21 +373,20 @@ onBeforeUnmount(endDrag)
       整格支持右键唤出菜单，三点图标点击复用同一个浮层（把 menuOpenId 置为该分组），
       这样右键与三点两条入口共用一份菜单定义，不会出现两处菜单项走样。
       拖拽期间 DOM 顺序保持不变，位移全交给 transform，松手才提交真实顺序。
+      只读模式不会打开菜单，格子外面不包 a-dropdown（见 Passthrough）。
     -->
-    <a-dropdown
+    <component
+      :is="props.editable ? Dropdown : Passthrough"
       v-for="group in props.groups"
       :key="group.id"
-      :trigger="props.editable ? ['contextmenu'] : []"
-      placement="bottomRight"
-      :open="props.editable && menuOpenId === group.id"
-      @open-change="(v: boolean) => (menuOpenId = v ? group.id : '')"
+      v-bind="props.editable ? menuProps(group) : {}"
     >
       <div
         class="group-cell"
         :data-id="group.id"
         :style="cellStyle(group.id)"
         :class="{
-          on: props.selected.includes(group.id),
+          on: selectedSet.has(group.id),
           dragging: dragId === group.id && !settling,
           settling: dragId === group.id && settling
         }"
@@ -418,7 +437,7 @@ onBeforeUnmount(endDrag)
           </a-menu-item>
         </a-menu>
       </template>
-    </a-dropdown>
+    </component>
   </div>
 </template>
 

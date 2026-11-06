@@ -1,5 +1,5 @@
 import { acceptHMRUpdate, defineStore } from 'pinia'
-import { computed, customRef, ref, type Ref } from 'vue'
+import { computed, customRef, ref, toRaw, type Ref } from 'vue'
 import { message } from 'ant-design-vue'
 import {
   DEFAULT_SETTINGS,
@@ -16,6 +16,7 @@ import {
   type ProactiveRenewalPayload,
   type SubscriptionType,
   type KiroCliLoginResult,
+  type SwitchAccountInput,
   type SwitchAccountResult,
   type VerifyCredentialsInput
 } from '@shared/types'
@@ -23,8 +24,16 @@ import { errorMessage, isCredentialRejected } from '@shared/errors'
 import { shouldSkipAccountUsageRefresh } from '@shared/refreshPolicy'
 import { DEFAULT_REGION } from '@shared/regions'
 import { runPool } from '@/utils/format'
-import { countByGroup, matchesGroupFilter } from '@/utils/groups'
+import {
+  countByGroup,
+  findGroupByName,
+  matchesGroupFilter,
+  renameGroupError,
+  reorderGroups as reorderGroupList
+} from '@/utils/groups'
 import { runBatchQuery, type BatchQueryResult } from '@/utils/batchQuery'
+import { renewCredentials } from '@/utils/credentials'
+import { daysInRange, inRange } from '@/utils/listFilter'
 import { createScopedSearchText } from '@/utils/searchText'
 import {
   groupIdsOf,
@@ -33,7 +42,7 @@ import {
   validGroupIdsOf,
   withGroupIds
 } from '@shared/itemGroups'
-import { toPlain } from '@/utils/ipc'
+import { isPlainData, toPlain } from '@/utils/ipc'
 import { isSocialIdp, normalizeIdp } from '@/utils/transfer'
 import { useSettingsStore } from './settings'
 
@@ -77,9 +86,6 @@ export interface AccountFilter {
   queries: string[]
 }
 
-// 「未分组」哨兵值定义在 utils/groups，账号与 API Key 两边共用；这里转出去兼容既有引用
-export { UNGROUPED } from '@/utils/groups'
-
 /** 批量任务的进度状态，全局单例，同一时间只跑一件事 */
 export type AccountTaskType =
   | 'import-validation'
@@ -96,6 +102,34 @@ interface TaskState {
 
 function authMethodOf(idp: IdpType): 'IdC' | 'social' {
   return isSocialIdp(idp) ? 'social' : 'IdC'
+}
+
+/**
+ * 把账号的 IDE / CLI 使用中标记设为 value；已经是这个值就沿用原对象。
+ *
+ * 切号、退出、与 IDE / CLI 对齐时要给整表每个账号设一遍标记，绝大多数其实没变。
+ * 原样沿用能保住对象身份：搜索文本缓存、各种按身份缓存的索引与卡片 props 都不会因此失效。
+ * 必须严格相等比较：原来缺这个字段（undefined）的照样展开新建、规范成 true / false，
+ * 结果与整表展开新建逐键相同。
+ */
+function withFlag(account: Account, flag: 'isActive' | 'isActiveCli', value: boolean): Account {
+  return account[flag] === value ? account : ({ ...account, [flag]: value } as Account)
+}
+
+/** 切号到 IDE 与写入 kiro-cli 时交给主进程的同一组账号凭证 */
+function loginPayloadOf(account: Account): SwitchAccountInput {
+  return {
+    accountId: account.id,
+    accessToken: account.credentials.accessToken,
+    refreshToken: account.credentials.refreshToken,
+    clientId: account.credentials.clientId,
+    clientSecret: account.credentials.clientSecret,
+    region: account.credentials.region,
+    startUrl: account.credentials.startUrl,
+    authMethod: authMethodOf(account.idp),
+    provider: account.idp,
+    profileArn: account.profileArn || account.credentials.profileArn
+  }
 }
 
 function emptyUsage(): Account['usage'] {
@@ -200,11 +234,30 @@ export const useAccountsStore = defineStore('accounts', () => {
     }
   }
 
+  /**
+   * 交给 IPC 的快照。
+   *
+   * 主进程收到后整体替换、落盘前先做一次 JSON 往返（store.ts 的 write），渲染侧再往返一次是重复劳动，
+   * 账号上千时每次保存都要把整表序列化再解析一遍。所以账号对象全是纯数据时原样发送
+   * （逐个确认、按对象身份缓存，见 isPlainData），对端落盘的内容与先 toPlain 完全相同。
+   * 混进了响应式代理等无法结构化克隆的值时，整份退回原来的 toPlain。
+   * 分组是深层响应式，数量也少，照旧 toPlain 剥掉代理。
+   */
+  function snapshotForIpc(): AccountStoreData {
+    const snapshot = snapshotForStore()
+    const list = toRaw(snapshot.accounts)
+    const plain =
+      Object.getPrototypeOf(list) === Array.prototype &&
+      list.every((account) => isPlainData(account))
+    if (!plain) return toPlain(snapshot)
+    return { ...snapshot, accounts: list, groups: toPlain(snapshot.groups) }
+  }
+
   function persist(immediate = false): void {
     if (saveTimer) clearTimeout(saveTimer)
     const write = (): void => {
       saveTimer = null
-      void window.api.saveAccounts(toPlain(snapshotForStore()))
+      void window.api.saveAccounts(snapshotForIpc())
     }
     if (immediate) write()
     else saveTimer = setTimeout(write, 600)
@@ -272,14 +325,31 @@ export const useAccountsStore = defineStore('accounts', () => {
 
   /** 正常列表里的账号（不含回收站） */
   const liveAccounts = computed(() => accounts.value.filter((a) => !isTrashed(a)))
-  /** 回收站里的账号数，显示在回收站按钮的角标上 */
-  const trashedCount = computed(() => accounts.value.length - liveAccounts.value.length)
+  /** 回收站里的账号数，显示在回收站按钮的角标上；只计数，不分配数组 */
+  const trashedCount = computed(() => {
+    let trashed = 0
+    for (const a of accounts.value) {
+      if (isTrashed(a)) trashed++
+    }
+    return trashed
+  })
+  /** 正常列表里的账号数，侧栏只需要这个数字，不必为它生成 liveAccounts */
+  const liveCount = computed(() => accounts.value.length - trashedCount.value)
+
+  /**
+   * 当前所在这一边（正常列表或回收站）的账号，顺序与 accounts 一致。
+   * 批量查询、筛选与统计都只作用于这一边，共用这一份，不必各自再过滤一遍整表。
+   */
+  const sideAccounts = computed(() => {
+    const inTrash = trashView.value
+    return accounts.value.filter((a) => isTrashed(a) === inTrash)
+  })
 
   /** 新建分组；同名直接复用已有的那个，避免建出一堆重名分组 */
   function addGroup(name: string): AccountGroup | null {
     const label = name.trim()
     if (!label) return null
-    const existing = groups.value.find((g) => g.name === label)
+    const existing = findGroupByName(groups.value, label)
     if (existing) return existing
 
     const group: AccountGroup = {
@@ -296,8 +366,8 @@ export const useAccountsStore = defineStore('accounts', () => {
   /** 改名；返回错误文案，成功为 null。和别的分组重名时拒绝，否则筛选里会出现两个同名分组 */
   function renameGroup(id: string, name: string): string | null {
     const label = name.trim()
-    if (!label) return '分组名称不能为空'
-    if (groups.value.some((g) => g.id !== id && g.name === label)) return `分组「${label}」已存在`
+    const error = renameGroupError(groups.value, id, label)
+    if (error) return error
     groups.value = groups.value.map((g) => (g.id === id ? { ...g, name: label } : g))
     persist()
     return null
@@ -325,20 +395,13 @@ export const useAccountsStore = defineStore('accounts', () => {
     persist(true)
   }
 
-  /** 按给定顺序重排（拖动排序后调用），order 重新按下标写死 */
+  /**
+   * 按给定顺序重排（拖动排序后调用），order 重新按下标写死；
+   * 漏掉的（理论上不会有）按原顺序补在后面，避免丢分组。
+   * 唯一的调用方（分组管理里的拖动排序）传的总是全部分组的一个排列，与 Key 那边共用同一个实现。
+   */
   function reorderGroups(orderedIds: string[]): void {
-    const byId = new Map(groups.value.map((g) => [g.id, g]))
-    const next: AccountGroup[] = []
-    orderedIds.forEach((id, index) => {
-      const g = byId.get(id)
-      if (g) {
-        next.push({ ...g, order: index })
-        byId.delete(id)
-      }
-    })
-    // 漏掉的（理论上不会有）按原顺序补在后面，避免丢分组
-    for (const g of byId.values()) next.push({ ...g, order: next.length })
-    groups.value = next
+    groups.value = reorderGroupList(groups.value, orderedIds)
     persist()
   }
 
@@ -381,10 +444,8 @@ export const useAccountsStore = defineStore('accounts', () => {
   const batchQuery = computed<BatchQueryResult | null>(() => {
     const queries = filter.value.queries
     if (!queries.length) return null
-    const inTrash = trashView.value
-    const side = accounts.value.filter((a) => isTrashed(a) === inTrash)
     // 批量查询固定按「邮箱 + 昵称 + 备注」匹配，不跟搜索框的范围选择走
-    return runBatchQuery(side, (a) => searchTextOf(a, 'all'), queries)
+    return runBatchQuery(sideAccounts.value, (a) => searchTextOf(a, 'all'), queries)
   })
 
   const filtered = computed(() => {
@@ -407,11 +468,11 @@ export const useAccountsStore = defineStore('accounts', () => {
     const keyword = search.trim().toLowerCase()
     const groupSet = groupIds.length ? new Set(groupIds) : null
     const queryMatched = batchQuery.value?.matched ?? null
-    const inTrash = trashView.value
-    const groupExists = (id: string): boolean => groupMap.value.has(id)
-    return accounts.value.filter((a) => {
-      // 回收站与正常列表互不可见：搜索与筛选都只作用于当前所在的那一边
-      if (isTrashed(a) !== inTrash) return false
+    // 分组表先取出来，判断时不必每次都经过计算属性的 getter；只在按分组筛选时才需要它
+    const groupLookup = groupSet ? groupMap.value : null
+    const groupExists = (id: string): boolean => !!groupLookup?.has(id)
+    // 回收站与正常列表互不可见：搜索与筛选都只作用于当前所在的那一边（sideAccounts）
+    return sideAccounts.value.filter((a) => {
       // 批量查询：命中任意一个关键字（邮箱 / 昵称 / 备注模糊匹配）
       if (queryMatched && !queryMatched.has(a.id)) return false
       // 搜索：智能搜索走邮箱 + 昵称 + 备注，选了具体字段就只搜那一个
@@ -421,26 +482,15 @@ export const useAccountsStore = defineStore('accounts', () => {
       if (statuses.length && !statuses.includes(a.status)) return false
       if (subscriptions.length && !subscriptions.includes(a.subscription.type)) return false
       if (idps.length && !idps.includes(a.idp)) return false
-      // 范围条件一律用 != null 判断「是否已设置」：输入框清空后给过来的是 null，
-      // 若按 !== undefined 判断，null 会被当成已设置，比较时又被转成 0，
-      // 于是 days > 0 / used > 0 把几乎所有条目都滤掉，列表看起来是空的
-      const days = a.subscription.daysRemaining
-      if (daysRemainingMax != null && (days ?? Number.POSITIVE_INFINITY) > daysRemainingMax) {
+      // 范围条件（含两端、未设置的一端不限、天数缺值的处理）见 utils/listFilter
+      if (!daysInRange(a.subscription.daysRemaining, daysRemainingMin, daysRemainingMax)) {
         return false
       }
-      if (daysRemainingMin != null && (days ?? Number.NEGATIVE_INFINITY) < daysRemainingMin) {
-        return false
-      }
-      const used = a.usage.percentUsed || 0
-      if (usageMin != null && used < usageMin) return false
-      if (usageMax != null && used > usageMax) return false
-      // 积分：按总积分（额度上限）过滤，两端都含
-      const credits = a.usage.limit || 0
-      if (creditMin != null && credits < creditMin) return false
-      if (creditMax != null && credits > creditMax) return false
-      // 导入时间：两端都含，界面给过来的是精确到秒的时刻
-      if (createdFrom != null && a.createdAt < createdFrom) return false
-      if (createdTo != null && a.createdAt > createdTo) return false
+      if (!inRange(a.usage.percentUsed || 0, usageMin, usageMax)) return false
+      // 积分：按总积分（额度上限）过滤
+      if (!inRange(a.usage.limit || 0, creditMin, creditMax)) return false
+      // 导入时间：界面给过来的是精确到秒的时刻
+      if (!inRange(a.createdAt, createdFrom, createdTo)) return false
       return true
     })
   })
@@ -480,8 +530,7 @@ export const useAccountsStore = defineStore('accounts', () => {
    * 只统计当前所在的一边（正常列表或回收站），筛选面板上的数字才和列表对得上。
    */
   const stats = computed(() => {
-    const inTrash = trashView.value
-    const scope = accounts.value.filter((a) => isTrashed(a) === inTrash)
+    const scope = sideAccounts.value
     const byStatus: Record<AccountStatus, number> = {
       active: 0,
       expired: 0,
@@ -873,7 +922,11 @@ export const useAccountsStore = defineStore('accounts', () => {
      * 批内按下标偏移，倒序下用 total - i 让文件里靠前的排在更上方。
      */
     const baseTime = importBaseTime()
-    const list = data.accounts ?? []
+    /*
+     * 导入弹窗可能把解析结果放在响应式状态里再传进来，取原始对象再用：
+     * 否则账号的 credentials / usage 等字段存进 store 的是代理，保存时只能退回整表 JSON 往返（见 snapshotForIpc）。
+     */
+    const list = toRaw(data.accounts ?? [])
     const total = list.length
 
     /*
@@ -948,12 +1001,11 @@ export const useAccountsStore = defineStore('accounts', () => {
       lastError: undefined,
       lastCheckedAt: Date.now(),
       credentials: snapshot.accessToken
-        ? {
-            ...account.credentials,
+        ? renewCredentials(account.credentials, {
             accessToken: snapshot.accessToken,
             refreshToken: snapshot.refreshToken || account.credentials.refreshToken,
-            expiresAt: Date.now() + (snapshot.expiresIn ?? DEFAULT_EXPIRES_IN) * 1000
-          }
+            expiresIn: snapshot.expiresIn ?? DEFAULT_EXPIRES_IN
+          })
         : account.credentials
     })
   }
@@ -978,12 +1030,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     // 否则展开的是 await 之前的旧 credentials，会把新值覆盖回去
     const latest = get(id) ?? account
     updateAccount(id, {
-      credentials: {
-        ...latest.credentials,
-        accessToken: res.data.accessToken,
-        refreshToken: res.data.refreshToken,
-        expiresAt: Date.now() + res.data.expiresIn * 1000
-      },
+      credentials: renewCredentials(latest.credentials, res.data),
       status: 'active',
       lastError: undefined
     })
@@ -1001,12 +1048,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     const account = get(payload.accountId)
     if (!account) return
     updateAccount(payload.accountId, {
-      credentials: {
-        ...account.credentials,
-        accessToken: payload.accessToken,
-        refreshToken: payload.refreshToken,
-        expiresAt: Date.now() + payload.expiresIn * 1000
-      },
+      credentials: renewCredentials(account.credentials, payload),
       /*
        * 主进程续期后没能写进 IDE，说明它已不是 IDE 激活账号，续期也随之停止调度。
        * 这里同步清掉 isActive，让 refreshExpiringKeys 重新接管它；
@@ -1109,18 +1151,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     const account = get(id)
     if (!account) return { ok: false, error: '账号不存在' }
 
-    const res = await window.api.switchAccount({
-      accountId: id,
-      accessToken: account.credentials.accessToken,
-      refreshToken: account.credentials.refreshToken,
-      clientId: account.credentials.clientId,
-      clientSecret: account.credentials.clientSecret,
-      region: account.credentials.region,
-      startUrl: account.credentials.startUrl,
-      authMethod: authMethodOf(account.idp),
-      provider: account.idp,
-      profileArn: account.profileArn || account.credentials.profileArn
-    })
+    const res = await window.api.switchAccount(loginPayloadOf(account))
     if (!res.success || !res.data) {
       console.warn(`[Account] 切换到 ${account.email} 失败：${res.error}`)
       return { ok: false, error: res.error }
@@ -1140,14 +1171,9 @@ export const useAccountsStore = defineStore('accounts', () => {
             lastError: undefined,
             // 记住主进程实测可用的 profileArn，下次切号少试一轮
             profileArn: result.profileArn || a.profileArn,
-            credentials: {
-              ...a.credentials,
-              accessToken: result.accessToken,
-              refreshToken: result.refreshToken,
-              expiresAt: Date.now() + result.expiresIn * 1000
-            }
+            credentials: renewCredentials(a.credentials, result)
           }
-        : { ...a, isActive: false }
+        : withFlag(a, 'isActive', false)
     )
     activeAccountId.value = id
     persist(true)
@@ -1164,18 +1190,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     const account = get(id)
     if (!account) return { ok: false, error: '账号不存在' }
 
-    const res = await window.api.loginKiroCli({
-      accountId: id,
-      accessToken: account.credentials.accessToken,
-      refreshToken: account.credentials.refreshToken,
-      clientId: account.credentials.clientId,
-      clientSecret: account.credentials.clientSecret,
-      region: account.credentials.region,
-      startUrl: account.credentials.startUrl,
-      authMethod: authMethodOf(account.idp),
-      provider: account.idp,
-      profileArn: account.profileArn || account.credentials.profileArn
-    })
+    const res = await window.api.loginKiroCli(loginPayloadOf(account))
     if (!res.success || !res.data) {
       console.warn(`[Account] 写入 kiro-cli 失败（${account.email}）：${res.error}`)
       return { ok: false, error: res.error }
@@ -1187,17 +1202,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     )
     // 刷新轮换出的新凭证回写内存，否则下次用旧 refreshToken 会失败
     accounts.value = accounts.value.map((a) =>
-      a.id === id
-        ? {
-            ...a,
-            credentials: {
-              ...a.credentials,
-              accessToken: result.accessToken,
-              refreshToken: result.refreshToken,
-              expiresAt: Date.now() + result.expiresIn * 1000
-            }
-          }
-        : a
+      a.id === id ? { ...a, credentials: renewCredentials(a.credentials, result) } : a
     )
     persist(true)
     // 写入后这个账号就是 CLI 当前使用中账号，按凭证库实际值回读对齐
@@ -1226,7 +1231,8 @@ export const useAccountsStore = defineStore('accounts', () => {
       activeAccountId.value = matchedId
       return
     }
-    accounts.value = accounts.value.map((a) => ({ ...a, isActive: a.id === matchedId }))
+    // 数组照旧整体替换（触发通知与持久化的语义不变），值没变的账号沿用原对象
+    accounts.value = accounts.value.map((a) => withFlag(a, 'isActive', a.id === matchedId))
     activeAccountId.value = matchedId
     persist()
   }
@@ -1234,7 +1240,7 @@ export const useAccountsStore = defineStore('accounts', () => {
   async function logoutIde(): Promise<{ ok: boolean; deleted?: number; error?: string }> {
     const res = await window.api.logoutKiro()
     if (!res.success) return { ok: false, error: res.error }
-    accounts.value = accounts.value.map((a) => ({ ...a, isActive: false }))
+    accounts.value = accounts.value.map((a) => withFlag(a, 'isActive', false))
     activeAccountId.value = null
     persist(true)
     return { ok: true, deleted: res.data?.deleted }
@@ -1262,7 +1268,7 @@ export const useAccountsStore = defineStore('accounts', () => {
       cliActiveAccountId.value = matchedId
       return
     }
-    accounts.value = accounts.value.map((a) => ({ ...a, isActiveCli: a.id === matchedId }))
+    accounts.value = accounts.value.map((a) => withFlag(a, 'isActiveCli', a.id === matchedId))
     cliActiveAccountId.value = matchedId
     persist()
   }
@@ -1270,7 +1276,7 @@ export const useAccountsStore = defineStore('accounts', () => {
   async function logoutCli(): Promise<{ ok: boolean; error?: string }> {
     const res = await window.api.logoutKiroCli()
     if (!res.success) return { ok: false, error: res.error }
-    accounts.value = accounts.value.map((a) => ({ ...a, isActiveCli: false }))
+    accounts.value = accounts.value.map((a) => withFlag(a, 'isActiveCli', false))
     cliActiveAccountId.value = null
     persist(true)
     return { ok: true }
@@ -1295,11 +1301,6 @@ export const useAccountsStore = defineStore('accounts', () => {
   const nextKeyRefreshAt = ref<number | null>(null)
   const nextUsageRefreshAt = ref<number | null>(null)
 
-  // 已生效的间隔（分钟）。设置对象是整体替换的，换主题、折叠侧边栏这类无关改动
-  // 也会触发外部的 watch，靠这两个值判断间隔是否真的变了，避免倒计时被无故清零
-  let appliedKeyInterval = 0
-  let appliedUsageInterval = 0
-
   /**
    * 上次真正跑完一轮的时间，落 localStorage 跨启动保留。
    * 冷启动时据此判断是否已经欠了一轮，欠了就立刻补跑，不必再等一个完整间隔。
@@ -1310,6 +1311,23 @@ export const useAccountsStore = defineStore('accounts', () => {
   } as const
 
   type AutoKind = keyof typeof LAST_RUN_STORAGE
+
+  /** 两条任务的处理顺序：同时到期或同时对齐时，密钥在前、用量在后 */
+  const AUTO_KINDS: readonly AutoKind[] = ['key', 'usage']
+
+  /** 两条任务各自对应的设置项（开关、间隔分钟数）与下一轮时间 */
+  const AUTO_TASKS = {
+    key: { enabled: 'autoRefresh', interval: 'keyRefreshInterval', nextAt: nextKeyRefreshAt },
+    usage: {
+      enabled: 'autoRefreshUsage',
+      interval: 'usageRefreshInterval',
+      nextAt: nextUsageRefreshAt
+    }
+  } as const
+
+  // 已生效的间隔（分钟）。设置对象是整体替换的，换主题、折叠侧边栏这类无关改动
+  // 也会触发外部的 watch，靠这两个值判断间隔是否真的变了，避免倒计时被无故清零
+  const appliedInterval: Record<AutoKind, number> = { key: 0, usage: 0 }
 
   function readLastRun(kind: AutoKind): number {
     const raw = Number(localStorage.getItem(LAST_RUN_STORAGE[kind]))
@@ -1325,9 +1343,8 @@ export const useAccountsStore = defineStore('accounts', () => {
     }
   }
 
-  const keyIntervalMs = (): number => Math.max(1, settingsStore.settings.keyRefreshInterval) * 60_000
-  const usageIntervalMs = (): number =>
-    Math.max(1, settingsStore.settings.usageRefreshInterval) * 60_000
+  const intervalMs = (kind: AutoKind): number =>
+    Math.max(1, settingsStore.settings[AUTO_TASKS[kind].interval]) * 60_000
 
   /**
    * 只处理即将过期的账号（剩余有效期 < AUTO_REFRESH_WINDOW_MS）。
@@ -1402,18 +1419,18 @@ export const useAccountsStore = defineStore('accounts', () => {
       // 执行结束后只在「已经超过下一轮时间」时才顺延，否则每轮都会被本轮耗时顶后一截，
       // 账号多的时候实际间隔会越跑越长
       if (keyDue) {
-        const next = at + keyIntervalMs()
+        const next = at + intervalMs('key')
         nextKeyRefreshAt.value = next
         await refreshExpiringKeys()
         markRan('key')
-        if (Date.now() >= next) nextKeyRefreshAt.value = Date.now() + keyIntervalMs()
+        if (Date.now() >= next) nextKeyRefreshAt.value = Date.now() + intervalMs('key')
       }
       if (usageDue) {
-        const next = at + usageIntervalMs()
+        const next = at + intervalMs('usage')
         nextUsageRefreshAt.value = next
         await refreshAllUsage()
         markRan('usage')
-        if (Date.now() >= next) nextUsageRefreshAt.value = Date.now() + usageIntervalMs()
+        if (Date.now() >= next) nextUsageRefreshAt.value = Date.now() + intervalMs('usage')
       }
     } catch (e) {
       console.error('[AutoRefresh] 本轮自动刷新异常：', e)
@@ -1433,31 +1450,30 @@ export const useAccountsStore = defineStore('accounts', () => {
   }
 
   /**
-   * 密钥刷新整轮从现在开始重新计时。
+   * 该任务整轮从现在开始重新计时。
    * 手动全量刷新完也调它，避免刚刷完又马上被自动任务刷一次。
    */
-  function scheduleKeyRefresh(): void {
-    appliedKeyInterval = settingsStore.settings.keyRefreshInterval
-    if (!settingsStore.settings.autoRefresh) {
-      nextKeyRefreshAt.value = null
+  function scheduleRefresh(kind: AutoKind): void {
+    const { enabled, interval, nextAt } = AUTO_TASKS[kind]
+    appliedInterval[kind] = settingsStore.settings[interval]
+    if (!settingsStore.settings[enabled]) {
+      nextAt.value = null
       return
     }
     // 调用方刚刚全量刷过，等价于跑完一轮，记下来供下次启动判断
-    markRan('key')
-    nextKeyRefreshAt.value = Date.now() + keyIntervalMs()
+    markRan(kind)
+    nextAt.value = Date.now() + intervalMs(kind)
     ensureTick()
+  }
+
+  /** 密钥刷新整轮重新计时，见 scheduleRefresh */
+  function scheduleKeyRefresh(): void {
+    scheduleRefresh('key')
   }
 
   /** 用量刷新整轮重新计时，同上 */
   function scheduleUsageRefresh(): void {
-    appliedUsageInterval = settingsStore.settings.usageRefreshInterval
-    if (!settingsStore.settings.autoRefreshUsage) {
-      nextUsageRefreshAt.value = null
-      return
-    }
-    markRan('usage')
-    nextUsageRefreshAt.value = Date.now() + usageIntervalMs()
-    ensureTick()
+    scheduleRefresh('usage')
   }
 
   /**
@@ -1468,29 +1484,20 @@ export const useAccountsStore = defineStore('accounts', () => {
    * 不必再干等一个完整间隔。
    */
   function alignNextRun(kind: AutoKind): number {
-    const interval = kind === 'key' ? keyIntervalMs() : usageIntervalMs()
+    const interval = intervalMs(kind)
     const due = readLastRun(kind) + interval
     // 已经欠一轮：统一归到当下，界面显示「本轮正在执行…」而不是一个久远的时间
     return due <= Date.now() ? Date.now() : due
   }
 
-  function alignKeyRefresh(): void {
-    appliedKeyInterval = settingsStore.settings.keyRefreshInterval
-    if (!settingsStore.settings.autoRefresh) {
-      nextKeyRefreshAt.value = null
+  function alignRefresh(kind: AutoKind): void {
+    const { enabled, interval, nextAt } = AUTO_TASKS[kind]
+    appliedInterval[kind] = settingsStore.settings[interval]
+    if (!settingsStore.settings[enabled]) {
+      nextAt.value = null
       return
     }
-    nextKeyRefreshAt.value = alignNextRun('key')
-    ensureTick()
-  }
-
-  function alignUsageRefresh(): void {
-    appliedUsageInterval = settingsStore.settings.usageRefreshInterval
-    if (!settingsStore.settings.autoRefreshUsage) {
-      nextUsageRefreshAt.value = null
-      return
-    }
-    nextUsageRefreshAt.value = alignNextRun('usage')
+    nextAt.value = alignNextRun(kind)
     ensureTick()
   }
 
@@ -1502,32 +1509,25 @@ export const useAccountsStore = defineStore('accounts', () => {
    * 会立刻补跑一轮而不是干等一个完整间隔。
    */
   function startAutoRefresh(): void {
-    const { autoRefresh, autoRefreshUsage, keyRefreshInterval, usageRefreshInterval } =
-      settingsStore.settings
+    const settings = settingsStore.settings
     // 用 align 而不是 schedule：冷启动或改短间隔后若已欠一轮，会立刻补跑
-    if (!autoRefresh) nextKeyRefreshAt.value = null
-    else if (nextKeyRefreshAt.value === null || appliedKeyInterval !== keyRefreshInterval) {
-      alignKeyRefresh()
-    }
-    if (!autoRefreshUsage) nextUsageRefreshAt.value = null
-    else if (nextUsageRefreshAt.value === null || appliedUsageInterval !== usageRefreshInterval) {
-      alignUsageRefresh()
+    for (const kind of AUTO_KINDS) {
+      const { enabled, interval, nextAt } = AUTO_TASKS[kind]
+      if (!settings[enabled]) nextAt.value = null
+      else if (nextAt.value === null || appliedInterval[kind] !== settings[interval]) {
+        alignRefresh(kind)
+      }
     }
 
     if (nextKeyRefreshAt.value === null && nextUsageRefreshAt.value === null) stopTick()
     else ensureTick()
   }
 
-  function stopAutoRefresh(): void {
-    stopTick()
-    nextKeyRefreshAt.value = null
-    nextUsageRefreshAt.value = null
-  }
-
   return {
     // 状态
     accounts,
     liveAccounts,
+    liveCount,
     trashedCount,
     trashView,
     activeAccount,
@@ -1579,8 +1579,7 @@ export const useAccountsStore = defineStore('accounts', () => {
     nextUsageRefreshAt,
     scheduleKeyRefresh,
     scheduleUsageRefresh,
-    startAutoRefresh,
-    stopAutoRefresh
+    startAutoRefresh
   }
 })
 

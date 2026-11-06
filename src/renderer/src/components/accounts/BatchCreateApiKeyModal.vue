@@ -138,7 +138,7 @@ function close(): void {
       </span>
     </div>
 
-    <div ref="listRef" class="row-list">
+    <div ref="listRef" class="kal-batch-row-list">
       <div
         v-for="(row, index) in rows"
         :key="row.account.id"
@@ -169,13 +169,13 @@ function close(): void {
           </template>
           <template v-else>
             <CloseCircleFilled class="fail-icon" />
-            <span class="fail-text" :title="row.error">{{ row.error }}</span>
+            <span class="kal-batch-fail-text" :title="row.error">{{ row.error }}</span>
           </template>
         </div>
       </div>
     </div>
 
-    <div class="footer">
+    <div class="kal-batch-footer">
       <a-button :disabled="!created.length || running" @click="copyAll">
         <template #icon><CopyOutlined /></template>
         复制全部（{{ created.length }}）
@@ -219,8 +219,6 @@ function close(): void {
 .spacer { flex: 1 1 auto; }
 .count-text { color: var(--kal-muted); font-size: 12px; }
 
-/* 固定高度：账号 1 个还是几百个，弹窗都一样高，超出在列表内滚动 */
-.row-list { height: 46vh; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
 .row {
   display: flex;
   align-items: center;
@@ -244,9 +242,6 @@ function close(): void {
 .running-text { color: var(--kal-primary); }
 .ok-icon, .ok-text { color: #52c41a; }
 .fail-icon { color: #ff4d4f; flex: 0 0 auto; }
-.fail-text { color: #ff4d4f; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.footer { display: flex; align-items: center; gap: 8px; margin-top: 16px; }
 
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
 .muted { color: var(--kal-muted); }

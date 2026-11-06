@@ -4,6 +4,7 @@
 // 而 Kiro CLI（命令行 `kiro-cli`）用的是另一套存储：
 //   - macOS：登录钥匙串里的 generic password（account 为空串），data.sqlite3 的 auth_kv 作镜像
 //   - 其它平台：data.sqlite3 的 auth_kv（钥匙串不可用时 CLI 本身就回落到它）
+//     Windows 实测（kiro-cli 3.1.0）也是这样：不用凭据管理器，库在 %LOCALAPPDATA%\kiro-cli\data.sqlite3
 // 登录方式、当前 profile 这类元信息存在同库的 state 表。
 //
 // KiroCrew 不保存自己的凭证：它的 Kiro harness 声明 entitlement_source =
@@ -21,10 +22,11 @@ import * as path from 'path'
 import { DatabaseSync } from 'node:sqlite'
 import { log } from './logger'
 import { cleanChildEnv } from './childEnv'
+import { findBinary } from './proxyClientInstall'
 import { KIRO_OIDC_SCOPES, KIRO_START_URL } from './kiroEndpoints'
 import { KIRO_SOCIAL_PROFILE_ARN } from './kiroAuth'
 import { DEFAULT_REGION } from '../shared/regions'
-import type { AuthMethod, IdpType, KiroCliSupportInfo, KiroCliWriteResult } from '../shared/types'
+import type { AuthMethod, IdpType, KiroCliWriteResult } from '../shared/types'
 
 /** 钥匙串 / auth_kv 里的条目名，与 kiro-cli 自身写入的一致 */
 const SOCIAL_TOKEN_KEY = 'kirocli:social:token'
@@ -49,43 +51,87 @@ function kiroCliDataDir(): string {
     return path.join(home, 'Library', 'Application Support', 'kiro-cli')
   }
   if (process.platform === 'win32') {
-    return path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'kiro-cli')
+    // 实测 kiro-cli 3.1.0（官方 install.ps1 安装）：程序与 data.sqlite3 都在 %LOCALAPPDATA%\kiro-cli。
+    // 只有 %APPDATA%（Roaming）下有、%LOCALAPPDATA% 下没有库时才用前者，兼容可能的旧版本布局。
+    const local = path.join(winLocalAppData(), 'kiro-cli')
+    const roaming = path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'kiro-cli')
+    return existsSync(path.join(local, 'data.sqlite3')) || !existsSync(roaming) ? local : roaming
   }
   return path.join(process.env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'kiro-cli')
+}
+
+function winLocalAppData(): string {
+  return process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')
 }
 
 function kiroCliDbPath(): string {
   return path.join(kiroCliDataDir(), 'data.sqlite3')
 }
 
-/** 可能的 kiro-cli 可执行文件位置，取第一个存在的 */
-function findKiroCliBinary(): string | undefined {
-  if (process.platform === 'win32') return undefined
-  const home = os.homedir()
+/** 官方安装器的固定落点：GUI 应用继承到的 PATH 里通常没有它们 */
+function kiroCliFixedPaths(): string[] {
+  if (process.platform === 'win32') {
+    // 实测 3.1.0 装在 %LOCALAPPDATA%\kiro-cli\kiro-cli.exe，安装器不会把它加进 PATH；
+    // install.ps1 结尾提示的 C:\Program Files\Kiro-Cli\ 作为备选也看一下
+    const programFiles = path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Kiro-Cli')
+    return [
+      path.join(winLocalAppData(), 'kiro-cli', 'kiro-cli.exe'),
+      path.join(programFiles, 'kiro-cli.exe'),
+      path.join(programFiles, 'bin', 'kiro-cli.exe')
+    ]
+  }
   return [
-    path.join(home, '.local', 'bin', 'kiro-cli'),
+    path.join(os.homedir(), '.local', 'bin', 'kiro-cli'),
     '/usr/local/bin/kiro-cli',
     '/opt/homebrew/bin/kiro-cli',
     '/Applications/Kiro CLI.app/Contents/MacOS/kiro-cli'
-  ].find((p) => existsSync(p))
+  ]
 }
 
-/** 当前平台与安装情况是否具备写入条件 */
-export function kiroCliSupport(): KiroCliSupportInfo {
+/**
+ * kiro-cli 可执行文件位置：先看官方安装器的固定落点，再按 PATH 与常见 bin 目录找。
+ * extraDirs 追加在默认目录之后（安装检测会传入从注册表重新读到的最新 PATH）。
+ * 写入后的 whoami 校验与登录前的安装检测共用这一份，两边对「装没装」的判断才一致。
+ */
+export function findKiroCliBinary(extraDirs: string[] = []): string | undefined {
+  return kiroCliFixedPaths().find((p) => existsSync(p)) ?? findBinary('kiro-cli', extraDirs) ?? undefined
+}
+
+/**
+ * kiro-cli 凭证库的位置与是否已存在。三个平台都写这份 data.sqlite3（macOS 另写钥匙串）；
+ * 装了 kiro-cli 但从没运行过时还没有这个库，写入前要先让用户运行一次。
+ */
+export function kiroCliDb(): { dbPath: string; dbExists: boolean } {
   const dbPath = kiroCliDbPath()
-  const base = {
-    dbExists: existsSync(dbPath),
-    cliInstalled: !!findKiroCliBinary(),
-    dbPath
+  return { dbPath, dbExists: existsSync(dbPath) }
+}
+
+/** 写入前的前置检查：没有凭证库时给出可操作的提示 */
+export function assertKiroCliDb(): string {
+  const { dbPath, dbExists } = kiroCliDb()
+  if (!dbExists) {
+    throw new Error('未找到 kiro-cli 数据库，请先安装并至少运行 / 登录过一次 kiro-cli')
   }
-  if (process.platform === 'win32') {
-    return {
-      ...base,
-      supported: false,
-      reason: 'Windows 上 kiro-cli 使用凭据管理器存储，暂不支持写入'
-    }
-  }
-  return { ...base, supported: true }
+  return dbPath
+}
+
+/**
+ * 渲染层请求「打开所在目录」时的白名单：只放行 kiro-cli 数据目录里的文件（凭证库、备份）
+ * 和 kiro-cli 可执行文件，其余返回 null。渲染层传来的路径不可信，不能拿去随便定位。
+ */
+export function kiroCliRevealablePath(target: string): string | null {
+  if (!target || typeof target !== 'string') return null
+  const resolved = path.resolve(target)
+  const rel = path.relative(path.resolve(kiroCliDataDir()), resolved)
+  // 数据目录内的文件：相对路径非空、不往上跳、也不是另一个盘符下的绝对路径
+  if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return resolved
+  const bin = findKiroCliBinary()
+  if (!bin) return null
+  const same =
+    process.platform === 'win32'
+      ? path.resolve(bin).toLowerCase() === resolved.toLowerCase()
+      : path.resolve(bin) === resolved
+  return same ? resolved : null
 }
 
 // ============ 钥匙串（仅 macOS） ============
@@ -282,7 +328,7 @@ async function verifyWithCli(): Promise<VerifyOutcome> {
 
 // ============ 对外：写入 ============
 
-export interface WriteKiroCliInput {
+interface WriteKiroCliInput {
   accessToken: string
   refreshToken: string
   /** access token 过期时间（RFC3339） */
@@ -314,13 +360,7 @@ function socialProvider(provider: IdpType): 'github' | 'google' {
  * 先备份现有凭证，再按登录方式写入对应格式并清掉另一种方式的残留，最后用 whoami 校验。
  */
 export async function writeKiroCliAuth(input: WriteKiroCliInput): Promise<KiroCliWriteResult> {
-  const support = kiroCliSupport()
-  if (!support.supported) throw new Error(support.reason || 'kiro-cli 不支持当前平台')
-  if (!support.dbExists) {
-    throw new Error('未找到 kiro-cli 数据库，请先安装并至少运行 / 登录过一次 kiro-cli')
-  }
-
-  const dbPath = support.dbPath
+  const dbPath = assertKiroCliDb()
   const dataDir = path.dirname(dbPath)
   const region = input.region || DEFAULT_REGION
   const notes: string[] = []
@@ -432,7 +472,7 @@ export async function writeKiroCliAuth(input: WriteKiroCliInput): Promise<KiroCl
 }
 
 /** 读取 kiro-cli 当前登录账号（whoami），用于界面展示；失败返回 null */
-export async function readKiroCliWhoami(): Promise<{
+async function readKiroCliWhoami(): Promise<{
   accountType?: string
   email?: string
 } | null> {
@@ -466,9 +506,9 @@ async function readKiroCliRefreshToken(): Promise<string | undefined> {
   if (process.platform === 'darwin') {
     candidates.push(await keychainRead(SOCIAL_TOKEN_KEY), await keychainRead(ODIC_TOKEN_KEY))
   }
-  const support = kiroCliSupport()
-  if (support.dbExists) {
-    const fromDb = withDb(support.dbPath, (db) => {
+  const { dbPath, dbExists } = kiroCliDb()
+  if (dbExists) {
+    const fromDb = withDb(dbPath, (db) => {
       const out: (string | undefined)[] = []
       for (const key of [SOCIAL_TOKEN_KEY, ODIC_TOKEN_KEY]) {
         const row = db.prepare('SELECT value FROM auth_kv WHERE key = ?').get(key) as
@@ -506,14 +546,14 @@ export async function readKiroCliActive(): Promise<{
  * auth_kv 镜像与登录相关 state。已运行的 kiro-cli / KiroCrew 下次读取时即为未登录。
  */
 export async function logoutKiroCli(): Promise<{ cleared: boolean; keychainCleared: boolean }> {
-  const support = kiroCliSupport()
+  const { dbPath, dbExists } = kiroCliDb()
   let keychainCleared = false
   if (process.platform === 'darwin') {
     for (const key of TOKEN_KEYS) await keychainDelete(key)
     keychainCleared = true
   }
-  if (support.dbExists) {
-    withDb(support.dbPath, (db) => {
+  if (dbExists) {
+    withDb(dbPath, (db) => {
       for (const key of TOKEN_KEYS) deleteAuthKv(db, key)
       for (const key of [STATE_IDC_START_URL, STATE_IDC_REGION, STATE_PROFILE]) deleteState(db, key)
     })

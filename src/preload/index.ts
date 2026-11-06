@@ -74,7 +74,6 @@ const api = {
   setKeyRegion: (id: string, region: string) => invoke('keys:set-region', id, region),
   deleteKey: (id: string) => invoke('keys:delete', id),
   selectKey: (id: string | null) => invoke('keys:select', id),
-  testKey: (id: string) => invoke('keys:test', id),
   listKeyModels: (id: string) => invoke('keys:models', id),
   listKeyModelDetails: (id: string) => invoke('keys:model-details', id),
   syncKey: (id: string) => invoke('keys:sync', id),
@@ -112,8 +111,9 @@ const api = {
   logoutKiro: () => invoke('kiro:logout'),
 
   // 命令行版 Kiro CLI（KiroCrew 读同一套凭证）
-  getKiroCliSupport: () => invoke('kiro:cli-support'),
   getKiroCliActive: () => invoke('kiro:cli-active'),
+  getKiroToolsInstall: (fresh?: boolean) => invoke('kiro:tools-install', fresh === true),
+  revealKiroCliFile: (target: string) => invoke('kiro:cli-reveal', target),
   loginKiroCli: (input: unknown) => invoke('kiro:cli-login', input),
   logoutKiroCli: () => invoke('kiro:cli-logout'),
 

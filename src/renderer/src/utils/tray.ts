@@ -6,6 +6,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { IDP_META, STATUS_META, formatCredits, subscriptionLabel, tokenLife } from '@/utils/format'
 import { displayEmail } from '@/utils/display'
 import { notifyResult } from '@/utils/ui'
+import { isTrashed } from '@shared/itemGroups'
 import type { Account, TrayAction, TraySnapshot } from '@shared/types'
 
 /** 托盘菜单里的 Token 剩余时间文案 */
@@ -20,16 +21,24 @@ export function useTrayBridge(): void {
   const accountsStore = useAccountsStore()
   const settingsStore = useSettingsStore()
 
-  /** 只有「正常」账号才允许切换 */
-  const usableAccounts = computed(() =>
-    accountsStore.accounts.filter((a) => a.status === 'active')
-  )
+  /** 只有「正常」且不在回收站里的账号才允许切换 */
+  const isUsable = (a: Account): boolean => a.status === 'active' && !isTrashed(a)
+
+  /** 可切换的账号数（正常且不是当前账号）：只计数，不为每次账号通知分配中间数组 */
+  const switchableCount = computed(() => {
+    let count = 0
+    for (const a of accountsStore.accounts) {
+      if (isUsable(a) && !a.isActive) count++
+    }
+    return count
+  })
 
   const snapshot = computed<TraySnapshot>(() => {
     const active = accountsStore.activeAccount
     const base: TraySnapshot = {
-      total: accountsStore.accounts.length,
-      switchable: usableAccounts.value.filter((a) => !a.isActive).length
+      // 与侧栏一致，只数正常列表里的账号，不含回收站
+      total: accountsStore.liveCount,
+      switchable: switchableCount.value
     }
     if (!active) return base
 
@@ -72,9 +81,10 @@ export function useTrayBridge(): void {
     notifyResult(res, { success: '当前账号信息已刷新', failPrefix: '刷新失败' })
   }
 
-  /** 在正常账号中轮换到下一个 */
+  /** 在正常账号中轮换到下一个（回收站里的不参与） */
   async function switchNext(): Promise<void> {
-    const usable = usableAccounts.value
+    // 只在真的要切换时才生成列表
+    const usable = accountsStore.accounts.filter(isUsable)
     if (usable.length === 0) return void message.info('没有可切换的正常账号')
     const index = usable.findIndex((a) => a.isActive)
     const next = usable[(index + 1) % usable.length]

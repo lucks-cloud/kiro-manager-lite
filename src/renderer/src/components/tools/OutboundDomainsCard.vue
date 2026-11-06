@@ -98,18 +98,18 @@ onUnmounted(() => {
 
 <template>
   <a-card class="tool-card" :bordered="false">
-    <div class="tool-row">
-      <div class="tool-main">
-        <div class="tool-title">
+    <div class="kal-tool-row">
+      <div class="kal-tool-main">
+        <div class="kal-tool-title">
           <GlobalOutlined />
           <strong>出站域名统计</strong>
           <a-tag color="blue">{{ totalHosts }} 个域名</a-tag>
         </div>
-        <div class="tool-desc">
+        <div class="kal-tool-desc">
           记录本应用对外访问过的所有域名，按完整主机名去重。涵盖账号 / 密钥的令牌刷新、积分与用量查询、
           在线登录、对话转发，以及内置浏览器打开的页面（如 Stripe 账单、Kiro 官网后台）。
         </div>
-        <div class="tool-hint">
+        <div class="kal-tool-hint">
           只要本应用对外发起请求、或内置浏览器打开某个页面，其目标域名就会登记在这里（含二 / 三 / 四级子域各自去重）。
           只记录域名、地址与时间，不记录请求内容与查询参数；统计保存在内存中，重启应用后清零。
         </div>
@@ -183,11 +183,7 @@ onUnmounted(() => {
 
 <style scoped>
 .tool-card { border: 1px solid var(--kal-border); box-shadow: none; }
-.tool-row { display: flex; align-items: flex-start; gap: 16px; }
-.tool-main { flex: 1 1 auto; min-width: 0; }
-.tool-title { display: flex; align-items: center; gap: 9px; font-size: 16px; }
-.tool-desc { margin-top: 8px; font-size: 13px; }
-.tool-hint { margin-top: 6px; color: var(--kal-muted); font-size: 12px; line-height: 1.7; }
+/* 标题区（.kal-tool-row / -main / -title / -desc / -hint）与其它工具卡共用，在 assets/styles.css */
 
 .summary { margin-top: 14px; font-size: 12px; }
 

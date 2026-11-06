@@ -8,16 +8,20 @@ import {
   type KeyGatewayStatus,
   type KeyGatewayUsageStats,
   type KeyModelInfo,
-  type KeyTestResult
+  type IpcResult
 } from '@shared/types'
 import { shouldSkipKeyUsageRefresh } from '@shared/refreshPolicy'
 import { isTrashed, sameGroupIds, validGroupIdsOf } from '@shared/itemGroups'
 import {
+  EMPTY_GROUP_NAME,
   countByGroup,
+  findGroupByName,
+  renameGroupError,
   reorderGroups as reorderGroupList,
   sortGroups
 } from '@/utils/groups'
 import { toPlain } from '@/utils/ipc'
+import { sameData, shareUnchangedById } from '@/utils/sameData'
 import { useSettingsStore } from '@/stores/settings'
 
 /** 网关统计的轮询间隔：RPM 是一分钟窗口，3 秒一刷足够跟手又不浪费 */
@@ -62,19 +66,23 @@ export const useKeysStore = defineStore('keys', () => {
   })
   /** 正常列表里的 Key（不含回收站） */
   const liveKeys = computed(() => data.value.keys.filter((entry) => !isTrashed(entry)))
-  /** 回收站里的 Key 数，显示在回收站按钮的角标上 */
-  const trashedCount = computed(() => data.value.keys.length - liveKeys.value.length)
+  /** 回收站里的 Key 数，显示在回收站按钮的角标上；只计数，不分配数组 */
+  const trashedCount = computed(() => {
+    let trashed = 0
+    for (const entry of data.value.keys) {
+      if (isTrashed(entry)) trashed++
+    }
+    return trashed
+  })
   /** 侧栏等处展示的数量只算正常列表 */
-  const count = computed(() => liveKeys.value.length)
+  const count = computed(() => data.value.keys.length - trashedCount.value)
 
   /** 放入 / 移出回收站；接管中使用的当前 Key 由主进程拒绝 */
   async function setTrashed(ids: string[], trashed: boolean): Promise<string | null> {
     const target = [...new Set(ids.filter(Boolean))]
     if (!target.length) return null
     const res = await window.api.setKeysTrashed(target, trashed)
-    if (!res.success || !res.data) return res.error || (trashed ? '放入回收站失败' : '移出回收站失败')
-    replace(res.data)
-    return null
+    return applyData(res, trashed ? '放入回收站失败' : '移出回收站失败')
   }
 
   let statusRevision = 0
@@ -83,9 +91,23 @@ export const useKeysStore = defineStore('keys', () => {
     data.value = {
       ...next,
       activeKeyId: next.enabled ? (next.activeKeyId ?? null) : null,
-      keys: [...next.keys],
+      /*
+       * 结构共享：主进程每次都返回整表新对象，内容没变的 Key 沿用旧对象。
+       * 卡片按对象身份判断 props、搜索文本按对象身份缓存，批量刷新（syncMany 每个 Key 回来都整表替换一次）时
+       * 只有真正变了的那几张卡会重新渲染。keys 数组本身照旧每次换新，依赖它判断「有同步结果写回」的地方不受影响。
+       */
+      keys: shareUnchangedById(data.value.keys, next.keys),
       ports: { ...next.ports }
     }
+  }
+
+  /**
+   * 主进程返回整表的接口统一收尾：失败返回错误文案（接口没给时用 fallback），成功替换本地数据并返回 null。
+   */
+  function applyData(res: IpcResult<KeyGatewayData>, fallback: string): string | null {
+    if (!res.success || !res.data) return res.error || fallback
+    replace(res.data)
+    return null
   }
 
   /**
@@ -131,10 +153,7 @@ export const useKeysStore = defineStore('keys', () => {
   }
 
   async function add(key: string, note?: string, region?: string): Promise<string | null> {
-    const res = await window.api.addKey(key, note, region)
-    if (!res.success || !res.data) return res.error || '添加失败'
-    replace(res.data)
-    return null
+    return applyData(await window.api.addKey(key, note, region), '添加失败')
   }
 
   async function importText(
@@ -153,10 +172,7 @@ export const useKeysStore = defineStore('keys', () => {
   }
 
   async function update(id: string, note: string): Promise<string | null> {
-    const res = await window.api.updateKey(id, note)
-    if (!res.success || !res.data) return res.error || '保存失败'
-    replace(res.data)
-    return null
+    return applyData(await window.api.updateKey(id, note), '保存失败')
   }
 
   /**
@@ -175,9 +191,8 @@ export const useKeysStore = defineStore('keys', () => {
   async function remove(id: string): Promise<string | null> {
     // 删除前记下完整 Key 写进日志，删完就查不到了；日志不做隐私打码
     const key = data.value.keys.find((entry) => entry.id === id)?.key
-    const res = await window.api.deleteKey(id)
-    if (!res.success || !res.data) return res.error || '删除失败'
-    replace(res.data)
+    const error = applyData(await window.api.deleteKey(id), '删除失败')
+    if (error) return error
     console.warn(`[Key] 已删除 1 个 API Key（${key ?? id}）`)
     const nextStats = { ...gatewayStats.value }
     delete nextStats[id]
@@ -201,10 +216,8 @@ export const useKeysStore = defineStore('keys', () => {
     const changed = data.value.keys.filter(
       (entry) => target.has(entry.id) && entry.note !== value
     ).length
-    const res = await window.api.setKeysNote([...target], note)
-    if (!res.success || !res.data) return { error: res.error || '设置备注失败' }
-    replace(res.data)
-    return { changed }
+    const error = applyData(await window.api.setKeysNote([...target], note), '设置备注失败')
+    return error ? { error } : { changed }
   }
 
   // ============ 分组 ============
@@ -215,25 +228,29 @@ export const useKeysStore = defineStore('keys', () => {
    * Key 上还留着 id」的中间态（主进程会顺手清掉悬空 id）。
    */
 
-  /** 按 order 排好的分组列表 */
-  const groups = computed(() => sortGroups(data.value.groups))
+  /**
+   * 按 order 排好的分组列表。
+   * 每次整表替换都会排出一个新数组，内容没变时沿用上一次的结果，
+   * 下游的 groupMap、分组面板与按分组筛选就不会跟着白白重算。
+   */
+  const groups = computed<AccountGroup[]>((prev) => {
+    const next = sortGroups(data.value.groups)
+    return prev && sameData(prev, next) ? prev : next
+  })
   /** id -> 分组，供卡片取名与筛选判断已删除分组 */
   const groupMap = computed(() => new Map(groups.value.map((group) => [group.id, group])))
   /** 各分组下的 Key 数，外加「未分组」一项 */
   const groupCounts = computed(() => countByGroup(data.value.keys, groups.value))
 
   async function commitGroups(next: AccountGroup[]): Promise<string | null> {
-    const res = await window.api.setKeyGroups(toPlain(next))
-    if (!res.success || !res.data) return res.error || '保存分组失败'
-    replace(res.data)
-    return null
+    return applyData(await window.api.setKeyGroups(toPlain(next)), '保存分组失败')
   }
 
   /** 新建分组；同名直接复用已有的那个，避免建出一堆重名分组 */
   async function addGroup(name: string): Promise<{ error?: string; group?: AccountGroup }> {
     const label = name.trim()
-    if (!label) return { error: '分组名称不能为空' }
-    const existing = groups.value.find((group) => group.name === label)
+    if (!label) return { error: EMPTY_GROUP_NAME }
+    const existing = findGroupByName(groups.value, label)
     if (existing) return { group: existing }
 
     const group: AccountGroup = { id: crypto.randomUUID(), name: label, order: groups.value.length }
@@ -243,9 +260,9 @@ export const useKeysStore = defineStore('keys', () => {
 
   async function renameGroup(id: string, name: string): Promise<string | null> {
     const label = name.trim()
-    if (!label) return '分组名称不能为空'
-    // 和别的分组重名时拒绝，否则筛选里会出现两个同名分组
-    if (groups.value.some((g) => g.id !== id && g.name === label)) return `分组「${label}」已存在`
+    // 空名称、和别的分组重名时拒绝，否则筛选里会出现两个同名分组
+    const error = renameGroupError(groups.value, id, label)
+    if (error) return error
     return commitGroups(groups.value.map((g) => (g.id === id ? { ...g, name: label } : g)))
   }
 
@@ -271,10 +288,8 @@ export const useKeysStore = defineStore('keys', () => {
     const changed = data.value.keys.filter(
       (entry) => target.has(entry.id) && !sameGroupIds(validGroupIdsOf(entry, exists), wanted)
     ).length
-    const res = await window.api.setKeysGroup([...target], toPlain(wanted))
-    if (!res.success || !res.data) return { error: res.error || '设置分组失败' }
-    replace(res.data)
-    return { changed }
+    const error = applyData(await window.api.setKeysGroup([...target], toPlain(wanted)), '设置分组失败')
+    return error ? { error } : { changed }
   }
 
   async function select(id: string): Promise<string | null> {
@@ -288,11 +303,6 @@ export const useKeysStore = defineStore('keys', () => {
   async function listModels(id: string): Promise<{ error?: string; data?: KeyModelInfo[] }> {
     const res = await window.api.listKeyModels(id)
     return res.success && res.data ? { data: res.data } : { error: res.error || '模型列表获取失败' }
-  }
-
-  async function test(id: string): Promise<{ error?: string; data?: KeyTestResult }> {
-    const res = await window.api.testKey(id)
-    return res.success && res.data ? { data: res.data } : { error: res.error || '测试失败' }
   }
 
   async function sync(id: string): Promise<string | null> {
@@ -370,7 +380,6 @@ export const useKeysStore = defineStore('keys', () => {
     }
   }
 
-  /** 查询 Kiro IDE 是否已被其它本地网关接管；无冲突返回 null。 */
   /**
    * 网关调用统计。仅在网关运行期间有意义，关闭后主进程会清空。
    * 用轮询而非推送：这些数字变化很快，界面上没必要逐条实时刷。
@@ -388,6 +397,18 @@ export const useKeysStore = defineStore('keys', () => {
   }
 
   /**
+   * 每份统计对象序列化后的文本，按对象身份记：统计对象拿到后从不修改，旧值的文本算一次就够了，
+   * 每轮轮询只需序列化新拿到的那份。按身份而不是按 id 记，整表被重置、删除时也不会对错号。
+   */
+  const statsTextCache = new WeakMap<KeyGatewayUsageStats, string>()
+
+  function statsTextOf(stats: KeyGatewayUsageStats): string {
+    let text = statsTextCache.get(stats)
+    if (text === undefined) statsTextCache.set(stats, (text = JSON.stringify(stats)))
+    return text
+  }
+
+  /**
    * 整表有变化时，逐个 Key 比较：内容没变的沿用旧对象。
    * 卡片按对象身份判断 props 是否变化，这样一轮轮询里只有真正有请求的那几张卡会重新渲染。
    */
@@ -398,7 +419,7 @@ export const useKeysStore = defineStore('keys', () => {
     const merged: Record<string, KeyGatewayUsageStats> = {}
     for (const [id, stats] of Object.entries(next)) {
       const old = prev[id]
-      merged[id] = old && JSON.stringify(old) === JSON.stringify(stats) ? old : stats
+      merged[id] = old && statsTextOf(old) === statsTextOf(stats) ? old : stats
     }
     return merged
   }
@@ -422,6 +443,7 @@ export const useKeysStore = defineStore('keys', () => {
     statsTimer = null
   }
 
+  /** 查询 Kiro IDE 是否已被其它本地网关接管；无冲突返回 null。 */
   async function inspectConflict(): Promise<{
     error?: string
     conflict?: KeyGatewayConflict | null
@@ -591,7 +613,6 @@ export const useKeysStore = defineStore('keys', () => {
     setGroupForKeys,
     select,
     listModels,
-    test,
     sync,
     syncAll,
     syncMany,

@@ -229,7 +229,7 @@ function close(): void {
           </template>
           <template v-else>
             <CloseCircleFilled class="fail-icon" />
-            <span class="fail-text" :title="row.detail">{{ row.detail }}</span>
+            <span class="kal-batch-fail-text" :title="row.detail">{{ row.detail }}</span>
           </template>
         </div>
       </div>
@@ -281,8 +281,6 @@ function close(): void {
 .ok-icon { color: #52c41a; }
 .ok-text { color: #52c41a; }
 .fail-icon { color: #ff4d4f; flex: 0 0 auto; }
-/* 失败原因保留接口原文，过长时截断，悬停用原生 title 看全 */
-.fail-text { color: #ff4d4f; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
 .muted { color: var(--kal-muted); }

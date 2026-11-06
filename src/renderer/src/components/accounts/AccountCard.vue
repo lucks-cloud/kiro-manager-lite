@@ -94,9 +94,6 @@ const settingsStore = useSettingsStore()
 
 const precision = computed(() => settingsStore.settings.usagePrecision)
 
-/** kiro-cli 不可写时的原因，空串表示可写 */
-const cliReason = computed(() => settingsStore.kiroCliReason)
-
 const privacy = computed(() => settingsStore.settings.privacyMode)
 
 const email = computed(() => displayEmail(props.account.email, privacy.value))
@@ -125,6 +122,9 @@ const percentText = computed(() => {
 
 /** 用量与积分的更新时间：当天显示时分秒，跨天补上年月日 */
 const usageUpdatedAt = computed(() => formatCheckedAt(props.account.lastCheckedAt, now.value))
+
+/** 悬停提示里的完整更新时间，用量块、标题行与底部那行共用 */
+const updatedTitle = computed(() => `用量与积分更新于 ${formatDateTime(props.account.lastCheckedAt)}`)
 
 /**
  * 分段用量条：固定竖条数量，按使用率点亮相应根数。
@@ -216,8 +216,6 @@ interface MenuEntry {
   key: ActionKey
   label: string
   icon: Component
-  /** 置灰原因，有值即不可点（如本机未安装 kiro-cli） */
-  disabledReason?: string
   /** 危险项（退出登录）以红色呈现 */
   danger?: boolean
 }
@@ -249,21 +247,12 @@ const loginMenu = computed<MenuEntry[]>(() => {
       : { key: 'switch', label: '登录 Kiro IDE', icon: LoginOutlined },
     props.account.isActiveCli
       ? { key: 'logout-cli', label: '退出 Kiro CLI（含 KiroCrew）', icon: CodeOutlined, danger: true }
-      : {
-          key: 'cli-login',
-          label: '登录 Kiro CLI（含 KiroCrew）',
-          icon: CodeOutlined,
-          disabledReason: cliReason.value
-        }
+      : // 不按 kiro-cli 的安装情况置灰：点击后先在弹窗里做安装检测，没装时给出安装指引
+        { key: 'cli-login', label: '登录 Kiro CLI（含 KiroCrew）', icon: CodeOutlined }
   ]
   // 只有两端都未登录时才提供「全部登录」；任一端已登录就不再出现
   if (!inUse.value) {
-    entries.push({
-      key: 'login-all',
-      label: '全部登录',
-      icon: ThunderboltOutlined,
-      disabledReason: cliReason.value
-    })
+    entries.push({ key: 'login-all', label: '全部登录', icon: ThunderboltOutlined })
   }
   return entries
 })
@@ -407,13 +396,13 @@ function onCardClick(): void {
     <!-- 更新时间在列表模式里没地方摆，挂到整块的 title 上，鼠标停一下就能看到 -->
     <div
       class="usage-block"
-      :title="`点击查看积分变化 · 用量与积分更新于 ${formatDateTime(props.account.lastCheckedAt)}`"
+      :title="`点击查看积分变化 · ${updatedTitle}`"
       @click.stop="trigger('usage')"
     >
       <div class="usage-head">
         <span class="usage-title">
           <span class="usage-label muted">使用量</span>
-          <span class="usage-updated muted" :title="`用量与积分更新于 ${formatDateTime(props.account.lastCheckedAt)}`">
+          <span class="usage-updated muted" :title="updatedTitle">
             {{ usageUpdatedAt }}
           </span>
         </span>
@@ -447,7 +436,7 @@ function onCardClick(): void {
         <span
           v-else
           class="muted"
-          :title="`用量与积分更新于 ${formatDateTime(props.account.lastCheckedAt)}`"
+          :title="updatedTitle"
         >
           <ClockCircleOutlined />
           {{ usageUpdatedAt }}
@@ -508,8 +497,6 @@ function onCardClick(): void {
                   v-for="entry in item.menu"
                   :key="entry.key"
                   :danger="entry.danger"
-                  :disabled="!!entry.disabledReason"
-                  :title="entry.disabledReason || undefined"
                   @click="trigger(entry.key)"
                 >
                   <component :is="entry.icon" />
@@ -1008,12 +995,25 @@ function onCardClick(): void {
  * 于是紧跟其后的功能区被推到了第三行，第一行那格就空成一块底色。
  * 写死落位后只有报错行是自动摆放，落在最后一行，谁都不受它影响。
  */
+/* 第一块：勾选框 + 邮箱 / 昵称 / 备注 + 使用中 / 状态标签 */
 .account-card.mode-list .card-head {
   grid-area: 1 / 1 / 2 / 2;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
 }
 
+/*
+ * 标签段：一行放不下就截断，不换行撑高整条。
+ * 左右各留一点边距，把「身份 + 状态」和「订阅 / 登录方式 / 分组」两组分开，
+ * 否则状态标签和订阅标签紧挨着，看起来像同一组。
+ */
 .account-card.mode-list .tag-row {
   grid-area: 1 / 2 / 2 / 3;
+  flex-wrap: nowrap;
+  min-width: 0;
+  margin-left: 6px;
+  overflow: hidden;
 }
 
 .account-card.mode-list .usage-block {
@@ -1048,7 +1048,6 @@ function onCardClick(): void {
 
   .account-card.mode-list .tag-row {
     grid-area: 2 / 1 / 3 / -1;
-    margin-left: 0;
   }
 }
 
@@ -1097,30 +1096,9 @@ function onCardClick(): void {
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
 }
 
-/* 第一块：勾选框 + 邮箱 / 昵称 / 备注 + 使用中 / 状态标签 */
-.account-card.mode-list .card-head {
-  min-width: 0;
-  align-items: center;
-  gap: 8px;
-}
-
-/*
- * 标签段：一行放不下就截断，不换行撑高整条。
- * 左右各留一点边距，把「身份 + 状态」和「订阅 / 登录方式 / 分组」两组分开，
- * 否则状态标签和订阅标签紧挨着，看起来像同一组。
- */
-.account-card.mode-list .tag-row {
-  flex-wrap: nowrap;
-  min-width: 0;
-  margin-left: 6px;
-  overflow: hidden;
-}
-
 /* 用量段：宽度由所在列决定，内部排布与紧凑模式共用 */
 .account-card.mode-list .usage-block {
   min-width: 0;
-  flex-direction: row;
-  align-items: center;
   gap: 10px;
   padding: 6px 10px;
   border-radius: 10px;

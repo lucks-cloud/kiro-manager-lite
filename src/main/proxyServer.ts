@@ -47,7 +47,9 @@ import {
   ensureToken as ensureProxyToken,
   fetchProxyModels,
   poolMembers,
-  poolOptionsFrom
+  poolOptionsFrom,
+  type CallOptions,
+  type UpstreamCallbacks
 } from './proxyUpstream'
 import { formatSearchResults, kiroWebSearch, type WebSearchResult } from './kiroWebSearch'
 import { randomUUID } from 'crypto'
@@ -279,10 +281,6 @@ export function resetProxyStats(): void {
 //
 // 存在 proxyUsageStore：内存累加，和按 Key 的用量合并成一次落盘。
 
-function usageList(): ProxyAccountUsage[] {
-  return accountUsage()
-}
-
 /**
  * 按账号累计。成功和失败都要记：失败次数是判断「哪个号有问题」的主要依据。
  */
@@ -290,7 +288,7 @@ function recordUsage(
   account: Pick<Account, 'id' | 'email'>,
   delta: { credits: number; failed: boolean; inputTokens: number; outputTokens: number; durationMs: number }
 ): void {
-  const usage = usageList()
+  const usage = accountUsage()
   const index = usage.findIndex((item) => item.accountId === account.id)
   const base: ProxyAccountUsage =
     index >= 0
@@ -313,7 +311,7 @@ function recordUsage(
 }
 
 export function proxyUsage(): ProxyAccountUsage[] {
-  return usageList()
+  return accountUsage()
 }
 
 export function clearProxyUsage(): void {
@@ -739,7 +737,7 @@ function recentRequests(n: number): Record<string, unknown>[] {
  */
 function adminRoute(path: string, url: URL): unknown {
   if (path === '/admin/stats') {
-    const all = usageList()
+    const all = accountUsage()
     /*
      * accountStats：按账号 id 的字典。
      * 数据是持久化的累计值，不只算本次启动以来，重启后不会清零。
@@ -783,7 +781,7 @@ function adminRoute(path: string, url: URL): unknown {
 
   if (path === '/admin/accounts') {
     const pool = poolIds()
-    const usage = new Map(usageList().map((item) => [item.accountId, item]))
+    const usage = new Map(accountUsage().map((item) => [item.accountId, item]))
     const accounts = viewAccountData().accounts.map((account) => {
       const used = usage.get(account.id)
       return {
@@ -1168,25 +1166,76 @@ async function handleChat(ctx: HandleContext): Promise<void> {
       ? setInterval(() => writer.heartbeat(idleMs), Math.max(1_000, Math.floor(idleMs / 3)))
       : null
 
+  /** 首轮与搜索后续轮共用的上游回调：都只引用本次请求内不变的对象 */
+  const callbacks: UpstreamCallbacks = {
+    onText: (delta) => {
+      onFirstToken()
+      collected.text += delta
+      events.text++
+      markOutput(entry, 'text')
+      ensureStreamStarted()
+      writer?.text(delta)
+      touchLog(entry)
+    },
+    onThinking: (delta) => {
+      onFirstToken()
+      collected.thinking += delta
+      events.thinking++
+      markOutput(entry, 'thinking')
+      ensureStreamStarted()
+      // 客户端没要求推理时不转发思考内容，免得混进正文
+      if (request.thinking) writer?.thinking(delta)
+      touchLog(entry)
+    },
+    onToolCall: (call: StreamToolCall) => {
+      onFirstToken()
+      /*
+       * 搜索工具不能转发给客户端：Codex 把 web_search 当服务端工具，
+       * 收到一个它无法执行的调用会直接卡住。先攒起来，本轮结束后我们自己搜。
+       */
+      if (isManagedSearch(call.name)) {
+        events.searchCalls++
+        searchCalls.push(call)
+        touchLog(entry)
+        return
+      }
+      collected.toolCalls.push(call)
+      events.toolCalls++
+      markOutput(entry, 'toolUse')
+      ensureStreamStarted()
+      writer?.toolCall(call)
+      touchLog(entry)
+    }
+  }
+
+  /** 每轮的公共参数；配置在调用时现读，与逐次手写一致 */
+  const baseOptions = (
+    roundPayload: Record<string, unknown>,
+    roundToolNameMap: Map<string, string>
+  ): CallOptions => ({
+    payload: roundPayload,
+    modelId: mapped.modelId,
+    toolNameMap: roundToolNameMap,
+    endpoint: config.endpoint,
+    pool: poolOptionsFrom(config),
+    retryEnabled: config.retryEnabled,
+    maxRetries: config.maxRetries,
+    retryDelayMs: config.retryDelayMs,
+    signal: ctx.signal,
+    // 已经往客户端写过内容就不能重发整轮，会出现两段拼接的回复
+    canRetry: () => !writer?.flushed,
+    onAttempt: (account, attempt) => {
+      entry.accountId = account.id
+      entry.accountEmail = account.email
+      entry.attempts = attempt
+      touchLog(entry, true)
+    }
+  })
+
   try {
     let result = await callUpstream(
       {
-        payload,
-        modelId: mapped.modelId,
-        toolNameMap,
-        endpoint: config.endpoint,
-        pool: poolOptionsFrom(config),
-        retryEnabled: config.retryEnabled,
-        maxRetries: config.maxRetries,
-        retryDelayMs: config.retryDelayMs,
-        signal: ctx.signal,
-        canRetry: () => !writer?.flushed,
-        onAttempt: (account, attempt) => {
-          entry.accountId = account.id
-          entry.accountEmail = account.email
-          entry.attempts = attempt
-          touchLog(entry, true)
-        },
+        ...baseOptions(payload, toolNameMap),
         onRequestBytes: (bytes) => {
           entry.requestBytes = bytes
         },
@@ -1201,46 +1250,7 @@ async function handleChat(ctx: HandleContext): Promise<void> {
           else entry.upstreamHeadersMs = ms
         }
       },
-      {
-        onText: (delta) => {
-          onFirstToken()
-          collected.text += delta
-          events.text++
-          markOutput(entry, 'text')
-          ensureStreamStarted()
-          writer?.text(delta)
-          touchLog(entry)
-        },
-        onThinking: (delta) => {
-          onFirstToken()
-          collected.thinking += delta
-          events.thinking++
-          markOutput(entry, 'thinking')
-          ensureStreamStarted()
-          // 客户端没要求推理时不转发思考内容，免得混进正文
-          if (request.thinking) writer?.thinking(delta)
-          touchLog(entry)
-        },
-        onToolCall: (call: StreamToolCall) => {
-          onFirstToken()
-          /*
-           * 搜索工具不能转发给客户端：Codex 把 web_search 当服务端工具，
-           * 收到一个它无法执行的调用会直接卡住。先攒起来，本轮结束后我们自己搜。
-           */
-          if (isManagedSearch(call.name)) {
-            events.searchCalls++
-            searchCalls.push(call)
-            touchLog(entry)
-            return
-          }
-          collected.toolCalls.push(call)
-          events.toolCalls++
-          markOutput(entry, 'toolUse')
-          ensureStreamStarted()
-          writer?.toolCall(call)
-          touchLog(entry)
-        }
-      }
+      callbacks
     )
 
     /*
@@ -1322,62 +1332,8 @@ async function handleChat(ctx: HandleContext): Promise<void> {
       request.messages.push({ role: 'user', text: '', images: [], toolUses: [], toolResults })
 
       const next = buildKiroPayload(request, mapped.modelId, undefined, requestFields, payloadLimit)
-      result = await callUpstream(
-        {
-          payload: next.payload,
-          modelId: mapped.modelId,
-          toolNameMap: next.toolNameMap,
-          endpoint: config.endpoint,
-          pool: poolOptionsFrom(config),
-          retryEnabled: config.retryEnabled,
-          maxRetries: config.maxRetries,
-          retryDelayMs: config.retryDelayMs,
-          signal: ctx.signal,
-          // 已经往客户端写过内容就不能重发整轮，会出现两段拼接的回复
-          canRetry: () => !writer?.flushed,
-          onAttempt: (account, attempt) => {
-            entry.accountId = account.id
-            entry.accountEmail = account.email
-            entry.attempts = attempt
-            touchLog(entry, true)
-          }
-        },
-        {
-          onText: (delta) => {
-            onFirstToken()
-            collected.text += delta
-            events.text++
-            markOutput(entry, 'text')
-            ensureStreamStarted()
-            writer?.text(delta)
-            touchLog(entry)
-          },
-          onThinking: (delta) => {
-            onFirstToken()
-            collected.thinking += delta
-            events.thinking++
-            markOutput(entry, 'thinking')
-            ensureStreamStarted()
-            if (request.thinking) writer?.thinking(delta)
-            touchLog(entry)
-          },
-          onToolCall: (call: StreamToolCall) => {
-            onFirstToken()
-            if (isManagedSearch(call.name)) {
-              events.searchCalls++
-              searchCalls.push(call)
-              touchLog(entry)
-              return
-            }
-            collected.toolCalls.push(call)
-            events.toolCalls++
-            markOutput(entry, 'toolUse')
-            ensureStreamStarted()
-            writer?.toolCall(call)
-            touchLog(entry)
-          }
-        }
-      )
+      // 后续轮不传 onRequestBytes / onEndpoint / onTiming：日志里的请求体大小、端点与耗时只记首轮
+      result = await callUpstream(baseOptions(next.payload, next.toolNameMap), callbacks)
     }
 
     if (searchesDone) {
@@ -1745,7 +1701,7 @@ const listener: http.RequestListener = (req, res) => {
 const TRY_BODY_LIMIT = 1_000_000
 const TRY_TIMEOUT_MS = 120_000
 
-export interface ProxyTryResult {
+interface ProxyTryResult {
   status: number
   statusText: string
   durationMs: number

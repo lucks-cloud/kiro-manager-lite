@@ -17,7 +17,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useAccountsStore } from '@/stores/accounts'
 import { useKeysStore } from '@/stores/keys'
 
-export interface NavItem {
+interface NavItem {
   key: string
   label: string
   icon: Component
@@ -43,7 +43,7 @@ export function useAppNav() {
 
   const items = computed<NavItem[]>(() => {
     // 侧栏只数正常列表里的账号，不随「正在看回收站」变化
-    const accountCount = accountsStore.liveAccounts.length
+    const accountCount = accountsStore.liveCount
     return [
       { key: 'home', label: '主页', icon: HomeOutlined },
       {

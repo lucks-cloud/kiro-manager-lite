@@ -167,12 +167,18 @@ export function createUsageCollector(
         buffer = rest
         if (!frames.length) return
         frameCount += frames.length
+        const metering: EventFrame[] = []
+        for (const frame of frames) {
+          const type = frame.headers[':event-type']
+          if (type) seen.add(type)
+          if (type === 'meteringEvent') metering.push(frame)
+        }
+        // 正文增量等帧不改累计值，不必读改写：否则流式期间每个 chunk 都会把统计标脏、触发落盘
+        if (!metering.length) return
         // 一次 feed 里可能有多帧，合并成一次读改写，避免逐帧落盘
         mutate(keyId, (s) => {
           const before = s.metered
-          for (const frame of frames) {
-            const type = frame.headers[':event-type']
-            if (type) seen.add(type)
+          for (const frame of metering) {
             if (applyFrame(s, frame)) hit = true
           }
           const gained = s.metered - before

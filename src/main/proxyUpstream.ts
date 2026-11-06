@@ -65,7 +65,7 @@ export interface UpstreamCallbacks {
   onToolCall: (call: StreamToolCall) => void
 }
 
-export interface UpstreamResult {
+interface UpstreamResult {
   /** 最终成功的账号或 API Key */
   account: PoolIdentity
   endpoint: string
@@ -118,14 +118,14 @@ function aborted(signal?: AbortSignal): boolean {
  * 池子里的一员：账号管理里的 OAuth 账号，或 API Key 管理里的 Kiro API Key。
  * 对外（日志、按账号用量）只看 id 与 email：API Key 没有登录邮箱时用备注或打码后的 Key 代替。
  */
-export type PoolMember =
+type PoolMember =
   | { kind: 'account'; id: string; email: string; account: Account }
   | { kind: 'apiKey'; id: string; email: string; key: KeyEntry }
 
 /** 日志与用量归属只需要这两项 */
-export type PoolIdentity = Pick<PoolMember, 'id' | 'email'>
+type PoolIdentity = Pick<PoolMember, 'id' | 'email'>
 
-export interface AccountPoolOptions {
+interface AccountPoolOptions {
   source: ProxyAccountSource
   mode: ProxyAccountMode
   /** group 策略的分组（按来源分别取账号分组或 Key 分组） */
@@ -361,6 +361,11 @@ export function cachedModelIds(): string[] {
 
 // ============ 事件流解析 ============
 
+/** 是不是普通对象（排除 null 与数组） */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
 interface PendingTool {
   toolUseId: string
   name: string
@@ -399,9 +404,7 @@ class ToolAssembler {
     if (entry.raw.trim()) {
       try {
         const parsed = JSON.parse(entry.raw)
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          input = parsed as Record<string, unknown>
-        }
+        if (isPlainObject(parsed)) input = parsed
       } catch {
         // 上游偶发给出截断的 JSON；丢掉参数也比整轮失败好，客户端会收到空参数调用
         input = {}
@@ -445,8 +448,8 @@ interface ParseOutcome {
 function findReportedModel(data: Record<string, unknown>): string | undefined {
   if (typeof data.modelId === 'string' && data.modelId) return data.modelId
   for (const value of Object.values(data)) {
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
-      const inner = (value as Record<string, unknown>).modelId
+    if (isPlainObject(value)) {
+      const inner = value.modelId
       if (typeof inner === 'string' && inner) return inner
     }
   }
@@ -457,8 +460,7 @@ async function parseStream(
   body: ReadableStream<Uint8Array>,
   modelId: string,
   toolNameMap: Map<string, string>,
-  callbacks: UpstreamCallbacks,
-  onFlush: () => void
+  callbacks: UpstreamCallbacks
 ): Promise<ParseOutcome> {
   const reader = body.getReader()
   let buffer: Buffer = Buffer.alloc(0)
@@ -474,7 +476,6 @@ async function parseStream(
     (call) => {
       toolCalls++
       sawOutput = true
-      onFlush()
       callbacks.onToolCall(repairPatchCall(call))
     }
   )
@@ -482,7 +483,9 @@ async function parseStream(
   for (;;) {
     const { done, value } = await reader.read()
     if (done) break
-    buffer = Buffer.concat([buffer, Buffer.from(value)])
+    // 零拷贝视图：fetch 每次读出的块都独占自己的 ArrayBuffer，之后不会被改写；缓冲为空时直接用它，免去两次复制
+    const chunk = Buffer.from(value.buffer, value.byteOffset, value.byteLength)
+    buffer = buffer.length ? Buffer.concat([buffer, chunk]) : chunk
     const { frames, rest } = takeFrames(buffer)
     buffer = rest
 
@@ -505,7 +508,6 @@ async function parseStream(
         case 'assistantResponseEvent':
           if (typeof data.content === 'string' && data.content) {
             sawOutput = true
-            onFlush()
             callbacks.onText(data.content)
           }
           break
@@ -513,7 +515,6 @@ async function parseStream(
           const holder = (data.reasoningContentEvent ?? data) as { text?: unknown }
           if (typeof holder.text === 'string' && holder.text) {
             sawOutput = true
-            onFlush()
             callbacks.onThinking(holder.text)
           }
           break
@@ -598,6 +599,26 @@ function withProfileArn(payload: Record<string, unknown>, arn?: string): Record<
   if (arn) next.profileArn = arn
   else delete next.profileArn
   return next
+}
+
+/**
+ * 生成「按 profileArn 序列化请求体」的函数，一次上游调用内的各账号、各候选、各次重试共用。
+ *
+ * 载荷可能有几 MB，不带 profileArn 的部分只序列化一次（首次用到时）。withProfileArn 把
+ * profileArn 追加成最后一个键，所以直接拼在结尾的 } 前面，结果与整份重新序列化逐字节相同。
+ * payload 自带 profileArn 键（位置不在末尾）、或序列化结果是空对象时，退回整份序列化。
+ */
+function profileArnBodies(payload: Record<string, unknown>): (arn?: string) => string {
+  if ('profileArn' in payload) return (arn) => JSON.stringify(withProfileArn(payload, arn))
+  let base: string | undefined
+  return (arn) => {
+    base ??= JSON.stringify(withProfileArn(payload))
+    if (!arn) return base
+    if (base === '{}' || !base.startsWith('{') || !base.endsWith('}')) {
+      return JSON.stringify(withProfileArn(payload, arn))
+    }
+    return base.slice(0, -1) + ',"profileArn":' + JSON.stringify(arn) + '}'
+  }
 }
 
 /**
@@ -715,12 +736,13 @@ type AttemptOutcome =
 async function attemptOnce(
   prepared: PreparedMember,
   options: CallOptions,
-  callbacks: UpstreamCallbacks
+  callbacks: UpstreamCallbacks,
+  bodyFor: (arn?: string) => string
 ): Promise<AttemptOutcome> {
   let lastError = new UpstreamError('没有可用端点')
   for (const arn of prepared.arnList) {
-    // 同一个 arn 换端点重试时请求体不变，序列化一次复用（载荷可能有几 MB）
-    const body = JSON.stringify(withProfileArn(options.payload, arn))
+    // 同一个 arn 换端点重试时请求体不变，取一次复用（载荷可能有几 MB）
+    const body = bodyFor(arn)
     options.onRequestBytes?.(Buffer.byteLength(body))
     for (const endpoint of prepared.endpoints) {
       if (aborted(options.signal)) throw new UpstreamError('客户端已断开', 499)
@@ -737,13 +759,7 @@ async function attemptOnce(
         }
         options.onTiming?.('headers')
         options.onEndpoint?.(new URL(endpoint.url).host)
-        const outcome = await parseStream(
-          res.body,
-          options.modelId,
-          options.toolNameMap,
-          callbacks,
-          () => undefined
-        )
+        const outcome = await parseStream(res.body, options.modelId, options.toolNameMap, callbacks)
         if (!outcome.sawOutput) {
           throw new UpstreamError('上游返回了空响应，账号可能没有该模型的权限或额度已用尽')
         }
@@ -792,6 +808,8 @@ export async function callUpstream(
   const retries: string[] = []
   let attempts = 0
   let lastError: UpstreamError = new UpstreamError('没有可用账号', 503)
+  // 请求体只序列化一次，各账号、各 profileArn 候选、各次重试共用
+  const bodyFor = profileArnBodies(options.payload)
 
   for (const [index, member] of members.slice(0, MEMBER_CAP).entries()) {
     if (aborted(options.signal)) throw new UpstreamError('客户端已断开', 499)
@@ -813,7 +831,7 @@ export async function callUpstream(
       attempts++
       options.onAttempt?.(prepared.identity, attempts)
 
-      const result = await attemptOnce(prepared, options, callbacks)
+      const result = await attemptOnce(prepared, options, callbacks, bodyFor)
       if (result.ok) {
         const { outcome } = result
         return {

@@ -42,6 +42,7 @@ import {
   type ShellApproveYamlBackup
 } from './store'
 import { log } from './logger'
+import { writeFileAtomic } from './utils'
 import {
   isKiroInstalled,
   kiroSettingsPath,
@@ -305,17 +306,9 @@ function findManagedDenies(text: string): string[] {
   return [...denied]
 }
 
-/** 原子写：临时文件 + rename，避免 Kiro 的 watcher 读到写入一半的内容 */
-async function writeAtomic(file: string, content: string): Promise<void> {
-  await fs.mkdir(path.dirname(file), { recursive: true })
-  const tmp = `${file}.kiro-manager.tmp`
-  await fs.writeFile(tmp, content, { encoding: 'utf-8', mode: 0o644 })
-  try {
-    await fs.rename(tmp, file)
-  } catch {
-    await fs.writeFile(file, content, 'utf-8')
-    await fs.unlink(tmp).catch(() => undefined)
-  }
+/** 原子写：临时文件 + rename，避免 Kiro 的 watcher 读到写入一半的内容；临时文件权限 0o644 */
+function writeAtomic(file: string, content: string): Promise<void> {
+  return writeFileAtomic(file, content, 0o644)
 }
 
 /**

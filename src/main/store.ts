@@ -39,7 +39,7 @@ export interface ShellApproveSettingsBackup {
 }
 
 /** 开启「自动同意所有 Shell 命令」前的完整配置快照 */
-export interface ShellApproveBackup {
+interface ShellApproveBackup {
   savedAt: number
   yaml?: ShellApproveYamlBackup
   settings?: ShellApproveSettingsBackup
@@ -62,7 +62,7 @@ export interface KiroCliEnvBackup {
   previousWindowsValue: string | null
 }
 
-export interface ProxyClientBackup {
+interface ProxyClientBackup {
   savedAt: number
   files: ProxyClientBackupFile[]
 }
@@ -234,7 +234,8 @@ export function resetStoreData(): void {
 
 /** 有改写前快照的桌面 agent（即当前写入过、还没还原的那些） */
 export function proxyClientBackupTargets(): string[] {
-  const all = read('proxyClientBackups') as Record<string, ProxyClientBackup> | undefined
+  // 只取键名，不必整表深拷贝
+  const all = peek('proxyClientBackups') as Readonly<Record<string, ProxyClientBackup>> | undefined
   return Object.keys(all ?? {})
 }
 
@@ -359,7 +360,12 @@ export function takeLegacyProxyUsage(): {
 } {
   const accounts = read('proxyUsage') as ProxyAccountUsage[] | undefined
   const keys = read('proxyKeyUsage') as Record<string, ProxyKeyUsage> | undefined
-  if (store.has('proxyUsage') || store.has('proxyKeyUsage')) {
+  /*
+   * 用内存快照判断有没有残留，不用 store.has：它每次都要同步读文件、pbkdf2 派生密钥、解密。
+   * 这两个键没有任何 write 路径，快照里的有无与磁盘上一致。
+   */
+  snapshot ??= store.store
+  if ('proxyUsage' in snapshot || 'proxyKeyUsage' in snapshot) {
     store.delete('proxyUsage')
     store.delete('proxyKeyUsage')
     snapshot = null
@@ -371,9 +377,10 @@ export function takeLegacyProxyUsage(): {
 }
 
 export function getProxyClientBackup(target: string): ProxyClientBackup | null {
-  const all = read('proxyClientBackups') as Record<string, ProxyClientBackup> | undefined
+  // 只深拷贝取出的这一项，调用方拿到的仍是独立对象
+  const all = peek('proxyClientBackups') as Readonly<Record<string, ProxyClientBackup>> | undefined
   const entry = all?.[target]
-  return entry && Array.isArray(entry.files) ? entry : null
+  return entry && Array.isArray(entry.files) ? structuredClone(entry) : null
 }
 
 export function getProxyClientPaths(): Record<string, string> {
@@ -383,14 +390,17 @@ export function getProxyClientPaths(): Record<string, string> {
 
 /** 传 null 表示清掉手动指定，回到自动检测 */
 export function setProxyClientPath(target: string, value: string | null): void {
-  const all = { ...getProxyClientPaths() }
+  // 浅拷贝即可：值都是字符串，write 内部还会 JSON 往返一次断开引用
+  const raw = peek('proxyClientPaths') as Readonly<Record<string, string>> | undefined
+  const all: Record<string, string> = { ...(raw && typeof raw === 'object' ? raw : {}) }
   if (value) all[target] = value
   else delete all[target]
   write('proxyClientPaths', all)
 }
 
 export function setProxyClientBackup(target: string, backup: ProxyClientBackup | null): void {
-  const all = { ...((read('proxyClientBackups') as Record<string, ProxyClientBackup>) ?? {}) }
+  // 浅拷贝后写入：write 内部 JSON 往返，不会改到快照里的原对象
+  const all = { ...((peek('proxyClientBackups') as Readonly<Record<string, ProxyClientBackup>>) ?? {}) }
   if (backup) all[target] = backup
   else delete all[target]
   write('proxyClientBackups', all)

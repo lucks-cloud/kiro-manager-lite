@@ -175,13 +175,13 @@ onMounted(() => void refresh())
         </a-button>
       </a-space>
     </div>
-    <div class="tool-desc">
+    <div class="kal-tool-desc">
       为 Kiro IDE 生成一整套新的设备标识，或写回备份的原始机器码。
       <span class="muted backup-note">
         {{ backup ? `原始备份：${formatDateTime(backup.savedAt)}` : '暂无备份，首次重置前会自动备份' }}
       </span>
     </div>
-    <div class="tool-hint">
+    <div class="kal-tool-hint">
       Kiro 的设备标识分散在 <span class="mono">storage.json</span>、<span class="mono">machineid</span> 文件、
       <span class="mono">state.vscdb</span> 与 Microsoft DeveloperTools 的共享 <span class="mono">deviceid</span>
       四处，只改一处 IDE 启动时会从别处读回来，所以这里一起改。共享 deviceid 同时被 VS Code 等工具使用，
@@ -226,9 +226,8 @@ onMounted(() => void refresh())
 <style scoped>
 .tool-card { border: 1px solid var(--kal-border); }
 .tool-title { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; font-size: 16px; }
-.tool-desc { margin-top: 8px; font-size: 13px; }
 .backup-note { margin-left: 8px; font-size: 12px; }
-.tool-hint { margin-top: 6px; color: var(--kal-muted); font-size: 12px; line-height: 1.7; }
+/* .kal-tool-desc / .kal-tool-hint 与其它工具卡共用，在 assets/styles.css */
 .tool-alert { margin-top: 14px; }
 .id-list {
   display: flex;

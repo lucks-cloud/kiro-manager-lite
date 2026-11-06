@@ -240,7 +240,7 @@ function close(): void {
       </span>
     </div>
 
-    <div ref="listRef" class="row-list">
+    <div ref="listRef" class="kal-batch-row-list">
       <div
         v-for="(row, index) in rows"
         :key="row.account.id"
@@ -251,13 +251,13 @@ function close(): void {
         <div class="row-main">
           <div class="row-email">
             {{ email(row.account) }}
-            <a-tag :bordered="false" class="tier-tag">{{ subscriptionLabel(row.account.subscription) }}</a-tag>
+            <a-tag :bordered="false" class="kal-batch-tier-tag">{{ subscriptionLabel(row.account.subscription) }}</a-tag>
           </div>
           <a v-if="row.url" class="row-url mono" :href="row.url" :title="row.url" @click.prevent="openUrl(row)">
             {{ row.url }}
           </a>
         </div>
-        <div class="row-state">
+        <div class="kal-batch-row-state">
           <template v-if="row.state === 'pending'">
             <span class="muted">等待生成</span>
           </template>
@@ -281,13 +281,13 @@ function close(): void {
           </template>
           <template v-else>
             <CloseCircleFilled class="fail-icon" />
-            <span class="fail-text" :title="row.error">{{ row.error }}</span>
+            <span class="kal-batch-fail-text" :title="row.error">{{ row.error }}</span>
           </template>
         </div>
       </div>
     </div>
 
-    <div class="footer">
+    <div class="kal-batch-footer">
       <!-- 按钮组：主按钮下载 txt，右侧下箭头可改为下载 xlsx（size 见 settings 的 compactSize） -->
       <a-space-compact :size="settingsStore.compactSize">
         <a-button :disabled="noDownload" @click="download('txt')">
@@ -338,8 +338,6 @@ function close(): void {
 .spacer { flex: 1 1 auto; }
 .count-text { color: var(--kal-muted); font-size: 12px; }
 
-/* 固定高度：账号 1 个还是几百个，弹窗都一样高，超出在列表内滚动 */
-.row-list { height: 46vh; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
 .row {
   display: flex;
   align-items: center;
@@ -357,7 +355,6 @@ function close(): void {
 
 .row-main { min-width: 0; flex: 1 1 auto; }
 .row-email { display: flex; align-items: center; gap: 8px; font-size: 13px; overflow: hidden; white-space: nowrap; }
-.tier-tag { flex: 0 0 auto; margin: 0; font-size: 11px; }
 /* 链接可点：沿用说明的灰色，悬停才变主题色 */
 .row-url { display: block; margin-top: 2px; color: var(--kal-muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .row-url:hover { color: var(--kal-primary); }
@@ -369,13 +366,9 @@ function close(): void {
   background: color-mix(in srgb, var(--kal-primary) 12%, transparent) !important;
 }
 
-.row-state { flex: 0 0 auto; max-width: 46%; display: flex; align-items: center; gap: 6px; font-size: 12px; }
 .running-text { color: var(--kal-primary); }
 .ok-icon, .ok-text { color: #52c41a; }
 .fail-icon { color: #ff4d4f; flex: 0 0 auto; }
-.fail-text { color: #ff4d4f; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.footer { display: flex; align-items: center; gap: 8px; margin-top: 16px; }
 
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
 .muted { color: var(--kal-muted); }

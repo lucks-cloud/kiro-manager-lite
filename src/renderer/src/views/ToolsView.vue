@@ -156,19 +156,19 @@ onMounted(() => void refresh())
 <template>
   <div class="tools-page">
     <a-card class="tool-card" :bordered="false">
-      <div class="tool-row">
-        <div class="tool-main">
-          <div class="tool-title">
+      <div class="kal-tool-row">
+        <div class="kal-tool-main">
+          <div class="kal-tool-title">
             <ThunderboltOutlined />
             <strong>自动同意 AI 操作（命令 / 文件 / 网络）</strong>
             <a-tag :color="enabled ? 'success' : partial ? 'warning' : 'default'">
               {{ enabled ? '已开启' : partial ? '部分生效' : '未开启' }}
             </a-tag>
           </div>
-          <div class="tool-desc">
+          <div class="kal-tool-desc">
             开启后 Kiro 执行终端命令、读写文件、发起网络请求与网络搜索都不再逐条弹出确认框，直接放行。
           </div>
-          <div class="tool-hint">
+          <div class="kal-tool-hint">
             Kiro 不同版本用了两套机制，本工具同时写入以覆盖两者：0.x 走 IDE 设置
             <span class="mono">kiroAgent.trustedCommands</span>（加入通配项 <span class="mono">*</span>，
             并临时清空优先级更高的 <span class="mono">commandDenylist</span>，仅对终端命令生效）；1.0+ 走
@@ -238,19 +238,19 @@ onMounted(() => void refresh())
     </a-card>
 
     <a-card class="tool-card" :bordered="false">
-      <div class="tool-row">
-        <div class="tool-main">
-          <div class="tool-title">
+      <div class="kal-tool-row">
+        <div class="kal-tool-main">
+          <div class="kal-tool-title">
             <ThunderboltOutlined />
             <strong>网关错误自动续接</strong>
             <a-tag :color="autoRetry ? 'success' : 'default'">
               {{ autoRetry ? '已开启' : '未开启' }}
             </a-tag>
           </div>
-          <div class="tool-desc">
+          <div class="kal-tool-desc">
             开启后 API Key 网关遇到 Kiro 限流会自己等待并重发，对话不会中断，无需手动点继续。
           </div>
-          <div class="tool-hint">
+          <div class="kal-tool-hint">
             Kiro 风控限流时会返回
             <span class="mono">Too many requests, please wait before trying again</span>，
             IDE 收到后就中断当前回答。网关在把响应交给 IDE 之前拦下这类错误，用
@@ -382,11 +382,7 @@ onMounted(() => void refresh())
 .tools-page { display: flex; flex-direction: column; gap: 16px; }
 /* 无边框 a-card 默认带一层阴影，这里去掉，只保留描边 */
 .tool-card { border: 1px solid var(--kal-border); box-shadow: none; }
-.tool-row { display: flex; align-items: flex-start; gap: 16px; }
-.tool-main { flex: 1 1 auto; min-width: 0; }
-.tool-title { display: flex; align-items: center; gap: 9px; font-size: 16px; }
-.tool-desc { margin-top: 8px; font-size: 13px; }
-.tool-hint { margin-top: 6px; color: var(--kal-muted); font-size: 12px; line-height: 1.7; }
+/* 标题区（.kal-tool-row / -main / -title / -desc / -hint）与其它工具卡共用，在 assets/styles.css */
 .tool-alert { margin-top: 14px; }
 
 /* 状态码选择：紧凑的圆角块，两行（代码 + 标题），选中高亮紫色 */
@@ -439,7 +435,6 @@ onMounted(() => void refresh())
 /* 路径完整展示，不做省略：窄窗口下允许整体换行，按钮跟着走 */
 .target-path { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 6px; margin-top: 2px; font-size: 12px; color: var(--kal-muted); }
 .target-note { margin-top: 2px; font-size: 12px; color: #d48806; }
-.path-text { word-break: break-all; }
 .target-path :deep(.ant-btn-link) { flex: 0 0 auto; padding: 0 4px; height: 20px; font-size: 12px; }
 .tool-meta { display: flex; align-items: center; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--kal-border); font-size: 12px; }
 .spacer { flex: 1 1 auto; }

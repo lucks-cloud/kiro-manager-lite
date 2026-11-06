@@ -166,10 +166,33 @@ defineExpose({ scrollToBottom, scrollToTop, distanceToBottom })
 
 let viewportObserver: ResizeObserver | null = null
 let rowObserver: ResizeObserver | null = null
+/** 正在被 rowObserver 观察的行元素；行滚出视口被卸载后要及时 unobserve，否则只增不减 */
+const observedRows = new Set<HTMLElement>()
+let sweepQueued = false
+
+/** 摘掉已经从文档里移除的行：ref 置空时元素还在文档里，要等这一轮卸载做完再查 */
+function sweepRows(): void {
+  sweepQueued = false
+  for (const el of observedRows) {
+    if (el.isConnected) continue
+    rowObserver?.unobserve(el)
+    observedRows.delete(el)
+  }
+}
 
 /** 收集当前渲染出来的行，交给 ResizeObserver 实测高度 */
 function observeRow(el: unknown): void {
-  if (props.dynamicHeight && el instanceof HTMLElement) rowObserver?.observe(el)
+  if (!props.dynamicHeight || !rowObserver) return
+  if (el instanceof HTMLElement) {
+    // 同一行每次重渲染都会回调一次，已在观察中的不必重复 observe
+    if (observedRows.has(el)) return
+    rowObserver.observe(el)
+    observedRows.add(el)
+  } else if (!sweepQueued) {
+    // 行卸载时回调 null，此刻拿不到是哪个元素，统一在本轮结束后扫一遍
+    sweepQueued = true
+    queueMicrotask(sweepRows)
+  }
 }
 
 onMounted(() => {
@@ -197,13 +220,23 @@ onMounted(() => {
   })
 })
 
-// 视口宽度变化会改变换行结果，之前测的高度全部作废
+/*
+ * 列表整体替换时清掉已不在列表里的条目的实测高度，否则日志这类不断滚动更新的列表
+ * 会让缓存只增不减。留下的那些（含当前可见行）照常命中；被移出的条目日后再出现时
+ * 先按估算高度排布，渲染出来后照常实测。前缀和只读当前条目的高度，删掉的不影响它，不必 bump version。
+ *
+ * 缓存条数不超过列表长度时不清：此时占用与列表本身同一量级，
+ * 不值得为它在每次更新（日志可达上万行）时都遍历整表。
+ */
 watch(
-  () => (props.dynamicHeight ? viewport.value?.clientWidth : 0),
-  (width, previous) => {
-    if (!props.dynamicHeight || !width || width === previous) return
-    measured.clear()
-    version.value++
+  () => props.items,
+  (list) => {
+    if (!props.dynamicHeight || measured.size <= list.length) return
+    const alive = new Set<string>()
+    for (let i = 0; i < list.length; i++) alive.add(keyOf(list[i], i))
+    for (const key of measured.keys()) {
+      if (!alive.has(key)) measured.delete(key)
+    }
   }
 )
 
@@ -219,6 +252,7 @@ watch([() => props.items.length, totalHeight], () => {
 onBeforeUnmount(() => {
   viewportObserver?.disconnect()
   rowObserver?.disconnect()
+  observedRows.clear()
 })
 </script>
 

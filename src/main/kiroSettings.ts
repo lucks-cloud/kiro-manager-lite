@@ -8,19 +8,12 @@
 // 本应用位于 IDE 进程之外，无法使用 vscode API 获取当前 profile，
 // 因此按平台默认路径定位 <userData>/User/settings.json，并对 profile 进行兜底扫描。
 import * as fs from 'fs/promises'
-import {
-  existsSync,
-  readFileSync,
-  writeFileSync,
-  renameSync,
-  unlinkSync,
-  mkdirSync,
-  watch,
-  type FSWatcher
-} from 'fs'
+import { existsSync, readFileSync, readdirSync, watch, type FSWatcher } from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import { URL } from 'url'
+import { writeFileAtomic, writeFileAtomicSync } from './utils'
+import { errorMessage } from '../shared/errors'
 import type { KeyGatewayConflict } from '../shared/types'
 
 /** Kiro IDE 用户数据根目录（跨平台） */
@@ -50,7 +43,7 @@ export function kiroSettingsPath(): string {
   const profilesDir = path.join(base, 'profiles')
   if (existsSync(profilesDir)) {
     try {
-      const entries = require('fs').readdirSync(profilesDir) as string[]
+      const entries = readdirSync(profilesDir)
       for (const name of entries) {
         const p = path.join(profilesDir, name, 'settings.json')
         if (existsSync(p)) return p
@@ -117,15 +110,7 @@ async function writeSettings(file: string, obj: Record<string, unknown>): Promis
   if (existsSync(file) && !existsSync(backup)) {
     await fs.copyFile(file, backup).catch(() => undefined)
   }
-  const tmp = file + '.kiro-manager.tmp'
-  const text = JSON.stringify(obj, null, 2) + '\n'
-  await fs.writeFile(tmp, text, 'utf-8')
-  try {
-    await fs.rename(tmp, file)
-  } catch {
-    await fs.writeFile(file, text, 'utf-8')
-    await fs.unlink(tmp).catch(() => undefined)
-  }
+  await writeFileAtomic(file, JSON.stringify(obj, null, 2) + '\n')
 }
 
 /**
@@ -281,20 +266,7 @@ export function restoreEndpointOverrideSync(
     const obj = parseJsonc(raw)
     obj[KRS_KEY] = original.krs
     obj[CPS_KEY] = original.cps
-    mkdirSync(path.dirname(file), { recursive: true })
-    const tmp = file + '.kiro-manager.tmp'
-    const text = JSON.stringify(obj, null, 2) + '\n'
-    writeFileSync(tmp, text, 'utf-8')
-    try {
-      renameSync(tmp, file)
-    } catch {
-      writeFileSync(file, text, 'utf-8')
-      try {
-        unlinkSync(tmp)
-      } catch {
-        /* ignore */
-      }
-    }
+    writeFileAtomicSync(file, JSON.stringify(obj, null, 2) + '\n')
   } catch {
     // 退出阶段不能抛异常阻断其它清理；主进程下次启动还会再做残留恢复。
   }
@@ -350,7 +322,7 @@ export function watchEndpointOverride(options: {
       const applied = await applyEndpointOverride(options.krsPort, options.cpsPort, activeRegion)
       if (!stopped && applied.changed) options.onRepair?.({ settingsPath: applied.settingsPath })
     } catch (error) {
-      options.onError?.(error instanceof Error ? error.message : String(error))
+      options.onError?.(errorMessage(error))
     } finally {
       checking = false
     }
@@ -375,10 +347,10 @@ export function watchEndpointOverride(options: {
       schedule()
     })
     watcher.on('error', (error) => {
-      options.onError?.(error instanceof Error ? error.message : String(error))
+      options.onError?.(errorMessage(error))
     })
   } catch (error) {
-    options.onError?.(error instanceof Error ? error.message : String(error))
+    options.onError?.(errorMessage(error))
   }
 
   return () => {

@@ -4,34 +4,12 @@ import { theme } from 'ant-design-vue'
 import {
   DEFAULT_SETTINGS,
   type AppInfo,
-  type AppSettings,
-  type KiroCliSupportInfo
+  type AppSettings
 } from '@shared/types'
 
 export const useSettingsStore = defineStore('settings', () => {
   const settings = ref<AppSettings>({ ...DEFAULT_SETTINGS })
   const appInfo = ref<AppInfo | null>(null)
-
-  /**
-   * 本机能否写入 kiro-cli 凭证库。
-   * Windows 用凭据管理器存储、或从未运行过 kiro-cli（没有 data.sqlite3）时都不可写，
-   * 「登录 Kiro CLI」菜单项据此置灰，避免点下去才报错。
-   */
-  const kiroCliSupport = ref<KiroCliSupportInfo | null>(null)
-
-  /** 可写入的判据：平台支持且数据库已存在 */
-  const canLoginKiroCli = computed(
-    () => !!kiroCliSupport.value?.supported && !!kiroCliSupport.value?.dbExists
-  )
-
-  /** 不可写时给出的原因，用作菜单项的 tooltip */
-  const kiroCliReason = computed(() => {
-    const info = kiroCliSupport.value
-    if (!info) return ''
-    if (!info.supported) return info.reason || ' 当前平台不支持写入 kiro-cli'
-    if (!info.dbExists) return '未检测到 kiro-cli，请先安装并登录一次 kiro-cli'
-    return ''
-  })
 
   /*
    * 系统当前是不是深色。主进程把 themeSource 设成 system 时，这个媒体查询跟着系统走；
@@ -98,13 +76,6 @@ export const useSettingsStore = defineStore('settings', () => {
     // watch 是异步刷新的，首屏这里同步应用一次，避免主题闪一下
     applyTheme()
 
-    /*
-     * kiro-cli 支持情况单独取：它会执行一次 whoami，比读设置慢，
-     * 不该拖慢首屏。拿不到就当不可用，菜单项置灰。
-     */
-    void window.api.getKiroCliSupport().then((res) => {
-      if (res.success && res.data) kiroCliSupport.value = res.data
-    })
   }
 
   async function update(patch: Partial<AppSettings>): Promise<void> {
@@ -116,9 +87,6 @@ export const useSettingsStore = defineStore('settings', () => {
   return {
     settings,
     appInfo,
-    kiroCliSupport,
-    canLoginKiroCli,
-    kiroCliReason,
     themeConfig,
     isDark,
     primaryColor,

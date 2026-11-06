@@ -11,8 +11,6 @@ import {
   EditOutlined,
   ExclamationCircleFilled,
   FileSearchOutlined,
-  EyeInvisibleOutlined,
-  EyeOutlined,
   KeyOutlined,
   PlusOutlined,
   PoweroffOutlined,
@@ -49,7 +47,6 @@ import ExportApiKeysModal from '@/components/keys/ExportApiKeysModal.vue'
 import GroupPanel from '@/components/common/GroupPanel.vue'
 import GroupManageModal from '@/components/common/GroupManageModal.vue'
 import SortMenu from '@/components/common/SortMenu.vue'
-import { useRangeSelect } from '@/utils/rangeSelect'
 import { DEFAULT_SORT, SORT_FIELDS, compareBy, type SortField, type SortKey } from '@/utils/listSort'
 import GroupPickerModal from '@/components/common/GroupPickerModal.vue'
 import BatchNoteModal from '@/components/common/BatchNoteModal.vue'
@@ -61,9 +58,12 @@ import BatchQueryTag from '@/components/common/BatchQueryTag.vue'
 import SearchScopeInput, {
   type SearchScopeOption
 } from '@/components/common/SearchScopeInput.vue'
+import PrivacyToggleButton from '@/components/common/PrivacyToggleButton.vue'
 import { useRecentUsage } from '@/composables/useRecentUsage'
 import { useCardContextMenu } from '@/composables/useCardContextMenu'
+import { useListSelection } from '@/composables/useListSelection'
 import { matchesGroupFilter } from '@/utils/groups'
+import { daysInRange, inRange } from '@/utils/listFilter'
 import {
   keyDaysRemaining,
   keyIssue,
@@ -74,7 +74,7 @@ import {
 import KeyCard from '@/components/keys/KeyCard.vue'
 import ModelListModal from '@/components/common/ModelListModal.vue'
 import BatchKeyModelsModal from '@/components/keys/BatchKeyModelsModal.vue'
-import { NO_BATCH_QUERY_HITS, runBatchQuery } from '@/utils/batchQuery'
+import { NO_BATCH_QUERY_HITS, notifyBatchQueryResult, runBatchQuery } from '@/utils/batchQuery'
 import { createScopedSearchText } from '@/utils/searchText'
 import { isTrashed } from '@shared/itemGroups'
 import { keyGroupApi } from '@/utils/groupApi'
@@ -219,12 +219,23 @@ const queryTextOf = createScopedSearchText<KeyEntry, SearchScope>({
   note: (entry) => entry.note ?? ''
 })
 
+/**
+ * Key 列表本身。data 是整体替换的，只切换网关开关 / 当前 Key 时 keys 数组不变：
+ * 依赖这里而不是 data 的计算属性不会因此重新筛选。
+ */
+const keyList = computed(() => data.value.keys)
+
+/** 当前所在这一边（正常列表或回收站）的 Key，顺序与 keys 一致；批量查询、筛选与统计共用 */
+const sideKeys = computed(() => {
+  const inTrash = trashView.value
+  return keyList.value.filter((entry) => isTrashed(entry) === inTrash)
+})
+
 /** 批量查询结果：只在当前所在的一边里查，不受其它筛选影响，「未找到」就是真的不在这里 */
 const batchQueryResult = computed(() => {
   if (!batchQuery.value.length) return null
-  const side = data.value.keys.filter((entry) => isTrashed(entry) === trashView.value)
   // 批量查询固定按「Key + 邮箱 + 备注」匹配，不跟搜索框的范围选择走
-  return runBatchQuery(side, (entry) => queryTextOf(entry, 'all'), batchQuery.value)
+  return runBatchQuery(sideKeys.value, (entry) => queryTextOf(entry, 'all'), batchQuery.value)
 })
 
 const batchQueryHits = computed(() => batchQueryResult.value ?? NO_BATCH_QUERY_HITS)
@@ -232,9 +243,7 @@ const batchQueryHits = computed(() => batchQueryResult.value ?? NO_BATCH_QUERY_H
 function applyBatchQuery(values: string[]): void {
   batchQuery.value = values
   batchQueryOpen.value = false
-  const { hits, missing } = batchQueryHits.value
-  const text = `批量查询 ${values.length} 个关键字：${hits} 个有结果${missing.length ? `，${missing.length} 个未找到` : ''}`
-  missing.length ? message.warning(text) : message.success(text)
+  notifyBatchQueryResult(values.length, batchQueryHits.value)
 }
 
 function toggleTrashView(): void {
@@ -322,9 +331,7 @@ const keyStats = computed(() => {
   }
   const byStatus: Record<KeyStatus, number> = { normal: 0, error: 0, unchecked: 0 }
   // 只统计当前所在的一边（正常列表或回收站），筛选面板上的数字才和列表对得上
-  const inTrash = trashView.value
-  for (const entry of data.value.keys) {
-    if (isTrashed(entry) !== inTrash) continue
+  for (const entry of sideKeys.value) {
     const tier = keyTier(entry)
     bySubscription[tier] = (bySubscription[tier] ?? 0) + 1
     const status = keyStatusKey(entry)
@@ -410,7 +417,11 @@ const recentUsage = useRecentUsage({
   version: () => data.value.keys
 })
 
-const filteredKeys = computed(() => {
+/**
+ * 筛选结果（保持 keys 的原始顺序，未排序）。
+ * 与排序拆开：只改排序方式、近期用量刷新、切换当前 Key 时只需重排，不必重新筛选。
+ */
+const matchedKeys = computed(() => {
   const needle = search.value.trim().toLowerCase()
   const {
     subscriptions,
@@ -426,6 +437,36 @@ const filteredKeys = computed(() => {
     createdTo
   } = filter.value
   const groupSet = groupIds.length ? new Set(groupIds) : null
+  // 分组表先取出来，判断时不必每次都经过 store 的 getter；只在按分组筛选时才需要它
+  const groupLookup = groupSet ? store.groupMap : null
+  const groupExists = (id: string): boolean => !!groupLookup?.has(id)
+  const queryMatched = batchQueryResult.value?.matched ?? null
+  const scope = searchScope.value
+  // 没设用量范围时不必为每个 Key 算用量比例
+  const usageRanged = usageMin != null || usageMax != null
+  // 回收站与正常列表互不可见：搜索与筛选都只作用于当前所在的那一边（sideKeys）
+  return sideKeys.value.filter((entry) => {
+    // 批量查询：命中任意一个关键字（Key / 邮箱 / 备注模糊匹配）
+    if (queryMatched && !queryMatched.has(entry.id)) return false
+    // 搜索：智能搜索走 Key + 邮箱 + 备注，选了具体字段就只搜那一个
+    if (needle && !queryTextOf(entry, scope).includes(needle)) return false
+    // 多分组：命中所选任一分组即可；分组都已被删除的 Key 视为未分组
+    if (groupSet && !matchesGroupFilter(entry, groupSet, groupExists)) return false
+    if (subscriptions.length && !subscriptions.includes(keyTier(entry))) return false
+    if (statuses.length && !statuses.includes(keyStatusKey(entry))) return false
+    // 范围条件（含两端、未设置的一端不限、天数缺值的处理）见 utils/listFilter
+    if (usageRanged && !inRange(usageRatio(entry), usageMin, usageMax)) return false
+    // 积分：按总积分（额度上限）过滤
+    if (!inRange(entry.totalCredits || 0, creditMin, creditMax)) return false
+    if (!daysInRange(keyDaysRemaining(entry), daysRemainingMin, daysRemainingMax)) return false
+    // 导入时间：界面给过来的是精确到秒的时刻
+    if (!inRange(entry.createdAt, createdFrom, createdTo)) return false
+    return true
+  })
+})
+
+/** 界面上的卡片顺序：活跃的 Key 置顶，其余按所选排序 */
+const filteredKeys = computed(() => {
   // 排序比较器每次比较都会读，先取出来，免得反复经过响应式 getter
   const activeId = data.value.activeKeyId
   // 用量比例算一次记下来：比较器里每次比较要算两遍，n log n 次就是一笔不小的开销
@@ -453,49 +494,12 @@ const filteredKeys = computed(() => {
     },
     (entry: KeyEntry) => entry.createdAt
   )
-  // filter 本身就返回新数组，sort 不会动到 store 里的原数组
-  const inTrash = trashView.value
-  const groupExists = (id: string): boolean => store.groupMap.has(id)
-  const queryMatched = batchQueryResult.value?.matched ?? null
-  const scope = searchScope.value
-  return data.value.keys
-    .filter((entry) => {
-      // 回收站与正常列表互不可见：搜索与筛选都只作用于当前所在的那一边
-      if (isTrashed(entry) !== inTrash) return false
-      // 批量查询：命中任意一个关键字（Key / 邮箱 / 备注模糊匹配）
-      if (queryMatched && !queryMatched.has(entry.id)) return false
-      // 搜索：智能搜索走 Key + 邮箱 + 备注，选了具体字段就只搜那一个
-      if (needle && !queryTextOf(entry, scope).includes(needle)) return false
-      // 多分组：命中所选任一分组即可；分组都已被删除的 Key 视为未分组
-      if (groupSet && !matchesGroupFilter(entry, groupSet, groupExists)) return false
-      if (subscriptions.length && !subscriptions.includes(keyTier(entry))) return false
-      if (statuses.length && !statuses.includes(keyStatusKey(entry))) return false
-      // 范围条件一律用 != null 判断「是否已设置」：输入框清空后给的是 null，
-      // 按 !== undefined 判断会把 null 当成已设置，比较时又转成 0，把列表筛成空
-      const used = ratioOf(entry)
-      if (usageMin != null && used < usageMin) return false
-      if (usageMax != null && used > usageMax) return false
-      // 积分：按总积分（额度上限）过滤，两端都含
-      const credits = entry.totalCredits || 0
-      if (creditMin != null && credits < creditMin) return false
-      if (creditMax != null && credits > creditMax) return false
-      const days = keyDaysRemaining(entry)
-      if (daysRemainingMax != null && (days ?? Number.POSITIVE_INFINITY) > daysRemainingMax) {
-        return false
-      }
-      if (daysRemainingMin != null && (days ?? Number.NEGATIVE_INFINITY) < daysRemainingMin) {
-        return false
-      }
-      // 导入时间：两端都含，界面给过来的是精确到秒的时刻
-      if (createdFrom != null && entry.createdAt < createdFrom) return false
-      if (createdTo != null && entry.createdAt > createdTo) return false
-      return true
-    })
-    .sort((a, b) => {
-      const active = Number(b.id === activeId) - Number(a.id === activeId)
-      if (active) return active
-      return compare(a, b)
-    })
+  // matchedKeys 是缓存着的计算结果，复制一份再排，不能就地改它
+  return matchedKeys.value.slice().sort((a, b) => {
+    const active = Number(b.id === activeId) - Number(a.id === activeId)
+    if (active) return active
+    return compare(a, b)
+  })
 })
 
 /**
@@ -513,8 +517,21 @@ function keyItemKey(entry: KeyEntry): string {
   return entry.id
 }
 
-const selectedSet = computed(() => new Set(selectedIds.value))
-const visibleSelectedCount = computed(() => filteredKeys.value.filter((entry) => selectedSet.value.has(entry.id)).length)
+/**
+ * 勾选：全选 / 半选状态、单击与 Shift 范围勾选、Ctrl / Cmd + A 勾选当前筛选结果（见 useListSelection）。
+ * batchScopeSuffix 是批量操作按钮的范围后缀：有勾选时把实际会处理的条数（全部勾选数）带到按钮上。
+ */
+const {
+  selectedSet,
+  allVisibleSelected,
+  someVisibleSelected,
+  batchScopeSuffix,
+  toggleSelect,
+  toggleSelectVisible
+} = useListSelection<KeyEntry>({
+  selectedIds,
+  items: () => filteredKeys.value
+})
 /**
  * 批量操作（刷新、测活）的共同目标：有勾选就处理全部勾选项，否则处理当前列表全部。
  *
@@ -532,32 +549,9 @@ const batchTargets = computed(() => {
   )
   return [...visible, ...hidden]
 })
-/** 批量操作按钮的范围后缀：有勾选时把实际会处理的条数（全部勾选数）带到按钮上 */
-const batchScopeSuffix = computed(() =>
-  selectedIds.value.length ? `（${selectedIds.value.length}个）` : ''
-)
-const allVisibleSelected = computed(() => filteredKeys.value.length > 0 && visibleSelectedCount.value === filteredKeys.value.length)
-const someVisibleSelected = computed(() => visibleSelectedCount.value > 0 && !allVisibleSelected.value)
 // 复用筛选面板那一次遍历的结果，口径与状态 chip 完全一致
 const normalCount = computed(() => keyStats.value.byStatus.normal)
 const errorCount = computed(() => keyStats.value.byStatus.error)
-
-/** 单击勾选；按住 Shift 勾选一段，Ctrl / Cmd + A 勾选当前筛选结果（见 rangeSelect） */
-const { toggle: toggleSelect } = useRangeSelect({
-  order: () => filteredKeys.value.map((entry) => entry.id),
-  apply: (ids, checked) => {
-    const next = new Set(selectedIds.value)
-    for (const id of ids) checked ? next.add(id) : next.delete(id)
-    selectedIds.value = [...next]
-  },
-  selectAll: () => toggleSelectVisible(true)
-})
-
-function toggleSelectVisible(checked: boolean): void {
-  const next = new Set(selectedIds.value)
-  for (const entry of filteredKeys.value) checked ? next.add(entry.id) : next.delete(entry.id)
-  selectedIds.value = [...next]
-}
 
 /**
  * API Key 是否遮蔽只由全局「隐私打码」决定，本页所有展示位置一律走这里。
@@ -571,10 +565,6 @@ function displayKey(key: string): string {
 /** 备注同样跟随隐私打码：里面常写着用途、渠道等不比邮箱次要的信息 */
 function displayNote(note?: string): string {
   return maskedNote(note, privacyMode.value)
-}
-
-function togglePrivacy(): void {
-  void settingsStore.update({ privacyMode: !privacyMode.value })
 }
 
 const usageSubject = computed(() => {
@@ -1202,7 +1192,7 @@ onUnmounted(() => store.stopStatsPolling())
           @edit="batchQueryOpen = true"
           @clear="batchQuery = []"
         />
-        <span class="spacer" />
+        <span class="toolbar-spacer" />
         <a-button type="primary" @click="addOpen = true">
           <template #icon><PlusOutlined /></template>添加 API Key
         </a-button>
@@ -1219,7 +1209,7 @@ onUnmounted(() => store.stopStatsPolling())
         <a-tag v-if="activeFilterCount" color="purple" closable @close="resetFilter">
           筛选中 {{ activeFilterCount }} 项
         </a-tag>
-        <span class="spacer" />
+        <span class="toolbar-spacer" />
 
         <a-popover
           v-model:open="filterOpen"
@@ -1282,17 +1272,7 @@ onUnmounted(() => store.stopStatsPolling())
           <template #icon><SyncOutlined /></template>
           {{ syncing ? `正在刷新${selectedIds.length ? selectedIds.length + '个API Key' : ''}用量/积分...` : `刷新用量/积分${batchScopeSuffix}` }}
         </a-button>
-        <a-button
-          :size="toolbarSize"
-          :type="privacyMode ? 'primary' : 'default'"
-          @click="togglePrivacy"
-        >
-          <template #icon>
-            <EyeInvisibleOutlined v-if="privacyMode" />
-            <EyeOutlined v-else />
-          </template>
-          {{ privacyMode ? '隐私打码中' : '隐私打码' }}
-        </a-button>
+        <PrivacyToggleButton :size="toolbarSize" />
 
         <!-- 展示形态：卡片 / 紧凑 / 列表，选择会持久化 -->
         <DisplayModeSelect :value="displayMode" :size="toolbarSize" @change="setDisplayMode" />
@@ -1407,7 +1387,7 @@ onUnmounted(() => store.stopStatsPolling())
     <a-empty v-else-if="trashView" class="empty" :description="store.trashedCount ? '回收站里没有符合条件的 Key' : '回收站是空的'">
       <a-button @click="toggleTrashView">返回 API Key 列表</a-button>
     </a-empty>
-    <a-empty v-else class="empty" :description="store.liveKeys.length ? '没有匹配的 Key' : '还没有 API Key，请先添加'" />
+    <a-empty v-else class="empty" :description="store.count ? '没有匹配的 Key' : '还没有 API Key，请先添加'" />
 
     <KiroCliConnectModal
       v-if="cliTarget"
@@ -1681,11 +1661,10 @@ onUnmounted(() => store.stopStatsPolling())
 .gateway-hint { margin-top: 4px; color: var(--kal-muted); font-size: 12px; }
 .gateway-unsupported { margin-top: 14px; }
 .keys-header { flex: 0 0 auto; }
-.toolbar, .meta-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* .toolbar 的 flex 排布沿用全局 styles.css，这里只改下边距 */
 .toolbar { margin-bottom: 10px; }
-.meta-bar { min-height: 32px; }
+.meta-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 32px; }
 .count-text { color: var(--kal-muted); font-size: 12px; }
-.spacer { flex: 1 1 auto; }
 .key-grid { flex: 1 1 auto; min-height: 0; }
 .empty { margin: 70px 0; }
 .port-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
@@ -1696,7 +1675,6 @@ onUnmounted(() => store.stopStatsPolling())
 .conflict-endpoints { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
 .conflict-endpoint { padding: 3px 8px; border-radius: 6px; background: var(--kal-block-bg); font-size: 12px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
-.muted { color: var(--kal-muted); }
 @media (max-width: 900px) {
   .gateway-row { align-items: flex-start; flex-wrap: wrap; }
 }

@@ -5,9 +5,10 @@
  * 数据来自主进程按分钟聚合的时间序列（见 gatewayHistory），
  * 与账号积分历史弹窗保持同样的观感与交互。
  */
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import { ReloadOutlined } from '@ant-design/icons-vue'
+import { CHART_HEIGHT, timeTicks, useChartFrame, valueTicks } from '@/composables/useChartFrame'
 import { useKeysStore } from '@/stores/keys'
 import { useSettingsStore } from '@/stores/settings'
 import { confirmDanger } from '@/utils/ui'
@@ -95,21 +96,13 @@ const avgRpm = computed(() =>
 
 // ============ 曲线 ============
 
-const chartBox = ref<HTMLElement | null>(null)
-const chartWidth = ref(760)
-const CHART_HEIGHT = 220
 // y 轴标签仍在绘图区外，但比通用用量图更紧凑，给曲线留出更多横向空间。
 const PAD = { top: 14, right: 16, bottom: 26, left: 44 }
 
-const observer = new ResizeObserver((records) => {
-  const width = records[0]?.contentRect.width
-  if (width) chartWidth.value = width
-})
-watch(chartBox, (el, prev) => {
-  if (prev) observer.unobserve(prev)
-  if (el) observer.observe(el)
-})
-onBeforeUnmount(() => observer.disconnect())
+// 容器宽度（量的是模板里 ref="chartBox" 的元素）、悬停命中与浮层定位见 useChartFrame
+const { chartWidth, hoverIndex, hoverPoint, onMove, tooltipStyle } = useChartFrame(
+  () => plot.value.points
+)
 
 /** 当前视图下每个点的取值与格式化方式 */
 const viewMeta = computed(() => {
@@ -176,57 +169,10 @@ const plot = computed(() => {
   const baseY = PAD.top + innerH
   const area = `${line} L${plotted.at(-1)!.x.toFixed(2)},${baseY} L${plotted[0].x.toFixed(2)},${baseY} Z`
 
-  const yTicks = Array.from({ length: 5 }, (_, i) => {
-    const ratio = i / 4
-    return { y: PAD.top + innerH - ratio * innerH, label: meta.format(top * ratio) }
-  })
-
-  const tickCount = Math.min(5, list.length)
-  const xTicks = Array.from({ length: tickCount }, (_, i) => {
-    const ratio = tickCount === 1 ? 0.5 : i / (tickCount - 1)
-    const at = minTime + span * ratio
-    return {
-      x: PAD.left + ratio * innerW,
-      anchor:
-        tickCount === 1 ? 'middle' : i === 0 ? 'start' : i === tickCount - 1 ? 'end' : 'middle',
-      label: new Date(at).toLocaleString('zh-CN', {
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit'
-      })
-    }
-  })
+  const yTicks = valueTicks(top, PAD, innerH, meta.format)
+  const xTicks = timeTicks(minTime, span, list.length, PAD, innerW)
 
   return { points: plotted, line, area, yTicks, xTicks, innerW, innerH }
-})
-
-const hoverIndex = ref<number | null>(null)
-const hoverPoint = computed(() =>
-  hoverIndex.value === null ? null : (plot.value.points[hoverIndex.value] ?? null)
-)
-
-function onMove(event: MouseEvent): void {
-  const list = plot.value.points
-  if (!list.length) return
-  const rect = (event.currentTarget as SVGElement).getBoundingClientRect()
-  const x = ((event.clientX - rect.left) / rect.width) * chartWidth.value
-  let best = 0
-  for (let i = 1; i < list.length; i++) {
-    if (Math.abs(list[i].x - x) < Math.abs(list[best].x - x)) best = i
-  }
-  hoverIndex.value = best
-}
-
-const tooltipStyle = computed(() => {
-  const point = hoverPoint.value
-  if (!point) return {}
-  const flip = point.x > chartWidth.value * 0.6
-  return {
-    left: `${point.x}px`,
-    top: `${Math.max(0, point.y - 12)}px`,
-    transform: flip ? 'translate(calc(-100% - 10px), -100%)' : 'translate(10px, -100%)'
-  }
 })
 
 // ============ 明细表 ============
@@ -398,7 +344,7 @@ function reset(): void {
               :x2="hoverPoint.x"
               :y1="PAD.top"
               :y2="PAD.top + plot.innerH"
-              class="cursor-line"
+              class="kal-chart-cursor"
             />
             <circle :cx="hoverPoint.x" :cy="hoverPoint.y" r="3.5" :fill="viewMeta.color" />
           </template>
@@ -467,7 +413,7 @@ function reset(): void {
 .chart { display: block; width: 100%; }
 .grid { stroke: var(--kal-border); stroke-width: 1; }
 .axis { fill: var(--kal-muted); font-size: 10px; }
-.cursor-line { stroke: var(--kal-muted); stroke-width: 1; stroke-dasharray: 3 3; }
+/* 悬停竖线 .kal-chart-cursor 与积分变化弹窗共用，在 assets/styles.css */
 .chart-empty { display: flex; align-items: center; justify-content: center; height: 220px; }
 .chart-tip {
   position: absolute;

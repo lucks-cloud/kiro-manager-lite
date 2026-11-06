@@ -123,9 +123,12 @@ function binaryNames(name: string): string[] {
   return IS_WIN ? [`${name}.cmd`, `${name}.exe`, name] : [name]
 }
 
-/** 找一个命令行工具的绝对路径；找不到返回 null */
-export function findBinary(name: string): string | null {
-  for (const dir of binDirs()) {
+/**
+ * 找一个命令行工具的绝对路径；找不到返回 null。
+ * extraDirs 追加在默认目录之后，给调用方补充本模块不知道的位置（如重新读到的最新 PATH）。
+ */
+export function findBinary(name: string, extraDirs: string[] = []): string | null {
+  for (const dir of [...binDirs(), ...extraDirs]) {
     for (const exe of binaryNames(name)) {
       const full = path.join(dir, exe)
       if (existsSync(full)) return full
@@ -455,6 +458,16 @@ export function locateCliSync(target: ProxyClientTarget): InstallLocation {
   if (spec.kind !== 'cli') return { path: null, custom: false }
   const found = findBinary(spec.binary) ?? spec.extra().find((file) => existsSync(file)) ?? null
   return { path: found, custom: false }
+}
+
+/**
+ * 按任意图形应用规则查找（不属于一键接入目标的应用也能用，例如 Kiro Crew 桌面版）。
+ * 与 locateClient 走同一套逻辑：默认目录 → Spotlight / 注册表与 MSIX 包；Linux 不查。
+ */
+export async function locateApp(spec: Pick<AppSpec, 'mac' | 'win'>): Promise<string | null> {
+  if (IS_MAC) return locateMacApp(spec.mac)
+  if (IS_WIN) return locateWinApp(spec.win)
+  return null
 }
 
 export async function locateClient(target: ProxyClientTarget): Promise<InstallLocation> {

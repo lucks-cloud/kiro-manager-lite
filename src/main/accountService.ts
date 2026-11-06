@@ -17,7 +17,7 @@ import {
   resolveProfileArn,
   writeKiroAuthToken
 } from './kiroAuth'
-import { kiroCliSupport, writeKiroCliAuth } from './kiroCliAuth'
+import { assertKiroCliDb, writeKiroCliAuth } from './kiroCliAuth'
 import { sleep } from './utils'
 import { DEFAULT_REGION } from '../shared/regions'
 import type {
@@ -593,7 +593,7 @@ export async function switchAccount(input: SwitchAccountInput): Promise<SwitchAc
   for (const candidate of candidates) {
     try {
       /*
-       * 候选原样送，不要过 arnForApiCall：用量接口要求带 profileArn，
+       * 候选原样送，不要剥掉占位符 ARN：用量接口要求带 profileArn，
        * 把 BuilderId 占位符剥成 undefined 会让第一个候选必然 403，
        * 于是每次切号都报「profileArn 校验未通过」。
        */
@@ -663,11 +663,8 @@ export async function switchAccount(input: SwitchAccountInput): Promise<SwitchAc
  * 具体的存储格式与 state 处理在 kiroCliAuth.writeKiroCliAuth 里。
  */
 export async function loginAccountToCli(input: KiroCliLoginInput): Promise<KiroCliLoginResult> {
-  const support = kiroCliSupport()
-  if (!support.supported) throw new Error(support.reason || 'kiro-cli 不支持当前平台')
-  if (!support.dbExists) {
-    throw new Error('未找到 kiro-cli 数据库，请先安装并至少运行 / 登录过一次 kiro-cli')
-  }
+  // 刷新 Token 前先确认有凭证库：没有的话刷新白做，还会把轮换出的新 refreshToken 丢掉
+  assertKiroCliDb()
 
   const {
     refreshToken,

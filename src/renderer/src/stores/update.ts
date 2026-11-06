@@ -48,11 +48,11 @@ export const useUpdateStore = defineStore('update', () => {
   const result = ref<UpdateCheckResult | null>(null)
   const checking = ref(false)
   const modalOpen = ref(false)
-  const initialized = ref(false)
+  /** 本次运行是否已做过启动检查；只在内部判断，不必是响应式状态 */
+  let initialized = false
   let request: Promise<{ data?: UpdateCheckResult; error?: string }> | null = null
 
   const hasUpdate = computed(() => result.value?.hasUpdate === true)
-  const latestVersion = computed(() => result.value?.latest ?? '')
 
   async function fetchLatest(): Promise<{ data?: UpdateCheckResult; error?: string }> {
     if (request) return request
@@ -77,8 +77,8 @@ export const useUpdateStore = defineStore('update', () => {
   }
 
   async function initialize(currentVersion: string): Promise<void> {
-    if (initialized.value || !currentVersion) return
-    initialized.value = true
+    if (initialized || !currentVersion) return
+    initialized = true
     const cache = readCache(currentVersion)
     if (cache) {
       result.value = cache.result
@@ -109,9 +109,7 @@ export const useUpdateStore = defineStore('update', () => {
     result,
     checking,
     modalOpen,
-    initialized,
     hasUpdate,
-    latestVersion,
     initialize,
     checkNow,
     showModal,

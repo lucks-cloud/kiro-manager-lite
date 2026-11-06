@@ -180,21 +180,29 @@ export const useProxyStore = defineStore('proxy', () => {
     message.success('统计已清零')
   }
 
+  /** 写入 / 还原两种动作各自的接口与失败兜底文案；busy 的前缀就是动作名 */
+  const CLIENT_ACTIONS = {
+    apply: { run: (target: ProxyClientTarget) => window.api.applyProxyClient(target), fallback: '写入失败' },
+    restore: { run: (target: ProxyClientTarget) => window.api.restoreProxyClient(target), fallback: '还原失败' }
+  } as const
+
   /**
    * 写入 / 还原客户端配置。
    *
    * 错误不在这里弹 toast：调用方会把成功和失败都摊在同一个弹窗里显示
    * （写入可能要装 CCursor，过程较长，结果必须留在屏幕上而不是飘一下就没了）。
    */
-  async function applyClient(
+  async function runClientAction(
+    action: keyof typeof CLIENT_ACTIONS,
     target: ProxyClientTarget
   ): Promise<{ state?: ProxyClientState; error?: string }> {
-    busy.value = `apply:${target}`
+    busy.value = `${action}:${target}`
     try {
-      const res = await window.api.applyProxyClient(target)
+      const res = await CLIENT_ACTIONS[action].run(target)
       if (!res.success || !res.data) {
+        // 失败也可能已经改了一部分（比如 Cursor 配置摘掉了、补丁没卸成），重新取一次状态，卡片别停在旧的
         await loadClients()
-        return { error: res.error || '写入失败' }
+        return { error: res.error || CLIENT_ACTIONS[action].fallback }
       }
       clients.value = res.data
       return { state: res.data.find((item) => item.target === target) }
@@ -205,24 +213,12 @@ export const useProxyStore = defineStore('proxy', () => {
     }
   }
 
-  async function restoreClient(
-    target: ProxyClientTarget
-  ): Promise<{ state?: ProxyClientState; error?: string }> {
-    busy.value = `restore:${target}`
-    try {
-      const res = await window.api.restoreProxyClient(target)
-      if (!res.success || !res.data) {
-        // 失败也可能已经改了一部分（比如 Cursor 配置摘掉了、补丁没卸成），重新取一次状态，卡片别停在旧的
-        await loadClients()
-        return { error: res.error || '还原失败' }
-      }
-      clients.value = res.data
-      return { state: res.data.find((item) => item.target === target) }
-    } catch (error) {
-      return { error: error instanceof Error ? error.message : String(error) }
-    } finally {
-      busy.value = ''
-    }
+  function applyClient(target: ProxyClientTarget): Promise<{ state?: ProxyClientState; error?: string }> {
+    return runClientAction('apply', target)
+  }
+
+  function restoreClient(target: ProxyClientTarget): Promise<{ state?: ProxyClientState; error?: string }> {
+    return runClientAction('restore', target)
   }
 
   return {

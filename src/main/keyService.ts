@@ -27,6 +27,7 @@ import { listApiKeyModels } from './kiroChat'
 import { releasePorts } from './localPorts'
 import { log } from './logger'
 import { shouldSkipKeyUsageRefresh } from '../shared/refreshPolicy'
+import { errorMessage } from '../shared/errors'
 import { groupIdsOf, isTrashed, withGroupIds } from '../shared/itemGroups'
 import type {
   AccountGroup,
@@ -36,7 +37,6 @@ import type {
   KeyGatewayData,
   KeyGatewayStatus,
   KeyModelInfo,
-  KeyTestResult,
   KiroModelInfo
 } from '../shared/types'
 
@@ -172,7 +172,7 @@ async function emitStatus(message?: string, needRestart = false): Promise<KeyGat
 /** 状态推送的即发即忘版本：调用方在同步路径上（观测回调、文件守护）用不了 await */
 function emitStatusAsync(message?: string): void {
   void emitStatus(message).catch((error) => {
-    log('warn', `[KeyGateway] 推送网关状态失败：${error instanceof Error ? error.message : String(error)}`)
+    log('warn', `[KeyGateway] 推送网关状态失败：${errorMessage(error)}`)
   })
 }
 
@@ -239,7 +239,7 @@ export function addKey(value: string, note = '', region?: string): KeyGatewayDat
   return data
 }
 
-export interface ImportKeysResult {
+interface ImportKeysResult {
   data: KeyGatewayData
   added: number
   skipped: number
@@ -497,25 +497,6 @@ export async function listKeyModelDetails(id: string): Promise<KiroModelInfo[]> 
   return listApiKeyModels(entry.key, entry.region)
 }
 
-export async function testKey(id: string): Promise<KeyTestResult> {
-  const data = getKeyData()
-  const entry = data.keys.find((item) => item.id === id)
-  if (!entry) throw new Error('未找到该 API Key')
-  const [models, account] = await Promise.all([
-    fetchModels(entry.region, entry.key),
-    fetchAccountInfo(entry.region, entry.key)
-  ])
-  return {
-    modelCount: models.models.length,
-    defaultModel: models.defaultModel,
-    subscription: account.subscriptionTitle,
-    tier: account.tier,
-    used: account.used,
-    total: account.total,
-    models: models.models
-  }
-}
-
 /**
  * 记录一次真实对话测活的结论。
  * 单独存在 lastChatError 里，不与管理面同步的 lastError 混用，
@@ -544,7 +525,7 @@ export async function syncKey(id: string): Promise<KeyGatewayData> {
     const latest = getKeyData()
     const current = latest.keys.find((item) => item.id === id)
     if (current && current.key === source.key) {
-      current.lastError = error instanceof Error ? error.message : String(error)
+      current.lastError = errorMessage(error)
       setKeyData(latest)
     }
     throw error
@@ -748,7 +729,7 @@ export async function initializeKeyService(
     data.originalEndpoints = undefined
     data.settingsPath = undefined
     setKeyData(data)
-    const message = error instanceof Error ? error.message : String(error)
+    const message = errorMessage(error)
     log('error', `[KeyGateway] 启动恢复失败：${message}`)
     await emitStatus(`上次的 API Key 接管恢复失败：${message}`)
   }

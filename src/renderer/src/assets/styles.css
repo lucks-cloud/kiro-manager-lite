@@ -348,6 +348,153 @@ body {
   font-size: 12px;
 }
 
+/* ============================================================
+   批量弹窗（批量生成 API Key / 订阅链接、批量获取模型、API Key 批量测活）
+   里逐字相同的几条规则。类名一律带 kal-batch- 前缀，不和组件内的通用类名冲突。
+   ============================================================ */
+
+/* 固定高度：条目 1 个还是几百个，弹窗都一样高，超出在列表内滚动 */
+.kal-batch-row-list {
+  height: 46vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 行尾状态靠右；批量生成 API Key 与批量测活的状态区更宽（52%），仍写在各自组件里 */
+.kal-batch-row-state {
+  flex: 0 0 auto;
+  max-width: 46%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+/* 失败原因保留接口原文，过长时截断，悬停用原生 title 看全 */
+.kal-batch-fail-text {
+  color: #ff4d4f;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kal-batch-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+/*
+ * 订阅档位小标签。a-tag 自带 margin-inline-end 和 12px 字号，
+ * 叠上 .ant-tag 让优先级与原先组件内 scoped 写法（类 + 属性）相同，稳定压过 antd。
+ */
+.ant-tag.kal-batch-tier-tag {
+  flex: 0 0 auto;
+  margin: 0;
+  font-size: 11px;
+}
+
+/* ============================================================
+   导出弹窗（导出账号 / 导出 API Key）共用的格式卡片与说明块。
+   选中卡片的底色两边不同，仍写在各自组件里。
+   ============================================================ */
+
+.kal-export-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.kal-export-formats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.kal-export-format {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 10px;
+  border: 2px solid var(--kal-border);
+  background: transparent;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.kal-export-format:hover {
+  border-color: var(--kal-primary);
+}
+
+.kal-export-format-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.kal-export-format.selected .kal-export-format-head {
+  color: var(--kal-primary);
+}
+
+.kal-export-format-desc {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.kal-export-credential {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--kal-block-bg);
+}
+
+/* ============================================================
+   工具页卡片（ToolsView 与 components/tools 下的各张卡）共用的标题区。
+   ============================================================ */
+
+.kal-tool-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.kal-tool-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.kal-tool-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 16px;
+}
+
+.kal-tool-desc {
+  margin-top: 8px;
+  font-size: 13px;
+}
+
+.kal-tool-hint {
+  margin-top: 6px;
+  color: var(--kal-muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+/* 手写 SVG 曲线（积分变化 / 网关调用历史）里跟随鼠标的竖向虚线 */
+.kal-chart-cursor {
+  stroke: var(--kal-muted);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
 /*
  * 全局提示永远压在所有弹窗之上。
  * antd 的 message / notification 默认 z-index 约 1010，而叠加弹窗（如 Key 编辑弹窗 z-index 1100）

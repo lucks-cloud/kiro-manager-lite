@@ -70,10 +70,20 @@ function candidates(): Candidate[] {
   return linuxCandidates()
 }
 
+/**
+ * Linux 上 which 已确认能解析的命令名，进程内缓存，免得每次打开浏览器都逐个同步探测。
+ * 只记找到的；没找到的下次照样重新探测（用户可能刚装上）。
+ * 记住之后浏览器若被卸载，launch 会因 spawn 报错返回 false，照常换下一个候选。
+ */
+const resolvedCommands = new Set<string>()
+
 /** Linux 下命令名需要先在 PATH 中解析，其它平台直接判断文件是否存在 */
 function available(candidate: Candidate): boolean {
   if (process.platform === 'linux') {
-    return spawnSync('which', [candidate.bin], { stdio: 'ignore' }).status === 0
+    if (resolvedCommands.has(candidate.bin)) return true
+    const found = spawnSync('which', [candidate.bin], { stdio: 'ignore' }).status === 0
+    if (found) resolvedCommands.add(candidate.bin)
+    return found
   }
   return fs.existsSync(candidate.bin)
 }

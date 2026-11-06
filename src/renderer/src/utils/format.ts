@@ -1,5 +1,20 @@
 import type { AccountStatus, IdpType, KeyStatus, SubscriptionType } from '@shared/types'
 
+/** 数字左侧补零到固定位数，时间格式化共用 */
+function pad(n: number, width = 2): string {
+  return String(n).padStart(width, '0')
+}
+
+/** 本地时区的时分秒（HH:mm:ss） */
+function clockText(date: Date): string {
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
+/** 本地时区的年月日时分秒（YYYY-MM-DD HH:mm:ss） */
+function fullDateTimeText(date: Date): string {
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${clockText(date)}`
+}
+
 /** 打码结果缓存：账号多、重渲染频繁，避免反复算 md5 */
 const maskedEmailCache = new Map<string, string>()
 
@@ -92,17 +107,15 @@ export function formatCheckedAt(ts?: number, nowMs: number = Date.now()): string
   const date = new Date(ts)
   if (Number.isNaN(date.getTime())) return '-'
 
-  const pad = (n: number): string => String(n).padStart(2, '0')
-  const clock = `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
-
   const today = new Date(nowMs)
   const sameDay =
     date.getFullYear() === today.getFullYear() &&
     date.getMonth() === today.getMonth() &&
     date.getDate() === today.getDate()
-  if (sameDay) return clock
+  if (sameDay) return clockText(date)
 
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${clock}`
+  // 跨天与 formatFullDateTime 同一个格式
+  return fullDateTimeText(date)
 }
 
 export function formatDate(ts?: number | string): string {
@@ -121,11 +134,7 @@ export function formatFullDateTime(ts?: number | string): string {
   if (!ts) return '-'
   const date = new Date(ts)
   if (Number.isNaN(date.getTime())) return '-'
-  const pad = (n: number): string => String(n).padStart(2, '0')
-  return (
-    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
-    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
-  )
+  return fullDateTimeText(date)
 }
 
 /** 本地时区的完整日期时间，用于悬浮提示里给出精确时间 */
@@ -140,12 +149,7 @@ export function formatDateTime(ts?: number | string): string {
 export function formatLogTime(ts: number): string {
   const date = new Date(ts)
   if (Number.isNaN(date.getTime())) return '-'
-  const pad = (n: number, width = 2): string => String(n).padStart(width, '0')
-  return (
-    `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
-    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.` +
-    pad(date.getMilliseconds(), 3)
-  )
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${clockText(date)}.${pad(date.getMilliseconds(), 3)}`
 }
 
 /**
@@ -239,7 +243,7 @@ export function usageColor(percent: number): string {
 }
 
 /** Access Token 剩余时间的归一结果，文案与配色由各展示处自行决定 */
-export interface TokenLife {
+interface TokenLife {
   /** unknown = 没有过期时间；expired = 已过期 */
   state: 'unknown' | 'expired' | 'minutes' | 'hours'
   /** 剩余分钟数，state 为 minutes 时使用 */

@@ -27,7 +27,7 @@ import { recordOutbound } from './outboundLog'
 
 const HEALTH_PATH = '/__kiro_key_health'
 const HEALTH_MARKER = 'kiro-manager-key-ok'
-const HOP_BY_HOP = [
+const HOP_BY_HOP = new Set([
   'connection',
   'keep-alive',
   'transfer-encoding',
@@ -36,7 +36,7 @@ const HOP_BY_HOP = [
   'te',
   'trailer',
   'upgrade'
-]
+])
 
 /*
  * UA 对齐 Kiro IDE：上游只在 UA 带 KiroIDE 标记时才放行生成请求。
@@ -173,7 +173,7 @@ function collectBody(stream: http.IncomingMessage): Promise<Buffer> {
 function stripHopByHop(headers: http.IncomingHttpHeaders): Record<string, string | string[]> {
   const out: Record<string, string | string[]> = {}
   for (const [k, v] of Object.entries(headers || {})) {
-    if (HOP_BY_HOP.includes(k.toLowerCase())) continue
+    if (HOP_BY_HOP.has(k.toLowerCase())) continue
     if (v !== undefined) out[k] = v as string | string[]
   }
   return out
@@ -228,7 +228,7 @@ function injectAuthHeaders(
     // 「The bearer token included in the request is invalid.」并回 403。
     // body 里的 profileArn 已由 stripProfileArnFromBody 处理，这里补上请求头这一路。
     if (lk === PROFILE_ARN_HEADER) continue
-    if (HOP_BY_HOP.includes(lk)) continue
+    if (HOP_BY_HOP.has(lk)) continue
     if (v !== undefined) headers[k] = v as string | string[]
   }
   headers['host'] = targetHost
@@ -288,7 +288,7 @@ function apiGet(base: string, urlPath: string, key: string): Promise<ApiResponse
   })
 }
 
-export interface FetchedModels {
+interface FetchedModels {
   defaultModel: string
   models: KeyModelInfo[]
 }
@@ -357,7 +357,7 @@ function tierFromTitle(title: string): string {
   if (t.includes('free')) return 'free'
   return 'other'
 }
-export interface AccountInfo {
+interface AccountInfo {
   subscriptionTitle: string
   tier: string
   used: number | null
@@ -485,7 +485,7 @@ interface KeyCredential {
 type KeyProvider = () => KeyCredential | null
 type RegionProvider = () => string
 
-export interface KeyGatewayObservation {
+interface KeyGatewayObservation {
   lastForwardedKeyId: string | null
   lastForwardedAt?: number
 }
@@ -536,8 +536,7 @@ function forwardGeneric(
     try {
       target = new URL(baseFn(region) + req.url)
     } catch (e) {
-      res.writeHead(500, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ message: 'bad target url: ' + (e as Error).message }))
+      sendMessage(res, 500, 'bad target url: ' + (e as Error).message)
       return
     }
     const headers = injectAuthHeaders(req.headers, target.host, credential.key)
@@ -712,6 +711,31 @@ function forwardGeneric(
   })
 }
 
+/** 回一个 { message } 形状的 JSON 响应 */
+function sendMessage(res: http.ServerResponse, status: number, message: string): void {
+  res.writeHead(status, { 'Content-Type': 'application/json' })
+  res.end(JSON.stringify({ message }))
+}
+
+/**
+ * 两个代理共用的开头：健康检查直接应答，没配置 API Key 回 401。
+ * 返回本次请求的凭证快照；已经应答过（不必再往下走）时返回 null。
+ */
+function preflight(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  getCredential: KeyProvider
+): KeyCredential | null {
+  if (req.url === HEALTH_PATH) {
+    res.writeHead(200, { 'Content-Type': 'text/plain' })
+    res.end(HEALTH_MARKER)
+    return null
+  }
+  const credential = getCredential()
+  if (!credential) sendMessage(res, 401, 'Key 网关：未配置 API Key')
+  return credential
+}
+
 function makeGenericHandler(
   label: string,
   baseFn: (region: string) => string,
@@ -719,17 +743,8 @@ function makeGenericHandler(
   getRegion: RegionProvider
 ): http.RequestListener {
   return function handle(req, res) {
-    if (req.url === HEALTH_PATH) {
-      res.writeHead(200, { 'Content-Type': 'text/plain' })
-      res.end(HEALTH_MARKER)
-      return
-    }
-    const credential = getCredential()
-    if (!credential) {
-      res.writeHead(401, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ message: 'Key 网关：未配置 API Key' }))
-      return
-    }
+    const credential = preflight(req, res, getCredential)
+    if (!credential) return
     forwardGeneric(req, res, label, baseFn, credential, getRegion)
   }
 }
@@ -738,18 +753,9 @@ function makeGenericHandler(
  *  直接透传会 UnknownOperation 导致模型列表为空，这里显式识别并用 GET 应答。 */
 function makeCpsHandler(getCredential: KeyProvider, getRegion: RegionProvider): http.RequestListener {
   return function handle(req, res) {
-    if (req.url === HEALTH_PATH) {
-      res.writeHead(200, { 'Content-Type': 'text/plain' })
-      res.end(HEALTH_MARKER)
-      return
-    }
     // CPS 特例和普通透传共享同一份请求级凭证快照，不能在分支内二次读取。
-    const credential = getCredential()
-    if (!credential) {
-      res.writeHead(401, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ message: 'Key 网关：未配置 API Key' }))
-      return
-    }
+    const credential = preflight(req, res, getCredential)
+    if (!credential) return
     const region = getRegion()
     const clean = (req.url || '/').split('?')[0]
     const amzTarget = String(req.headers['x-amz-target'] || req.headers['x-amzn-target'] || '')

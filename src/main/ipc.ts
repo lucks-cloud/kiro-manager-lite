@@ -5,7 +5,8 @@ import {
   ipcMain,
   shell,
   app,
-  type IpcMainInvokeEvent
+  type IpcMainInvokeEvent,
+  type SaveDialogOptions
 } from 'electron'
 import { readFile, writeFile } from 'fs/promises'
 import { existsSync } from 'fs'
@@ -20,7 +21,8 @@ import {
   syncCredentialsToIde,
   verifyCredentials
 } from './accountService'
-import { kiroCliSupport, logoutKiroCli, readKiroCliActive } from './kiroCliAuth'
+import { kiroCliRevealablePath, logoutKiroCli, readKiroCliActive } from './kiroCliAuth'
+import { detectKiroTools } from './kiroToolsInstall'
 import { createAccountApiKey, deleteAccountApiKey, listAccountApiKeys } from './kiroApiKey'
 import { openAccountPortal, openInAppUrl } from './kiroPortal'
 import { createSubscriptionCheckout, getSubscriptionEntry, listSubscriptionPlans } from './kiroSubscription'
@@ -142,7 +144,6 @@ import {
   setKeysTrashed,
   setKeysNote,
   syncKey,
-  testKey,
   updateKey,
   updateKeyRegion
 } from './keyService'
@@ -201,6 +202,69 @@ function ok<T>(data?: T): IpcResult<T> {
 
 function fail(error: unknown): IpcResult<never> {
   return { success: false, error: errorMessage(error) }
+}
+
+/**
+ * 凭证刷新后若已同步给 IDE（刷新的正是 IDE 当前激活账号），按新的到期时间重排主动续期。
+ * 没刷新过（refreshed 为空）或没同步给 IDE 时什么都不做。
+ */
+function rescheduleIfSynced(
+  accountId: string,
+  refreshed: { syncedToIde: boolean; expiresIn: number } | undefined
+): void {
+  if (refreshed?.syncedToIde) {
+    scheduleProactiveRenewal(accountId, Date.now() + refreshed.expiresIn * 1000)
+  }
+}
+
+/** 文件存在就在文件管理器里定位；还不存在时退一步打开它所在目录，至少让用户看到位置 */
+async function revealOrOpenDir(file: string): Promise<void> {
+  if (existsSync(file)) shell.showItemInFolder(file)
+  else await shell.openPath(dirname(file))
+}
+
+/**
+ * 跑一次测活对话（账号与 API Key 共用）：
+ * 登记 AbortController 供 chat-cancel 取消，增量文本推给发起请求的渲染进程，
+ * 结束后按身份注销（同一 requestId 已被新请求覆盖时不误删）。
+ * onError 在失败返回前调用，aborted 表示是否为用户主动中止。
+ */
+async function runChatTest(
+  aborters: Map<string, AbortController>,
+  event: IpcMainInvokeEvent,
+  requestId: string,
+  chunkChannel: string,
+  run: (callbacks: { onDelta: (delta: string) => void }, signal: AbortSignal) => Promise<unknown>,
+  onError?: (error: unknown, aborted: boolean) => void
+): Promise<unknown> {
+  const controller = new AbortController()
+  aborters.set(requestId, controller)
+  try {
+    const result = await run(
+      {
+        onDelta: (delta) => {
+          // 渲染进程可能已经关闭弹窗，发送前确认还活着
+          if (!event.sender.isDestroyed()) {
+            event.sender.send(chunkChannel, { requestId, delta })
+          }
+        }
+      },
+      controller.signal
+    )
+    return ok(result)
+  } catch (error) {
+    onError?.(error, controller.signal.aborted)
+    // 失败也把官方原始返回带回去：空响应、异常帧、403 这些最需要看原文的恰恰是失败的情况
+    return { ...fail(error), raw: chatTraceOf(error) }
+  } finally {
+    if (aborters.get(requestId) === controller) aborters.delete(requestId)
+  }
+}
+
+/** 取消一次测活对话 */
+function cancelChatTest(aborters: Map<string, AbortController>, requestId: string): IpcResult<unknown> {
+  aborters.get(requestId)?.abort(new Error('用户取消'))
+  return ok()
 }
 
 /**
@@ -280,18 +344,14 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   handle('accounts:refresh-token', async (_e, account: Account) => {
     const result = await refreshAccountToken(account)
     // 刷新的正是 IDE 当前激活账号时，基于新 expiresAt 重排主动续期
-    if (result.syncedToIde) {
-      scheduleProactiveRenewal(account.id, Date.now() + result.expiresIn * 1000)
-    }
+    rescheduleIfSynced(account.id, result)
     return ok(result)
   })
 
   handle('accounts:create-api-key', async (_e, account: Account, label: string) => {
     const result = await createAccountApiKey(account, label)
     // 生成过程中若刷新过凭证，按新的到期时间重排主动续期
-    if (result.refreshed?.syncedToIde) {
-      scheduleProactiveRenewal(account.id, Date.now() + result.refreshed.expiresIn * 1000)
-    }
+    rescheduleIfSynced(account.id, result.refreshed)
     return ok(result)
   })
 
@@ -321,17 +381,13 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
 
   handle('accounts:list-api-keys', async (_e, account: Account) => {
     const result = await listAccountApiKeys(account)
-    if (result.refreshed?.syncedToIde) {
-      scheduleProactiveRenewal(account.id, Date.now() + result.refreshed.expiresIn * 1000)
-    }
+    rescheduleIfSynced(account.id, result.refreshed)
     return ok(result)
   })
 
   handle('accounts:delete-api-key', async (_e, account: Account, keyId: string) => {
     const result = await deleteAccountApiKey(account, keyId)
-    if (result.refreshed?.syncedToIde) {
-      scheduleProactiveRenewal(account.id, Date.now() + result.refreshed.expiresIn * 1000)
-    }
+    rescheduleIfSynced(account.id, result.refreshed)
     return ok(result)
   })
 
@@ -397,16 +453,21 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   handle('kiro:restart-ide', async () => ok(await restartKiroIde()))
 
   // ============ 写入 Kiro CLI（KiroCrew 读同一套凭证） ============
-  handle('kiro:cli-support', async () => {
-    const support = kiroCliSupport()
-    const current = support.supported && support.dbExists ? await readKiroCliActive() : null
-    return ok({ ...support, currentAccount: current })
-  })
-
-  /** 单独查 Kiro CLI 当前使用中账号（界面「重新检测」用，比 cli-support 轻） */
+  /** 查 Kiro CLI / KiroCrew 当前使用中账号（启动对齐与界面「重新检测」用） */
   handle('kiro:cli-active', async () => ok(await readKiroCliActive()))
 
+  /** 登录前检测 kiro-cli / Kiro Crew 是否已安装；fresh 为 true 时不用缓存（「重新检测」） */
+  handle('kiro:tools-install', async (_e, fresh?: boolean) => ok(await detectKiroTools(fresh === true)))
+
   handle('kiro:cli-login', async (_e, input: KiroCliLoginInput) => ok(await loginAccountToCli(input)))
+
+  /** 在文件管理器里定位 kiro-cli 的凭证库 / 备份 / 可执行文件（仅限 kiro-cli 自己的目录） */
+  handle('kiro:cli-reveal', async (_e, target: string) => {
+    const file = kiroCliRevealablePath(String(target ?? ''))
+    if (!file) return fail(new Error('只能定位 kiro-cli 数据目录下的文件'))
+    await revealOrOpenDir(file)
+    return ok()
+  })
 
   /** 退出 Kiro CLI / KiroCrew 登录（清理本机 kiro-cli 凭证） */
   handle('kiro:cli-logout', async () => ok(await logoutKiroCli()))
@@ -431,7 +492,6 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   )
   handle('keys:delete', (_e, id: string) => ok(deleteKey(id)))
   handle('keys:select', async (_e, id: string) => ok(await selectKey(id)))
-  handle('keys:test', async (_e, id: string) => ok(await testKey(id)))
   handle('keys:models', async (_e, id: string) => ok(await listKeyModels(id)))
   handle('keys:model-details', async (_e, id: string) => ok(await listKeyModelDetails(id)))
   handle('keys:sync', async (_e, id: string) => ok(await syncKey(id)))
@@ -465,79 +525,50 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   const accountChatAborters = new Map<string, AbortController>()
   const keyChatAborters = new Map<string, AbortController>()
 
-  handle('kiro:chat-test', async (event, requestId: string, input: ChatTestInput) => {
-    const controller = new AbortController()
-    accountChatAborters.set(requestId, controller)
-    try {
-      const result = await streamKiroChat(
-        input,
-        {
-          onDelta: (delta) => {
-            // 渲染进程可能已经关闭弹窗，发送前确认还活着
-            if (!event.sender.isDestroyed()) {
-              event.sender.send('kiro:chat-chunk', { requestId, delta })
-            }
-          }
-        },
-        controller.signal
-      )
-      return ok(result)
-    } catch (error) {
-      // 失败也把官方原始返回带回去：空响应、异常帧、403 这些最需要看原文的恰恰是失败的情况
-      return { ...fail(error), raw: chatTraceOf(error) }
-    } finally {
-      if (accountChatAborters.get(requestId) === controller) accountChatAborters.delete(requestId)
-    }
-  })
+  handle('kiro:chat-test', (event, requestId: string, input: ChatTestInput) =>
+    runChatTest(accountChatAborters, event, requestId, 'kiro:chat-chunk', (callbacks, signal) =>
+      streamKiroChat(input, callbacks, signal)
+    )
+  )
 
-  handle('kiro:chat-cancel', (_e, requestId: string) => {
-    accountChatAborters.get(requestId)?.abort(new Error('用户取消'))
-    return ok()
-  })
+  handle('kiro:chat-cancel', (_e, requestId: string) => cancelChatTest(accountChatAborters, requestId))
 
   // API Key 在线对话测活：凭证只在主进程读取，不下发到渲染层。
   handle('keys:chat-test', async (event, requestId: string, input: ApiKeyChatTestInput) => {
     const data = loadKeys()
     const entry = data.keys.find((key) => key.id === input.keyId)
     if (!entry) return fail('未找到该 API Key')
-    const controller = new AbortController()
-    keyChatAborters.set(requestId, controller)
-    try {
-      const result = await streamApiKeyChat(
-        entry.key,
-        entry.region,
-        {
-          modelId: input.modelId,
-          message: input.message,
-          additionalModelRequestFields: input.additionalModelRequestFields
-        },
-        {
-          onDelta: (delta) => {
-            if (!event.sender.isDestroyed()) {
-              event.sender.send('keys:chat-chunk', { requestId, delta })
-            }
-          }
-        },
-        controller.signal
-      )
-      // 真实对话是唯一能查出封禁/失效的途径，结论必须落库，否则卡片仍显示「正常」
-      recordChatTestResult(entry.id, undefined)
-      return ok(result)
-    } catch (error) {
-      // 用户主动中止不构成测活结论，不能据此把 Key 标成异常
-      if (!controller.signal.aborted) {
-        recordChatTestResult(entry.id, errorMessage(error))
+    return runChatTest(
+      keyChatAborters,
+      event,
+      requestId,
+      'keys:chat-chunk',
+      async (callbacks, signal) => {
+        const result = await streamApiKeyChat(
+          entry.key,
+          entry.region,
+          {
+            modelId: input.modelId,
+            message: input.message,
+            additionalModelRequestFields: input.additionalModelRequestFields
+          },
+          callbacks,
+          signal
+        )
+        // 真实对话是唯一能查出封禁/失效的途径，结论必须落库，否则卡片仍显示「正常」
+        recordChatTestResult(entry.id, undefined)
+        return result
+      },
+      (error, aborted) => {
+        // 用户主动中止不构成测活结论，不能据此把 Key 标成异常
+        if (!aborted) {
+          recordChatTestResult(entry.id, errorMessage(error))
+        }
       }
-      return { ...fail(error), raw: chatTraceOf(error) }
-    } finally {
-      if (keyChatAborters.get(requestId) === controller) keyChatAborters.delete(requestId)
-    }
+    )
   })
 
-  handle('keys:chat-cancel', (_e, requestId: string) => {
-    keyChatAborters.get(requestId)?.abort(new Error('用户取消'))
-    return ok()
-  })
+  handle('keys:chat-cancel', (_e, requestId: string) => cancelChatTest(keyChatAborters, requestId))
 
   // ============ 在线登录 ============
   handle('login:start-builder-id', async (_e, region?: string, privateMode?: boolean) =>
@@ -599,17 +630,36 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     }
   }
 
-  handle('file:export', async (_e, content: string, filename: string) => {
-    const result = await dialog.showSaveDialog(getWindow()!, {
-      title: filename.endsWith('.log') ? '导出日志' : '导出账号数据',
-      defaultPath: filename,
-      // 匹配文件名扩展名的类型必须排在首位，否则 macOS 会按第一项再追加一次扩展名
-      filters: exportFilters(filename)
-    })
-    if (result.canceled || !result.filePath) return ok({ saved: false })
-    await writeFile(result.filePath, content, 'utf-8')
+  /**
+   * 弹保存对话框 → 写文件 → 在文件管理器里定位，返回保存路径；用户取消返回 null。
+   * 内容由 build 在用户选好位置之后才生成（zip / xlsx 组装有开销，取消时不必白做）。
+   * 字符串按 utf-8 写，Buffer 原样写。
+   */
+  async function saveViaDialog(
+    options: SaveDialogOptions,
+    build: () => string | Buffer
+  ): Promise<string | null> {
+    const result = await dialog.showSaveDialog(getWindow()!, options)
+    if (result.canceled || !result.filePath) return null
+    const data = build()
+    if (typeof data === 'string') await writeFile(result.filePath, data, 'utf-8')
+    else await writeFile(result.filePath, data)
     revealExported(result.filePath)
-    return ok({ saved: true, path: result.filePath })
+    return result.filePath
+  }
+
+  handle('file:export', async (_e, content: string, filename: string) => {
+    const saved = await saveViaDialog(
+      {
+        title: filename.endsWith('.log') ? '导出日志' : '导出账号数据',
+        defaultPath: filename,
+        // 匹配文件名扩展名的类型必须排在首位，否则 macOS 会按第一项再追加一次扩展名
+        filters: exportFilters(filename)
+      },
+      () => content
+    )
+    if (!saved) return ok({ saved: false })
+    return ok({ saved: true, path: saved })
   })
 
   // 打包导出：把多个文件塞进一个 zip 再落盘
@@ -617,31 +667,29 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     const entries = bundle.files ?? []
     if (!entries.length) throw new Error('没有可打包的内容')
 
-    const result = await dialog.showSaveDialog(getWindow()!, {
-      title: '导出压缩包',
-      defaultPath: filename,
-      filters: [
-        { name: '压缩包', extensions: ['zip'] },
-        { name: '全部文件', extensions: ['*'] }
-      ]
-    })
-    if (result.canceled || !result.filePath) return ok({ saved: false })
-    await writeFile(result.filePath, buildZip(entries))
-    revealExported(result.filePath)
-    return ok({ saved: true, path: result.filePath, count: entries.length })
+    const saved = await saveViaDialog(
+      {
+        title: '导出压缩包',
+        defaultPath: filename,
+        filters: [
+          { name: '压缩包', extensions: ['zip'] },
+          { name: '全部文件', extensions: ['*'] }
+        ]
+      },
+      () => buildZip(entries)
+    )
+    if (!saved) return ok({ saved: false })
+    return ok({ saved: true, path: saved, count: entries.length })
   })
 
   // xlsx 是二进制 zip，走不了上面的 utf-8 通道；渲染层只传结构化数据，落盘前在主进程组装
   handle('file:export-xlsx', async (_e, sheet: XlsxSheet, filename: string) => {
-    const result = await dialog.showSaveDialog(getWindow()!, {
-      title: '导出表格',
-      defaultPath: filename,
-      filters: exportFilters(filename)
-    })
-    if (result.canceled || !result.filePath) return ok({ saved: false })
-    await writeFile(result.filePath, buildXlsx(sheet))
-    revealExported(result.filePath)
-    return ok({ saved: true, path: result.filePath })
+    const saved = await saveViaDialog(
+      { title: '导出表格', defaultPath: filename, filters: exportFilters(filename) },
+      () => buildXlsx(sheet)
+    )
+    if (!saved) return ok({ saved: false })
+    return ok({ saved: true, path: saved })
   })
 
   // ============ 设置 ============
@@ -693,10 +741,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
    * 渲染层只能传机制标识，路径一律由主进程自行解析，避免任意路径被打开。
    */
   handle('tools:shell-approve-reveal', async (_e, kind: ShellAutoApproveTarget['kind']) => {
-    const target = shellApproveTargetPath(kind)
-    // 文件还不存在时退一步打开它所在目录，至少让用户看到位置
-    if (existsSync(target)) shell.showItemInFolder(target)
-    else await shell.openPath(dirname(target))
+    await revealOrOpenDir(shellApproveTargetPath(kind))
     return ok()
   })
 
@@ -708,8 +753,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   handle('tools:machine-id-reveal', async (_e, field: MachineIdField) => {
     const target = machineIdLocationFile(field)
     if (!target) return fail(new Error('该项存放在注册表中，没有对应的文件'))
-    if (existsSync(target)) shell.showItemInFolder(target)
-    else await shell.openPath(dirname(target))
+    await revealOrOpenDir(target)
     return ok()
   })
 
@@ -717,8 +761,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   handle('accounts:reveal-sso-file', async (_e, target: string) => {
     const file = ssoCacheFile(target)
     if (!file) return fail(new Error('只能定位 Kiro SSO 缓存目录下的凭证文件'))
-    if (existsSync(file)) shell.showItemInFolder(file)
-    else await shell.openPath(dirname(file))
+    await revealOrOpenDir(file)
     return ok()
   })
 
@@ -893,8 +936,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     // 与界面展示的列表同一份，下标才对得上
     const file = displayFiles(target)[index]
     if (!file) return fail(new Error('未知的配置文件'))
-    if (existsSync(file)) shell.showItemInFolder(file)
-    else await shell.openPath(dirname(file))
+    await revealOrOpenDir(file)
     return ok()
   })
 

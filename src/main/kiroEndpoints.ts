@@ -2,15 +2,16 @@
 //
 // token 刷新、用量查询、模型列表、对话测活分散在多个模块里，但它们用的都是
 // 同一套 UA、同一套区域映射规则。统一收在这里，避免各处各写一份导致漂移。
-import { execFileSync } from 'child_process'
+import { execFile, execFileSync } from 'child_process'
 import { createHash, randomUUID } from 'crypto'
 import { readFileSync } from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 
 /**
- * 对齐 Kiro IDE 的版本号与 SDK 版本。**全项目只在这里定义**：
- * 反代、账号测活、模型列表、用量、token 刷新、API Key 网关全部从这里取，
+ * 对齐 Kiro IDE 的版本号与 SDK 版本。**全项目只在这里定义**，也只在本文件里用：
+ * 反代、账号测活、模型列表、用量、token 刷新、API Key 网关拼请求头时
+ * 一律调用下面的 kiroUserAgent() / kiroAmzUserAgent()，不直接引用这两个常量。
  * 升级时只改这两个常量，别在别的文件里再写一份。
  *
  * 这不只是「像不像官方客户端」的问题，服务端会按 UA 里的版本号做准入：
@@ -23,8 +24,8 @@ import * as path from 'path'
  * @aws/codewhisperer-streaming-client 是 1.0.39（0.12.155 那一代是 1.0.34）。
  * 升级时两个一起核对：只改版本号、SDK 还停在旧值，就是一个官方从没发过的组合。
  */
-export const KIRO_IDE_VERSION = '0.12.333'
-export const AWS_SDK_VERSION = '1.0.39'
+const KIRO_IDE_VERSION = '0.12.333'
+const AWS_SDK_VERSION = '1.0.39'
 
 /*
  * ============ UA 里的机器码 ============
@@ -41,24 +42,43 @@ export const AWS_SDK_VERSION = '1.0.39'
  * 真实 IDE 发出去的一致；只有系统标识拿不到时，才和官方一样回落到 telemetry.machineId。
  */
 
+/** 靠子进程查系统设备标识的命令、参数与输出解析 */
+interface DeviceIdQuery {
+  file: string
+  args: string[]
+  options: { encoding: 'utf-8'; timeout: number; windowsHide?: boolean }
+  parse: (out: string) => string | undefined
+}
+
+/**
+ * macOS / Windows 的设备标识查询；其它平台直接读文件，返回 undefined。
+ * 同步取值（osDeviceId）与启动后的异步预热（warmKiroMachineId）共用这一份，保证两边算法一致。
+ */
+function deviceIdQuery(): DeviceIdQuery | undefined {
+  if (process.platform === 'darwin') {
+    return {
+      file: 'ioreg',
+      args: ['-rd1', '-c', 'IOPlatformExpertDevice'],
+      options: { encoding: 'utf-8', timeout: 3000 },
+      parse: (out) => /"IOPlatformUUID"\s*=\s*"([^"]+)"/.exec(out)?.[1]?.toLowerCase()
+    }
+  }
+  if (process.platform === 'win32') {
+    return {
+      file: 'REG',
+      args: ['QUERY', 'HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid'],
+      options: { encoding: 'utf-8', timeout: 3000, windowsHide: true },
+      parse: (out) => /REG_SZ\s+(\S+)/.exec(out)?.[1]?.toLowerCase()
+    }
+  }
+  return undefined
+}
+
 /** node-machine-id 同款：取系统设备标识原文，统一小写、去空白 */
 function osDeviceId(): string | undefined {
   try {
-    if (process.platform === 'darwin') {
-      const out = execFileSync('ioreg', ['-rd1', '-c', 'IOPlatformExpertDevice'], {
-        encoding: 'utf-8',
-        timeout: 3000
-      })
-      return /"IOPlatformUUID"\s*=\s*"([^"]+)"/.exec(out)?.[1]?.toLowerCase()
-    }
-    if (process.platform === 'win32') {
-      const out = execFileSync(
-        'REG',
-        ['QUERY', 'HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid'],
-        { encoding: 'utf-8', timeout: 3000, windowsHide: true }
-      )
-      return /REG_SZ\s+(\S+)/.exec(out)?.[1]?.toLowerCase()
-    }
+    const query = deviceIdQuery()
+    if (query) return query.parse(execFileSync(query.file, query.args, query.options))
     for (const file of ['/var/lib/dbus/machine-id', '/etc/machine-id']) {
       try {
         const id = readFileSync(file, 'utf-8').split('\n')[0].replace(/\s+/g, '').toLowerCase()
@@ -95,19 +115,44 @@ function kiroTelemetryMachineId(): string | undefined {
 
 let cachedMachineId: string | undefined
 
+/** 设备标识 → 机器码：node-machine-id 同款 sha256 */
+function hashDeviceId(deviceId: string): string {
+  return createHash('sha256').update(deviceId).digest('hex')
+}
+
 /**
  * UA 后缀用的机器码（64 位 hex）。
  * 系统设备标识在进程生命周期内不会变，算一次缓存住：ioreg 是同步子进程，每个请求都跑太浪费。
  * 两个来源都拿不到（没装 Kiro 的 Linux 容器之类）时，按主机名派生一个稳定值，保证格式不缺段。
  */
-export function kiroMachineId(): string {
+function kiroMachineId(): string {
   if (cachedMachineId) return cachedMachineId
   const deviceId = osDeviceId()
   cachedMachineId = deviceId
-    ? createHash('sha256').update(deviceId).digest('hex')
+    ? hashDeviceId(deviceId)
     : (kiroTelemetryMachineId() ??
       createHash('sha256').update(`kiro-manager-lite/${os.hostname()}`).digest('hex'))
   return cachedMachineId
+}
+
+/**
+ * 启动后用异步子进程预热机器码缓存，免得第一个请求在主线程上同步跑 ioreg / REG（最长 3 秒）。
+ * 只在查到设备标识时写缓存，结果与 kiroMachineId 的同步路径完全一致；
+ * 查询失败（超时、命令缺失）或其它平台不写，仍由 kiroMachineId 按原逻辑同步取值与回落。
+ * 预热期间若同步路径已先算出结果，以先写入的为准，不覆盖。
+ */
+export function warmKiroMachineId(): void {
+  const query = deviceIdQuery()
+  if (!query || cachedMachineId) return
+  try {
+    execFile(query.file, query.args, query.options, (error, stdout) => {
+      if (error || cachedMachineId) return
+      const deviceId = query.parse(stdout)
+      if (deviceId) cachedMachineId = hashDeviceId(deviceId)
+    })
+  } catch {
+    // 起子进程失败就不预热，交给同步路径
+  }
 }
 
 /** os / node 指纹按本机真实值填，固定写 windows 反而是个显眼的破绽 */

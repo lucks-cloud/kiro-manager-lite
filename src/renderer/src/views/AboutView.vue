@@ -14,7 +14,7 @@ import {
 import { useSettingsStore } from '@/stores/settings'
 import { useUpdateStore } from '@/stores/update'
 import kiroLogo from '@/assets/kiro-logo.png'
-import qqGroup from '@/assets/qq-group.png'
+import qqGroup from '@/assets/qq-group.jpg'
 import authorAvatar from '@/assets/author_avatar.jpg'
 import sponsorWechat from '@/assets/sponsor_wechat.jpg'
 import sponsorAlipay from '@/assets/sponsor_alipay.jpg'

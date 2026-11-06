@@ -3,7 +3,7 @@
  * 积分变化日志：复用同一套曲线与列表展示账号或 API Key 的用量快照。
  * 曲线用手写 SVG，不引图表库：数据只有一条线，够用且省一个依赖。
  */
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import {
   DeleteOutlined,
@@ -12,6 +12,7 @@ import {
   SyncOutlined
 } from '@ant-design/icons-vue'
 import { useSettingsStore } from '@/stores/settings'
+import { CHART_HEIGHT, timeTicks, useChartFrame, valueTicks } from '@/composables/useChartFrame'
 import { formatCredits, formatCreditsPair, formatDateTime, usageColor } from '@/utils/format'
 import { displayEmail } from '@/utils/display'
 import { smoothLinePath } from '@/utils/chart'
@@ -99,21 +100,12 @@ const summary = computed(() => {
 
 // ============ 曲线 ============
 
-const chartBox = ref<HTMLElement | null>(null)
-const chartWidth = ref(760)
-const CHART_HEIGHT = 220
 const PAD = { top: 14, right: 16, bottom: 26, left: 56 }
 
-// 容器宽度随窗口变化，用 ResizeObserver 跟着重算，避免曲线被拉伸
-const observer = new ResizeObserver((records) => {
-  const width = records[0]?.contentRect.width
-  if (width) chartWidth.value = width
-})
-watch(chartBox, (el, prev) => {
-  if (prev) observer.unobserve(prev)
-  if (el) observer.observe(el)
-})
-onBeforeUnmount(() => observer.disconnect())
+// 容器宽度（量的是模板里 ref="chartBox" 的元素）、悬停命中与浮层定位见 useChartFrame
+const { chartWidth, hoverIndex, hoverPoint, onMove, tooltipStyle } = useChartFrame(
+  () => plot.value.points
+)
 
 interface Point {
   x: number
@@ -150,59 +142,13 @@ const plot = computed(() => {
     ? `${line} L${points.at(-1)!.x.toFixed(2)},${baseY} L${points[0].x.toFixed(2)},${baseY} Z`
     : ''
 
-  const yTicks = Array.from({ length: 5 }, (_, i) => {
-    const ratio = i / 4
-    return { y: PAD.top + innerH - ratio * innerH, label: formatCredits(top * ratio, precision.value) }
-  })
-
-  const tickCount = Math.min(5, list.length)
-  const xTicks = Array.from({ length: tickCount }, (_, i) => {
-    // 只有一个刻度时放在正中间；首尾标签朝绘图区内侧展开，避免完整时间被 SVG 边缘裁切。
-    const ratio = tickCount === 1 ? 0.5 : i / (tickCount - 1)
-    const at = minTime + span * ratio
-    return {
-      x: PAD.left + ratio * innerW,
-      anchor:
-        tickCount === 1 ? 'middle' : i === 0 ? 'start' : i === tickCount - 1 ? 'end' : 'middle',
-      label: new Date(at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
-    }
-  })
+  const yTicks = valueTicks(top, PAD, innerH, (value) => formatCredits(value, precision.value))
+  const xTicks = timeTicks(minTime, span, list.length, PAD, innerW)
 
   return { points, line, area, yTicks, xTicks, innerW, innerH }
 })
 
 const lineColor = computed(() => usageColor(subjectInfo.value?.percentUsed ?? 0))
-
-/** 悬停命中的点索引 */
-const hoverIndex = ref<number | null>(null)
-const hoverPoint = computed(() =>
-  hoverIndex.value === null ? null : (plot.value.points[hoverIndex.value] ?? null)
-)
-
-function onMove(event: MouseEvent): void {
-  const points = plot.value.points
-  if (!points.length) return
-  const rect = (event.currentTarget as SVGElement).getBoundingClientRect()
-  // svg 用的是 1:1 的 viewBox，鼠标坐标直接按缩放比换算即可
-  const x = ((event.clientX - rect.left) / rect.width) * chartWidth.value
-  let best = 0
-  for (let i = 1; i < points.length; i++) {
-    if (Math.abs(points[i].x - x) < Math.abs(points[best].x - x)) best = i
-  }
-  hoverIndex.value = best
-}
-
-/** 浮层贴着命中点，靠右侧时翻到左边免得被裁掉 */
-const tooltipStyle = computed(() => {
-  const point = hoverPoint.value
-  if (!point) return {}
-  const flip = point.x > chartWidth.value * 0.6
-  return {
-    left: `${point.x}px`,
-    top: `${Math.max(0, point.y - 12)}px`,
-    transform: flip ? 'translate(calc(-100% - 10px), -100%)' : 'translate(10px, -100%)'
-  }
-})
 
 // ============ 列表 ============
 
@@ -414,7 +360,7 @@ async function exportXlsx(): Promise<void> {
 
         <g v-if="hoverPoint">
           <line
-            class="hover-line"
+            class="kal-chart-cursor"
             :x1="hoverPoint.x"
             :y1="PAD.top"
             :x2="hoverPoint.x"
@@ -531,11 +477,7 @@ async function exportXlsx(): Promise<void> {
   font-size: 10.5px;
 }
 
-.hover-line {
-  stroke: var(--kal-muted);
-  stroke-width: 1;
-  stroke-dasharray: 3 3;
-}
+/* 悬停竖线 .kal-chart-cursor 与网关调用历史共用，在 assets/styles.css */
 
 .tooltip {
   position: absolute;

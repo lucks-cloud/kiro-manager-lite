@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue'
-import { message } from 'ant-design-vue'
+import { computed, watch } from 'vue'
 import {
   CloseCircleFilled,
   SendOutlined,
@@ -10,64 +9,56 @@ import {
 import { useKeysStore } from '@/stores/keys'
 import { useSettingsStore } from '@/stores/settings'
 import ModelCascader from '@/components/common/ModelCascader.vue'
-import { withDefaultEffort, type CascaderModel } from '@/utils/models'
 import TestOutputPanel from '@/components/common/TestOutputPanel.vue'
+import { useChatTest } from '@/composables/useChatTest'
 import { errorMessage } from '@shared/errors'
-import { buildModelRequestFields } from '@shared/modelSchema'
-import type { ChatRawTrace, ChatTestResult, KeyEntry, KeyModelInfo } from '@shared/types'
+import type { KeyEntry, KeyModelInfo } from '@shared/types'
 
 const props = defineProps<{ keyEntry: KeyEntry | null }>()
 const emit = defineEmits<{ close: [] }>()
 const keysStore = useKeysStore()
 const settingsStore = useSettingsStore()
-const DEFAULT_MESSAGE = '你的具体模型名称，以及当前具体时间，打印出来！'
 
-const models = ref<KeyModelInfo[]>([])
-const modelsLoading = ref(false)
-const modelsError = ref('')
-const input = ref(DEFAULT_MESSAGE)
-const running = ref(false)
-const output = ref('')
-const result = ref<ChatTestResult | null>(null)
-/** 官方原始返回：成功、失败、中止都有，和 result 分开存 */
-const rawTrace = ref<ChatRawTrace | null>(null)
-const error = ref('')
-const requestId = ref('')
+// 模型列表、输入、运行状态、流式片段与结果摘要见 useChatTest
+const {
+  models,
+  modelsLoading,
+  modelsError,
+  input,
+  running,
+  output,
+  result,
+  rawTrace,
+  error,
+  requestId,
+  cascaderModels,
+  selection,
+  modelId,
+  requestFields,
+  ready,
+  resultSummary,
+  applyModels,
+  resetForTarget,
+  beginRun,
+  cancel
+} = useChatTest<KeyModelInfo>({
+  modelIdOf: (m) => m.id,
+  // Key 拉回来的模型本身就是级联选择器要的形状
+  toCascader: (list) => list,
+  onChunk: (handler) => window.api.onKeyChatChunk(handler),
+  cancelRequest: (id) => void window.api.cancelKeyChatTest(id),
+  okLabel: 'API Key 可用'
+})
 
 const open = computed(() => !!props.keyEntry)
 const label = computed(() => {
   const key = props.keyEntry?.key || ''
   return settingsStore.settings.privacyMode ? mask(key) : key
 })
-/** 级联选择器要的形状：一级模型、二级推理档位（档位来自模型自己的 schema） */
-const cascaderModels = computed<CascaderModel[]>(() => models.value)
-
-/** [模型 id] 或 [模型 id, 档位]；只选模型表示用上游默认档位 */
-const selection = ref<string[]>([])
-const modelId = computed(() => selection.value[0] ?? '')
-const effortLevel = computed(() => selection.value[1])
-
-/**
- * 按所选模型的 schema 拼出请求字段。
- * 没选档位就不带这个字段 —— 上游对「本无该选项的模型」带上它会直接 400。
- */
-const requestFields = computed(() => {
-  const model = models.value.find((m) => m.id === modelId.value)
-  return buildModelRequestFields(model?.effort, effortLevel.value)
-})
-const ready = computed(() => !modelsLoading.value && !modelsError.value && models.value.length > 0)
 
 function mask(key: string): string {
   return key ? `${key.slice(0, 8)}…${key.slice(-6)}` : ''
 }
-
-const offChunk = window.api.onKeyChatChunk(({ requestId: id, delta }) => {
-  if (id === requestId.value) output.value += delta
-})
-onUnmounted(() => {
-  if (running.value && requestId.value) void window.api.cancelKeyChatTest(requestId.value)
-  offChunk()
-})
 
 async function loadModels(): Promise<void> {
   const target = props.keyEntry
@@ -80,16 +71,8 @@ async function loadModels(): Promise<void> {
     const response = await keysStore.listModels(target.id)
     if (props.keyEntry?.id !== loadingId) return
     if (response.data?.length) {
-      models.value = response.data
-      const kept = models.value.find((model) => model.id === modelId.value)
-      if (!kept) {
-        const first = models.value[0]
-        // 首个候选同样要补上默认档位，保证「显示的」就是「发出去的」
-        selection.value = first ? withDefaultEffort(cascaderModels.value, [first.id]) : []
-      } else if (effortLevel.value && !kept.effort?.options.includes(effortLevel.value)) {
-        // 重新拉回来的 schema 可能不再有这个档位，回落到新的默认档位
-        selection.value = withDefaultEffort(cascaderModels.value, [kept.id])
-      }
+      // 写入列表并校正已选模型 / 档位
+      applyModels(response.data)
     } else {
       modelsError.value = response.error || '官方没有返回任何可用模型'
     }
@@ -104,12 +87,7 @@ watch(
   () => props.keyEntry?.id,
   (id) => {
     if (!id) return
-    output.value = ''
-    result.value = null
-    rawTrace.value = null
-    error.value = ''
-    input.value = DEFAULT_MESSAGE
-    selection.value = []
+    resetForTarget()
     void loadModels()
   },
   { immediate: true }
@@ -117,17 +95,10 @@ watch(
 
 async function start(): Promise<void> {
   const target = props.keyEntry
-  const text = input.value.trim()
   if (!target) return
-  if (!text) return void message.warning('请输入要发送的内容')
-  if (!modelId.value) return void message.warning('请选择模型')
-
-  running.value = true
-  output.value = ''
-  result.value = null
-  rawTrace.value = null
-  error.value = ''
-  requestId.value = `key-${target.id}-${Date.now()}`
+  // 校验输入与模型，进入运行态并生成 requestId；不通过时已给出提示
+  const text = beginRun(`key-${target.id}`)
+  if (text === null) return
   const currentRequest = requestId.value
   try {
     const response = await window.api.keyChatTest(currentRequest, {
@@ -156,28 +127,10 @@ async function start(): Promise<void> {
   }
 }
 
-function cancel(): void {
-  if (requestId.value) void window.api.cancelKeyChatTest(requestId.value)
-}
-
 function close(): void {
   if (running.value) cancel()
   emit('close')
 }
-
-const resultSummary = computed(() => {
-  const value = result.value
-  if (!value) return ''
-  const parts = [
-    `API Key 可用：${value.endpoint}`,
-    `首字 ${value.firstByteMs} ms`,
-    `总耗时 ${value.totalMs} ms`,
-    `共 ${value.text.length} 字`
-  ]
-  if (value.thinkingChars) parts.push(`思考 ${value.thinkingChars} 字`)
-  return parts.join(' · ')
-})
-
 </script>
 
 <template>

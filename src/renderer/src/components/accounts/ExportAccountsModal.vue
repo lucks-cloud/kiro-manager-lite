@@ -197,30 +197,30 @@ function submit(): void {
 <template>
   <a-modal :open="props.open" width="560px" :footer="null" @cancel="close">
     <template #title>
-      <span class="export-title">
+      <span class="kal-export-title">
         <DownloadOutlined />
         导出账号
         <a-tag style="margin: 0">{{ scopeText }}</a-tag>
       </span>
     </template>
 
-    <div class="format-grid">
+    <div class="kal-export-formats">
       <button
         v-for="item in formats"
         :key="item.value"
-        class="format-card"
+        class="kal-export-format"
         :class="{ selected: format === item.value }"
         @click="pickFormat(item.value)"
       >
-        <span class="format-head">
+        <span class="kal-export-format-head">
           <component :is="item.icon" />
           {{ item.label }}
         </span>
-        <span class="format-desc muted">{{ item.desc }}</span>
+        <span class="kal-export-format-desc muted">{{ item.desc }}</span>
       </button>
     </div>
 
-    <div v-if="supportsCredentialToggle" class="credential-box">
+    <div v-if="supportsCredentialToggle" class="kal-export-credential">
       <a-checkbox v-model:checked="includeCredentials">
         <span class="credential-title">包含凭证信息</span>
         <div class="muted" style="font-size: 12px">
@@ -228,7 +228,7 @@ function submit(): void {
         </div>
       </a-checkbox>
     </div>
-    <div v-else class="credential-box muted" style="font-size: 12px">
+    <div v-else class="kal-export-credential muted" style="font-size: 12px">
       该格式固定包含 Token 等凭证，导出后请妥善保管，不要上传到公开位置。
     </div>
 
@@ -274,63 +274,12 @@ function submit(): void {
   </a-modal>
 </template>
 
+<!-- 格式卡片、说明块等与导出 API Key 共用的样式在 assets/styles.css 的 .kal-export-* 段 -->
 <style scoped>
-.export-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.format-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.format-card {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 12px 14px;
-  text-align: left;
-  cursor: pointer;
-  border-radius: 10px;
-  border: 2px solid var(--kal-border);
-  background: transparent;
-  transition: border-color 0.15s ease, background 0.15s ease;
-}
-
-.format-card:hover {
-  border-color: var(--kal-primary);
-}
-
 /* 选中态用很浅的主题色底，跟着 primaryColor 变 */
-.format-card.selected {
+.kal-export-format.selected {
   border-color: var(--kal-primary);
   background: color-mix(in srgb, var(--kal-primary) 8%, transparent);
-}
-
-.format-head {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 600;
-}
-
-.format-card.selected .format-head {
-  color: var(--kal-primary);
-}
-
-.format-desc {
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.credential-box {
-  margin-top: 14px;
-  padding: 10px 12px;
-  border-radius: 10px;
-  background: var(--kal-block-bg);
 }
 
 .credential-title {

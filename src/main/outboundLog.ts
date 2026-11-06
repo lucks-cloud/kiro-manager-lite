@@ -23,8 +23,24 @@ const MAX_HOSTS = 500
 /** 明细事件最多保留多少条，超出丢弃最旧的，避免无限增长 */
 const MAX_EVENTS = 3000
 
-/** 出站明细事件（最近的在数组末尾） */
+/**
+ * 出站明细事件，环形缓冲：没满时按时间顺序追加（最近的在末尾）；
+ * 满了之后新事件覆盖 eventStart 处最旧的一条，eventStart 后移。
+ * 每次登记都是 O(1)，不必像整体 splice 那样挪动几千条。
+ */
 const events: OutboundRequestEvent[] = []
+/** 最旧一条事件的下标；缓冲区没满时恒为 0 */
+let eventStart = 0
+
+/** 追加一条明细，超出 MAX_EVENTS 时覆盖最旧的 */
+function pushEvent(event: OutboundRequestEvent): void {
+  if (events.length < MAX_EVENTS) {
+    events.push(event)
+    return
+  }
+  events[eventStart] = event
+  eventStart = (eventStart + 1) % MAX_EVENTS
+}
 
 /**
  * 常见的多段公共后缀：用于把 `foo.com.cn` 归到 `foo.com.cn` 而不是 `com.cn`。
@@ -80,8 +96,7 @@ export function recordOutbound(urlOrHost: string): void {
   const now = Date.now()
 
   // 明细事件：每次出站都记一条（含完整地址与时间），供明细弹窗查看
-  events.push({ at: now, host, url: sample })
-  if (events.length > MAX_EVENTS) events.splice(0, events.length - MAX_EVENTS)
+  pushEvent({ at: now, host, url: sample })
 
   const existing = domains.get(host)
   if (existing) {
@@ -116,12 +131,18 @@ export function listOutboundDomains(): OutboundDomainEntry[] {
  * 传 host 则只返回该主机名的明细；不传返回全部。
  */
 export function listOutboundEvents(host?: string): OutboundRequestEvent[] {
-  const all = host ? events.filter((e) => e.host === host) : events
-  return [...all].reverse()
+  const out: OutboundRequestEvent[] = []
+  // 从最新一条往回走：第 i 条（按时间顺序）在 (eventStart + i) % length
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[(eventStart + i) % events.length]
+    if (!host || event.host === host) out.push(event)
+  }
+  return out
 }
 
 /** 清空统计 */
 export function clearOutboundDomains(): void {
   domains.clear()
   events.length = 0
+  eventStart = 0
 }

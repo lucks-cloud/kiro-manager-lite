@@ -105,14 +105,14 @@ onMounted(refreshAll)
 
 <template>
   <a-card class="tool-card" :bordered="false">
-    <div class="tool-row">
-      <div class="tool-main">
-        <div class="tool-title">
+    <div class="kal-tool-row">
+      <div class="kal-tool-main">
+        <div class="kal-tool-title">
           <GlobalOutlined />
           <strong>网络检测</strong>
         </div>
-        <div class="tool-desc">查看当前出口 IP，并测试常用网站的连通性与延迟。</div>
-        <div class="tool-hint">
+        <div class="kal-tool-desc">查看当前出口 IP，并测试常用网站的连通性与延迟。</div>
+        <div class="kal-tool-hint">
           请求走设置里的网络代理（未配置时使用系统环境变量代理），结果反映的是本应用与 Kiro 请求实际经过的出口。
           延迟为发起请求到收到响应头的耗时，包含 DNS、TCP 与 TLS 握手；收到任何 HTTP 响应都算连通。
         </div>
@@ -182,11 +182,7 @@ onMounted(refreshAll)
 
 <style scoped>
 .tool-card { border: 1px solid var(--kal-border); }
-.tool-row { display: flex; align-items: flex-start; gap: 16px; }
-.tool-main { flex: 1 1 auto; min-width: 0; }
-.tool-title { display: flex; align-items: center; gap: 9px; font-size: 16px; }
-.tool-desc { margin-top: 8px; font-size: 13px; }
-.tool-hint { margin-top: 6px; color: var(--kal-muted); font-size: 12px; line-height: 1.7; }
+/* 标题区（.kal-tool-row / -main / -title / -desc / -hint）与其它工具卡共用，在 assets/styles.css */
 
 .ip-box {
   margin-top: 16px;

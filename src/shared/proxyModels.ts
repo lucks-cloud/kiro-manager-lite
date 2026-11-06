@@ -165,7 +165,7 @@ function effortFromBudget(budget: number): string {
  * Claude 没有 none。原样透传会 400，直接丢掉又等于偷偷降成默认档，
  * 所以取「不超过它的最强档」，都比它强时取最弱的那个。
  */
-export function nearestEffort(wanted: string, options: readonly string[]): string | undefined {
+function nearestEffort(wanted: string, options: readonly string[]): string | undefined {
   if (!options.length) return undefined
   if (options.includes(wanted)) return wanted
   const rank = EFFORT_ORDER.indexOf(wanted)
@@ -212,8 +212,6 @@ export function resolveEffort(input: EffortInput): string | undefined {
   if (!wanted) return undefined
   return nearestEffort(wanted.toLowerCase(), options)
 }
-
-export { CURSOR_PREFIX }
 
 /**
  * 粗略估算 token 数：中日韩按 1 字 ≈ 1.5 token，其余按 4 字 ≈ 1 token。

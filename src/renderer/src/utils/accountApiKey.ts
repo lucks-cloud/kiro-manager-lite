@@ -2,6 +2,7 @@
  * 账号生成 API Key 时单个弹窗与批量弹窗共用的两件事：默认密钥名、凭证回写。
  */
 import { useAccountsStore } from '@/stores/accounts'
+import { renewCredentials } from '@/utils/credentials'
 import type { CreateApiKeyResult } from '@shared/types'
 
 /**
@@ -23,12 +24,5 @@ export function applyRefreshedCredentials(
   const store = useAccountsStore()
   const latest = store.get(accountId)
   if (!latest) return
-  store.updateAccount(accountId, {
-    credentials: {
-      ...latest.credentials,
-      accessToken: refreshed.accessToken,
-      refreshToken: refreshed.refreshToken,
-      expiresAt: Date.now() + refreshed.expiresIn * 1000
-    }
-  })
+  store.updateAccount(accountId, { credentials: renewCredentials(latest.credentials, refreshed) })
 }

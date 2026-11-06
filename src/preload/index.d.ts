@@ -28,11 +28,10 @@ import type {
   KeyGatewayUsageStats,
   KiroCapability,
   KeyModelInfo,
-  KeyTestResult,
   KiroCliActive,
   KiroCliLoginInput,
   KiroCliLoginResult,
-  KiroCliSupportInfo,
+  KiroToolsInstallInfo,
   KiroModelInfo,
   LocalKiroCredentials,
   LoginPollResult,
@@ -117,7 +116,6 @@ export interface Api {
   ) => Promise<IpcResult<{ data: KeyGatewayData; status: KeyGatewayStatus }>>
   deleteKey: (id: string) => Promise<IpcResult<KeyGatewayData>>
   selectKey: (id: string | null) => Promise<IpcResult<{ data: KeyGatewayData; status: KeyGatewayStatus }>>
-  testKey: (id: string) => Promise<IpcResult<KeyTestResult>>
   listKeyModels: (id: string) => Promise<IpcResult<KeyModelInfo[]>>
   /** 该 Key 可用模型的完整信息（上下文 / 输出上限、倍率、推理档位） */
   listKeyModelDetails: (id: string) => Promise<IpcResult<KiroModelInfo[]>>
@@ -185,11 +183,12 @@ export interface Api {
   restartKiroIde: () => Promise<IpcResult<RestartIdeResult>>
   logoutKiro: () => Promise<IpcResult<{ deleted: number }>>
 
-  getKiroCliSupport: () => Promise<
-    IpcResult<KiroCliSupportInfo & { currentAccount: KiroCliActive | null }>
-  >
   /** 查 Kiro CLI / KiroCrew 当前使用中账号；未登录返回 null */
   getKiroCliActive: () => Promise<IpcResult<KiroCliActive | null>>
+  /** 登录 Kiro CLI 前检测 kiro-cli / Kiro Crew 是否已安装；fresh 跳过检测缓存 */
+  getKiroToolsInstall: (fresh?: boolean) => Promise<IpcResult<KiroToolsInstallInfo>>
+  /** 在文件管理器里定位 kiro-cli 的文件（仅限 kiro-cli 数据目录与可执行文件） */
+  revealKiroCliFile: (target: string) => Promise<IpcResult<void>>
   loginKiroCli: (input: KiroCliLoginInput) => Promise<IpcResult<KiroCliLoginResult>>
   /** 退出 Kiro CLI / KiroCrew 登录（清理本机 kiro-cli 凭证） */
   logoutKiroCli: () => Promise<IpcResult<{ cleared: boolean; keychainCleared: boolean }>>

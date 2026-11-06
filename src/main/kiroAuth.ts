@@ -107,20 +107,7 @@ export function profileArnCandidates(input: {
   return out
 }
 
-/**
- * 剥掉 BuilderId 占位符 ARN，只保留真实可用的 ARN。
- *
- * 仅供控制面（CreateApiKey / ListApiKeys）挑候选使用。
- *
- * 切勿用在用量接口上：getUsageLimits 把 profileArn 当必填，
- * BuilderId 恰恰要带这个占位符才回 200，剥掉就是
- * 403 "User is not authorized to make this call."。用量那边走 usageProfileArn。
- */
-export function arnForApiCall(arn?: string): string | undefined {
-  return arn && !isPlaceholderArn(arn) ? arn : undefined
-}
-
-export interface KiroAuthTokenFile {
+interface KiroAuthTokenFile {
   accessToken: string
   refreshToken: string
   expiresAt: string
@@ -164,7 +151,7 @@ async function deleteCacheFiles(
   return deleted
 }
 
-export interface WriteTokenInput {
+interface WriteTokenInput {
   accessToken: string
   refreshToken: string
   expiresAtIso: string

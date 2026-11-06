@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h, ref, toRef, watch } from 'vue'
-import { message, Modal } from 'ant-design-vue'
+import { message } from 'ant-design-vue'
 import {
   AppstoreOutlined,
   CodeOutlined,
@@ -9,8 +9,6 @@ import {
   DownOutlined,
   DownloadOutlined,
   EditOutlined,
-  EyeInvisibleOutlined,
-  EyeOutlined,
   FileSearchOutlined,
   FilterOutlined,
   InboxOutlined,
@@ -30,8 +28,10 @@ import BatchQueryTag from '@/components/common/BatchQueryTag.vue'
 import SearchScopeInput, {
   type SearchScopeOption
 } from '@/components/common/SearchScopeInput.vue'
+import PrivacyToggleButton from '@/components/common/PrivacyToggleButton.vue'
 import { useRecentUsage } from '@/composables/useRecentUsage'
 import { useCardContextMenu } from '@/composables/useCardContextMenu'
+import { useListSelection } from '@/composables/useListSelection'
 import AccountFilterPanel from '@/components/accounts/AccountFilterPanel.vue'
 import VirtualGrid from '@/components/common/VirtualGrid.vue'
 import AddAccountModal from '@/components/accounts/AddAccountModal.vue'
@@ -49,7 +49,6 @@ import BatchModelsModal from '@/components/accounts/BatchModelsModal.vue'
 import ModelListModal from '@/components/common/ModelListModal.vue'
 import { freshAccount } from '@/utils/freshAccount'
 import SortMenu from '@/components/common/SortMenu.vue'
-import { useRangeSelect } from '@/utils/rangeSelect'
 import { DEFAULT_SORT, SORT_FIELDS, compareBy, type SortField, type SortKey } from '@/utils/listSort'
 import DisplayModeSelect from '@/components/common/DisplayModeSelect.vue'
 import AccountDetailDrawer from '@/components/accounts/AccountDetailDrawer.vue'
@@ -58,13 +57,15 @@ import CreateApiKeyModal from '@/components/accounts/CreateApiKeyModal.vue'
 import UsageHistoryModal from '@/components/accounts/UsageHistoryModal.vue'
 import SubscriptionModal from '@/components/accounts/SubscriptionModal.vue'
 import SwitchResultModal from '@/components/accounts/SwitchResultModal.vue'
+import KiroToolsCheckModal from '@/components/accounts/KiroToolsCheckModal.vue'
 import { useAccountsStore } from '@/stores/accounts'
 import { useSettingsStore } from '@/stores/settings'
 import { displayEmail as maskedEmail } from '@/utils/display'
-import { NO_BATCH_QUERY_HITS } from '@/utils/batchQuery'
+import { NO_BATCH_QUERY_HITS, notifyBatchQueryResult } from '@/utils/batchQuery'
 import { accountGroupApi } from '@/utils/groupApi'
 import { toPlain } from '@/utils/ipc'
 import { buildExportContent } from '@/utils/transfer'
+import type { CliLoginOutcome } from '@/utils/kiroToolsCheck'
 import {
   bodyPopupContainer,
   confirmDanger,
@@ -194,6 +195,8 @@ const activeFilterCount = computed(() => {
     // != null：输入框清空时给的是 null，按 !== undefined 判断会把它算成一个生效条件
     (f.usageMin != null ? 1 : 0) +
     (f.usageMax != null ? 1 : 0) +
+    (f.creditMin != null ? 1 : 0) +
+    (f.creditMax != null ? 1 : 0) +
     (f.daysRemainingMin != null ? 1 : 0) +
     (f.daysRemainingMax != null ? 1 : 0) +
     // 导入时间是一个区间，两端一起设置 / 清空，只算一项
@@ -205,12 +208,8 @@ function clearFilter(): void {
   accountsStore.applyFilter({ search: accountsStore.filter.search })
 }
 
-/** 与设置页的「隐私打码」是同一个开关，这里切换会一起持久化 */
+/** 隐私打码：与设置页同一个开关，工具栏上的切换按钮见 PrivacyToggleButton */
 const privacyMode = computed(() => settingsStore.settings.privacyMode)
-
-function togglePrivacy(): void {
-  void settingsStore.update({ privacyMode: !privacyMode.value })
-}
 
 /** 展示形态：卡片 / 紧凑卡片 / 列表，和隐私打码一样持久化在设置里 */
 const displayMode = computed(() => settingsStore.settings.accountDisplayMode)
@@ -246,9 +245,7 @@ const batchQueryHits = computed(() => accountsStore.batchQuery ?? NO_BATCH_QUERY
 function applyBatchQuery(values: string[]): void {
   accountsStore.filter.queries = values
   batchQueryOpen.value = false
-  const { hits, missing } = batchQueryHits.value
-  const text = `批量查询 ${values.length} 个关键字：${hits} 个有结果${missing.length ? `，${missing.length} 个未找到` : ''}`
-  missing.length ? message.warning(text) : message.success(text)
+  notifyBatchQueryResult(values.length, batchQueryHits.value)
 }
 
 /**
@@ -389,59 +386,24 @@ watch(
   }
 )
 
-/** 账号上千时用 Set 做包含判断，别用 includes 扫数组 */
-const selectedIdSet = computed(() => new Set(accountsStore.selectedIds))
-
-/** 当前筛选结果里被勾选的数量，一次遍历同时支撑全选与半选状态 */
-const visibleSelectedCount = computed(() => {
-  let count = 0
-  for (const account of sorted.value) {
-    if (selectedIdSet.value.has(account.id)) count++
-  }
-  return count
-})
-
 /**
- * 批量刷新按钮的范围后缀：有勾选时只刷勾选的账号，把数量带到按钮上。
+ * 勾选：全选 / 半选状态、单击与 Shift 范围勾选、Ctrl / Cmd + A 勾选当前筛选结果（见 useListSelection）。
+ * 勾选的 id 存在 store 里。
+ *
+ * batchScopeSuffix 是批量刷新按钮的范围后缀：有勾选时只刷勾选的账号，把数量带到按钮上。
  * 取全部勾选数（含被筛选挡住的），与 batch() 实际处理的条数、「批量操作（N个）」一致。
  */
-const batchScopeSuffix = computed(() =>
-  accountsStore.selectedIds.length ? `（${accountsStore.selectedIds.length}个）` : ''
-)
-
-const allVisibleSelected = computed(
-  () => sorted.value.length > 0 && visibleSelectedCount.value === sorted.value.length
-)
-const someVisibleSelected = computed(
-  () => visibleSelectedCount.value > 0 && !allVisibleSelected.value
-)
-
-/** 在勾选集合上做增删：账号上千时用 Set 改再回写，避免逐条线性扫描 */
-function updateSelection(mutate: (set: Set<string>) => void): void {
-  const set = new Set(accountsStore.selectedIds)
-  mutate(set)
-  accountsStore.selectedIds = [...set]
-}
-
-/** 单击勾选；按住 Shift 勾选一段，Ctrl / Cmd + A 勾选当前筛选结果（见 rangeSelect） */
-const { toggle: toggleSelect } = useRangeSelect({
-  order: () => sorted.value.map((account) => account.id),
-  apply: (ids, checked) =>
-    updateSelection((set) => {
-      for (const id of ids) checked ? set.add(id) : set.delete(id)
-    }),
-  selectAll: () => toggleSelectVisible(true)
+const {
+  selectedSet: selectedIdSet,
+  allVisibleSelected,
+  someVisibleSelected,
+  batchScopeSuffix,
+  toggleSelect,
+  toggleSelectVisible
+} = useListSelection<Account>({
+  selectedIds: toRef(accountsStore, 'selectedIds'),
+  items: () => sorted.value
 })
-
-/** 全选 / 取消全选当前筛选结果 */
-function toggleSelectVisible(checked: boolean): void {
-  updateSelection((set) => {
-    for (const account of sorted.value) {
-      if (checked) set.add(account.id)
-      else set.delete(account.id)
-    }
-  })
-}
 
 function displayEmail(email: string): string {
   return maskedEmail(email, privacyMode.value)
@@ -537,72 +499,95 @@ function accountLabel(account: Account): string {
   return account.nickname ? `${account.nickname}（${account.email}）` : account.email
 }
 
-/** 写入 kiro-cli，并把识别结果与备份位置汇报给用户 */
-async function loginToCli(account: Account): Promise<void> {
-  await withBusy(account.id, 'cli-login', async () => {
-    const res = await accountsStore.loginToCli(account.id)
-    if (!res.ok || !res.result) return void message.error(`登录 Kiro CLI 失败：${res.error}`)
-    reportCliResult(account, res.result)
+/**
+ * 登录 Kiro CLI（含 KiroCrew）的弹窗。点菜单就立刻打开：先在弹窗里做安装检测，
+ * 通过后在同一个弹窗里执行登录（卡片上照常转圈），结果也在弹窗里显示。
+ * 「全部登录」同样先检测：kiro-cli 没装时不该先把 IDE 切过去，两端账号会对不上。
+ */
+const cliLogin = ref<{ account: Account; mode: 'cli' | 'all' } | null>(null)
+
+function loginToCli(account: Account): void {
+  cliLogin.value = { account, mode: 'cli' }
+}
+
+function loginAll(account: Account): void {
+  cliLogin.value = { account, mode: 'all' }
+}
+
+/** 交给弹窗执行的登录动作：按模式登录，并把结果整理成弹窗要显示的样子 */
+async function runCliLogin(): Promise<CliLoginOutcome> {
+  const target = cliLogin.value
+  if (!target) return { status: 'error', title: '没有要登录的账号', paths: [] }
+  const { account, mode } = target
+  let outcome: CliLoginOutcome = { status: 'error', title: '登录 Kiro CLI 失败', paths: [] }
+  await withBusy(account.id, mode === 'cli' ? 'cli-login' : 'login-all', async () => {
+    outcome = mode === 'cli' ? await doLoginToCli(account) : await doLoginAll(account)
   })
+  return outcome
+}
+
+async function doLoginToCli(account: Account): Promise<CliLoginOutcome> {
+  const res = await accountsStore.loginToCli(account.id)
+  if (!res.ok || !res.result) {
+    return {
+      status: 'error',
+      title: '登录 Kiro CLI 失败',
+      lead: { before: '账号 ', strong: accountLabel(account), after: ' 未写入 kiro-cli，原凭证没有改动。' },
+      alert: { type: 'error', message: String(res.error ?? '未知错误') },
+      paths: []
+    }
+  }
+  return cliOutcome(account, res.result, false)
 }
 
 /** 依次登录 Kiro IDE 与 kiro-cli；前者失败就不再写 CLI，避免两端账号不一致 */
-async function loginAll(account: Account): Promise<void> {
-  await withBusy(account.id, 'login-all', async () => {
-    const ide = await accountsStore.switchTo(account.id)
-    if (!ide.ok || !ide.result) return void message.error(`登录 Kiro IDE 失败：${ide.error}`)
-
-    const cli = await accountsStore.loginToCli(account.id)
-    if (!cli.ok || !cli.result) {
-      return void Modal.warning({
-        title: 'Kiro IDE 已登录，Kiro CLI 失败',
-        centered: true,
-        width: 560,
-        content: h('div', { style: 'line-height:1.9;word-break:break-all;font-size:13px' }, [
-          h('div', `账号 ${accountLabel(account)} 已写入 Kiro IDE。`),
-          h('div', { style: 'color:#faad14' }, `Kiro CLI 失败：${cli.error}`)
-        ])
-      })
-    }
-
-    message.success(`已登录 Kiro IDE 与 Kiro CLI：${accountLabel(account)}`)
-    reportCliResult(account, cli.result, true)
-  })
-}
-
-/** 统一汇报 CLI 写入结果：成功只在有附加信息时弹窗，校验未通过则给出警告 */
-function reportCliResult(account: Account, r: KiroCliLoginResult, quiet = false): void {
+async function doLoginAll(account: Account): Promise<CliLoginOutcome> {
   const label = accountLabel(account)
-  const detail = [
-    r.accountType ? `kiro-cli 识别：${r.accountType}` : '',
-    !r.keychainWritten ? '当前平台未写钥匙串，仅写入 data.sqlite3' : '',
-    r.backupPath ? `原凭证已备份：${r.backupPath}` : ''
-  ].filter(Boolean)
-
-  if (r.verified) {
-    if (!quiet) message.success(`已登录 Kiro CLI：${label}`)
-    return
+  const ide = await accountsStore.switchTo(account.id)
+  if (!ide.ok || !ide.result) {
+    return {
+      status: 'error',
+      title: '登录 Kiro IDE 失败',
+      lead: { before: '账号 ', strong: label, after: ' 未写入 Kiro IDE，Kiro CLI 也未改动。' },
+      alert: { type: 'error', message: String(ide.error ?? '未知错误') },
+      paths: []
+    }
   }
 
-  Modal.warning({
-    title: '已写入，但校验未通过',
-    centered: true,
-    width: 560,
-    content: h(
-      'div',
-      { style: 'line-height:1.9;word-break:break-all;font-size:13px' },
-      [
-        h('div', `账号 ${label} 的凭证已写入 kiro-cli。`),
-        r.verifyError ? h('div', { style: 'color:#faad14' }, `原因：${r.verifyError}`) : null,
-        ...detail.map((t) => h('div', t)),
-        h(
-          'div',
-          { style: 'color:var(--kal-muted);margin-top:6px' },
-          '已在运行的 kiro-cli / KiroCrew 会在下次读取凭证时生效。'
-        )
-      ].filter(Boolean)
-    )
-  })
+  const cli = await accountsStore.loginToCli(account.id)
+  if (!cli.ok || !cli.result) {
+    return {
+      status: 'warning',
+      title: 'Kiro IDE 已登录，Kiro CLI 失败',
+      lead: { before: '账号 ', strong: label, after: ' 已写入 Kiro IDE，写入 kiro-cli 时失败。' },
+      alert: { type: 'error', message: `Kiro CLI 失败原因：${cli.error ?? '未知错误'}` },
+      paths: []
+    }
+  }
+  return cliOutcome(account, cli.result, true)
+}
+
+/** 把 CLI 写入结果整理成弹窗内容：whoami 校验通过为成功，未通过为警告 */
+function cliOutcome(account: Account, r: KiroCliLoginResult, withIde: boolean): CliLoginOutcome {
+  const paths = [{ label: '凭证库', path: r.dbPath }]
+  if (r.backupPath) paths.push({ label: '原凭证备份', path: r.backupPath })
+
+  const target = withIde ? 'Kiro IDE 与 kiro-cli' : 'kiro-cli'
+  const recognized = r.accountType ? `，识别为 ${r.accountType}` : ''
+  return {
+    status: r.verified ? 'success' : 'warning',
+    title: r.verified ? '登录成功' : '已写入，但校验未通过',
+    lead: { before: '账号 ', strong: accountLabel(account), after: ` 的凭证已写入 ${target}。` },
+    alert: r.verified
+      ? { type: 'success', message: `已用 kiro-cli whoami 实测，凭证可用${recognized}` }
+      : {
+          type: 'warning',
+          message: `校验未通过：${r.verifyError || 'whoami 没有返回可识别的结果'}`,
+          description: '凭证已经写入，可在终端运行 kiro-cli whoami 自行确认；不行就刷新该账号后重试。'
+        },
+    paths,
+    tip: '已在运行的 kiro-cli / KiroCrew 会在下次读取凭证时生效。'
+  }
 }
 
 function clearDeletedAccountUi(ids: string[]): void {
@@ -1025,17 +1010,7 @@ function logoutCli(account: Account): void {
             </a-menu>
           </template>
         </a-dropdown>
-        <a-button
-          :size="toolbarSize"
-          :type="privacyMode ? 'primary' : 'default'"
-          @click="togglePrivacy"
-        >
-          <template #icon>
-            <EyeInvisibleOutlined v-if="privacyMode" />
-            <EyeOutlined v-else />
-          </template>
-          {{ privacyMode ? '隐私打码中' : '隐私打码' }}
-        </a-button>
+        <PrivacyToggleButton :size="toolbarSize" />
 
         <!-- 展示形态：卡片 / 紧凑卡片 / 列表，选择会持久化 -->
         <DisplayModeSelect :value="displayMode" :size="toolbarSize" @change="setDisplayMode" />
@@ -1291,6 +1266,12 @@ function logoutCli(account: Account): void {
       v-if="subscriptionTarget"
       :account="subscriptionTarget"
       @close="subscriptionTarget = null"
+    />
+    <KiroToolsCheckModal
+      v-if="cliLogin"
+      :mode="cliLogin.mode"
+      :run="runCliLogin"
+      @close="cliLogin = null"
     />
     <SwitchResultModal
       v-if="switchModalOpen && switchResult"

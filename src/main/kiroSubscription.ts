@@ -19,6 +19,7 @@ import { encode, decode } from 'cbor-x'
 import { KIRO_PORTAL_BASE, KIRO_PORTAL_ORIGIN } from './kiroEndpoints'
 import { httpRequest } from './net'
 import { inAppChromeUserAgent } from './kiroPortal'
+import { errorMessage } from '../shared/errors'
 import type { Account, SubscriptionEntry, SubscriptionPlan } from '../shared/types'
 
 /** 一次 CSRF 会话：token 与它配对的 cookie 串 */
@@ -142,7 +143,7 @@ async function tryManageUrl(session: PortalCsrfSession): Promise<string | undefi
     )
     return res.encodedVerificationUrl || undefined
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
+    const message = errorMessage(error)
     // 「没有可管理的订阅」就是这条 400，属于预期分支，不该当异常抛给界面
     if (message.includes('400') && message.includes('BadRequestException')) return undefined
     throw error

@@ -2,6 +2,7 @@
 import { app } from 'electron'
 import { httpRequest } from './net'
 import { sleep } from './utils'
+import { errorMessage } from '../shared/errors'
 import type { UpdateCheckResult } from '../shared/types'
 
 const REPO = 'lucks-cloud/kiro-manager-lite'
@@ -91,18 +92,14 @@ function nestedErrorCode(error: unknown): string {
   return ''
 }
 
-function rawErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
 function isRetryableTransport(error: unknown): boolean {
-  const text = `${rawErrorMessage(error)} ${nestedErrorCode(error)}`
+  const text = `${errorMessage(error)} ${nestedErrorCode(error)}`
   return /fetch failed|abort|timeout|timed out|ECONN|ENOTFOUND|EAI_AGAIN|socket|network|TLS|UND_ERR/i.test(text)
 }
 
 function friendlyNetworkError(error: unknown): Error {
   const code = nestedErrorCode(error)
-  const raw = rawErrorMessage(error)
+  const raw = errorMessage(error)
   if (/abort|timeout|timed out|UND_ERR_CONNECT_TIMEOUT/i.test(`${raw} ${code}`)) {
     return new Error('连接 GitHub 超时，请检查网络或代理设置后重试')
   }
@@ -187,7 +184,7 @@ async function runCheck(): Promise<UpdateCheckResult> {
         : isRetryableTransport(error)
       console.warn(
         `[Updater] GitHub API 第 ${attempt}/${API_ATTEMPTS} 次失败：` +
-          `${rawErrorMessage(error)}${nestedErrorCode(error) ? ` (${nestedErrorCode(error)})` : ''}`
+          `${errorMessage(error)}${nestedErrorCode(error) ? ` (${nestedErrorCode(error)})` : ''}`
       )
       if (!retryable || attempt === API_ATTEMPTS) break
       await sleep(600)
@@ -199,7 +196,7 @@ async function runCheck(): Promise<UpdateCheckResult> {
     return await checkViaReleasePage(current)
   } catch (fallbackError) {
     console.warn(
-      `[Updater] Releases 页面兜底失败：${rawErrorMessage(fallbackError)}` +
+      `[Updater] Releases 页面兜底失败：${errorMessage(fallbackError)}` +
         `${nestedErrorCode(fallbackError) ? ` (${nestedErrorCode(fallbackError)})` : ''}`
     )
     // 两条链路都失败时优先呈现最终网络原因；若页面返回了明确业务错误则原样保留。

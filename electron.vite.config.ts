@@ -10,15 +10,17 @@ import dayjs from 'dayjs'
 const buildStamp = dayjs().format('YYYYMMDDHHmmss')
 const buildTime = dayjs().format('YYYY-MM-DD HH:mm:ss')
 
-// main / preload 的依赖默认外置（electron-vite 5 起 build.externalizeDeps 默认开启）
+/*
+ * main / preload 只外置 package.json 里 dependencies 下的包（electron-vite 5 起 build.externalizeDeps 默认开启），
+ * 其余（devDependencies）一律打进产物。
+ *
+ * electron-store 自 9.x 起只发 ESM，而主进程产物是 CJS，外置后 require() 它会直接抛错，
+ * 所以它放在 devDependencies：连同 conf / ajv 等依赖整体打进主进程产物，
+ * 安装包里也就不必再带一份它们的 node_modules（约 5MB）。
+ */
 export default defineConfig({
   main: {
     build: {
-      /*
-       * electron-store 自 9.x 起只发 ESM，而主进程产物是 CJS，外置后 require() 它会直接抛错。
-       * 这里把它和其依赖打进产物（其余依赖照旧外置）。
-       */
-      externalizeDeps: { exclude: ['electron-store'] },
       rollupOptions: {
         input: { index: resolve(__dirname, 'src/main/index.ts') }
       }
@@ -74,7 +76,7 @@ export default defineConfig({
           entryFileNames: `assets/[name]-[hash]-${buildStamp}.js`,
           chunkFileNames: `assets/[name]-[hash]-${buildStamp}.js`,
           assetFileNames: `assets/[name]-[hash]-${buildStamp}.[ext]`,
-          // 自动拆分 node_modules 中的依赖包：混淆脚本据 vendor- 前缀走轻档
+          // 自动拆分 node_modules 中的依赖包，产物里按 vendor- 前缀一眼能认出第三方代码
           manualChunks(id) {
             if (id.includes('node_modules')) {
               const match = id.match(/node_modules\/(.+?)(\/|$)/)

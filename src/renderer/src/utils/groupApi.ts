@@ -9,6 +9,7 @@ import { useAccountsStore } from '@/stores/accounts'
 import { useKeysStore } from '@/stores/keys'
 import type { AccountGroup } from '@shared/types'
 import { validGroupIdsOf } from '@shared/itemGroups'
+import { EMPTY_GROUP_NAME } from '@/utils/groups'
 
 export interface GroupApi {
   /** 分组列表，已按 order 排好 */
@@ -44,7 +45,7 @@ export function accountGroupApi(): GroupApi {
     async add(name) {
       const before = store.groups.length
       const group = store.addGroup(name)
-      if (!group) return { error: '分组名称不能为空' }
+      if (!group) return { error: EMPTY_GROUP_NAME }
       return { group, created: store.groups.length > before }
     },
     async rename(id, name) {

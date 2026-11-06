@@ -5,11 +5,12 @@
 //  - 模糊匹配：和搜索框一样按「包含」判断，不区分大小写
 //  - 多个关键字之间是「或」：命中任意一个就显示
 // 统一转小写并去重。
+import { message } from 'ant-design-vue'
 
 /** 一次最多查这么多个：再多就不是「查询」而是整表导入了，界面也会卡 */
 export const BATCH_QUERY_LIMIT = 1000
 
-export interface ParsedBatchQuery {
+interface ParsedBatchQuery {
   /** 去重后的关键字（小写），最多 BATCH_QUERY_LIMIT 个 */
   values: string[]
   /** 超出上限被丢掉的个数 */
@@ -29,6 +30,19 @@ export function parseBatchQuery(text: string): ParsedBatchQuery {
 
 /** 没在批量查询时给界面的占位结果，省掉每个页面各写一份 */
 export const NO_BATCH_QUERY_HITS: { hits: number; missing: string[] } = { hits: 0, missing: [] }
+
+/**
+ * 提交批量查询后的结果提示，账号与 API Key 两页共用同一句文案。
+ * 有未找到的关键字时用 warning，全部有结果时用 success。
+ */
+export function notifyBatchQueryResult(
+  count: number,
+  result: { hits: number; missing: readonly string[] }
+): void {
+  const { hits, missing } = result
+  const text = `批量查询 ${count} 个关键字：${hits} 个有结果${missing.length ? `，${missing.length} 个未找到` : ''}`
+  missing.length ? message.warning(text) : message.success(text)
+}
 
 export interface BatchQueryResult {
   /** 命中任意一个关键字的条目 id */

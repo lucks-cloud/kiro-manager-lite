@@ -3,8 +3,7 @@
  * 账号测活：连 Kiro 官方发一次真实的流式对话。
  * 用量接口能通只代表 token 有效，能不能出字要真的问一句才知道。
  */
-import { computed, onUnmounted, ref, watch } from 'vue'
-import { message } from 'ant-design-vue'
+import { computed, ref, watch } from 'vue'
 import {
   CloseCircleFilled,
   SendOutlined,
@@ -15,11 +14,10 @@ import { useSettingsStore } from '@/stores/settings'
 import { useAccountsStore } from '@/stores/accounts'
 import ModelCascader from '@/components/common/ModelCascader.vue'
 import TestOutputPanel from '@/components/common/TestOutputPanel.vue'
-import { withDefaultEffort, type CascaderModel } from '@/utils/models'
+import { useChatTest } from '@/composables/useChatTest'
 import { displayEmail } from '@/utils/display'
 import { errorMessage } from '@shared/errors'
-import { buildModelRequestFields } from '@shared/modelSchema'
-import type { Account, ChatRawTrace, ChatTestResult, KiroModelInfo } from '@shared/types'
+import type { Account, KiroModelInfo } from '@shared/types'
 
 const props = defineProps<{ account: Account | null }>()
 const emit = defineEmits<{ close: [] }>()
@@ -27,59 +25,48 @@ const emit = defineEmits<{ close: [] }>()
 const settingsStore = useSettingsStore()
 const accountsStore = useAccountsStore()
 
-const DEFAULT_MESSAGE = '你的具体模型名称，以及当前具体时间，打印出来！'
-
-const models = ref<KiroModelInfo[]>([])
-const modelsLoading = ref(false)
-const modelsError = ref('')
-const input = ref(DEFAULT_MESSAGE)
-
-const running = ref(false)
-const output = ref('')
-const result = ref<ChatTestResult | null>(null)
-/** 官方原始返回：成功、失败、中止都有，和 result 分开存 */
-const rawTrace = ref<ChatRawTrace | null>(null)
-const error = ref('')
-const requestId = ref('')
+// 模型列表、输入、运行状态、流式片段与结果摘要见 useChatTest
+const {
+  models,
+  modelsLoading,
+  modelsError,
+  input,
+  running,
+  output,
+  result,
+  rawTrace,
+  error,
+  requestId,
+  cascaderModels,
+  selection,
+  modelId,
+  requestFields,
+  ready,
+  resultSummary,
+  applyModels,
+  resetForTarget,
+  beginRun,
+  cancel,
+  isCancelled
+} = useChatTest<KiroModelInfo>({
+  modelIdOf: (m) => m.modelId,
+  toCascader: (list) =>
+    list.map((m) => ({
+      id: m.modelId,
+      name: m.modelName,
+      rate: m.rate,
+      effort: m.effort
+    })),
+  onChunk: (handler) => window.api.onChatChunk(handler),
+  cancelRequest: (id) => void window.api.cancelChatTest(id),
+  okLabel: '账号可用'
+})
 
 const open = computed(() => !!props.account)
 
 const accountLabel = computed(() =>
   props.account ? displayEmail(props.account.email, settingsStore.settings.privacyMode) : ''
 )
-
-/** 级联选择器要的形状：一级模型、二级推理档位（档位来自模型自己的 schema） */
-const cascaderModels = computed<CascaderModel[]>(() =>
-  models.value.map((m) => ({
-    id: m.modelId,
-    name: m.modelName,
-    rate: m.rate,
-    effort: m.effort
-  }))
-)
-
-/** [模型 id] 或 [模型 id, 档位]；只选模型表示用上游默认档位 */
-const selection = ref<string[]>([])
-const modelId = computed(() => selection.value[0] ?? '')
-const effortLevel = computed(() => selection.value[1])
-
-/**
- * 按所选模型的 schema 拼出请求字段。
- * 没选档位就不带这个字段 —— 上游对「本无该选项的模型」带上它会直接 400。
- */
-const requestFields = computed(() => {
-  const model = models.value.find((m) => m.modelId === modelId.value)
-  return buildModelRequestFields(model?.effort, effortLevel.value)
-})
-
-/** 模型列表就绪之前只显示加载态，避免用户对着一份还没确认可用的表单操作 */
-const ready = computed(() => !modelsLoading.value && !modelsError.value && models.value.length > 0)
-
-// 主进程按 requestId 推流式片段，这里只认自己那一路
-const offChunk = window.api.onChatChunk(({ requestId: id, delta }) => {
-  if (id === requestId.value) output.value += delta
-})
-onUnmounted(() => offChunk())
 
 const refreshingToken = ref(false)
 
@@ -131,19 +118,8 @@ async function loadModels(): Promise<void> {
       authMethod: account.credentials.authMethod
     })
     if (res.success && res.data?.length) {
-      models.value = res.data
-      // 保持已选模型，否则落到第一个候选（官方列表首项是 auto）
-      const kept = models.value.find((m) => m.modelId === modelId.value)
-      if (!kept) {
-        const first = models.value[0]
-        // 首个候选同样要补上默认档位，保证「显示的」就是「发出去的」
-        selection.value = first
-          ? withDefaultEffort(cascaderModels.value, [first.modelId])
-          : []
-      } else if (effortLevel.value && !kept.effort?.options.includes(effortLevel.value)) {
-        // 重新拉回来的 schema 可能不再有这个档位，回落到新的默认档位
-        selection.value = withDefaultEffort(cascaderModels.value, [kept.modelId])
-      }
+      // 写入列表并校正已选模型 / 档位
+      applyModels(res.data)
     } else {
       modelsError.value = res.error || '官方没有返回任何可用模型'
     }
@@ -158,12 +134,7 @@ watch(
   () => props.account?.id,
   (id) => {
     if (!id) return
-    output.value = ''
-    result.value = null
-    rawTrace.value = null
-    error.value = ''
-    input.value = DEFAULT_MESSAGE
-    selection.value = []
+    resetForTarget()
     void loadModels()
   },
   { immediate: true }
@@ -172,21 +143,20 @@ watch(
 async function start(): Promise<void> {
   const account = props.account
   if (!account) return
-  const text = input.value.trim()
-  if (!text) return void message.warning('请输入要发送的内容')
-  if (!modelId.value) return void message.warning('请选择模型')
-
-  running.value = true
-  output.value = ''
-  result.value = null
-  rawTrace.value = null
-  error.value = ''
-  requestId.value = `${account.id}-${Date.now()}`
+  // 校验输入与模型，进入运行态并生成 requestId；不通过时已给出提示
+  const text = beginRun(account.id)
+  if (text === null) return
+  const currentRequest = requestId.value
 
   try {
     // 任意账号都能测：token 过期就先续一次，不影响 IDE 当前登录的账号
     const accessToken = await ensureAccessToken(account.id)
-    const res = await window.api.chatTest(requestId.value, {
+    // 续 Token 期间点了停止或关掉了弹窗：请求还没发出去，取消通知落了空，这里直接不发
+    if (isCancelled(currentRequest)) {
+      error.value = '已取消'
+      return
+    }
+    const res = await window.api.chatTest(currentRequest, {
       accountId: account.id,
       accessToken,
       modelId: modelId.value,
@@ -205,25 +175,6 @@ async function start(): Promise<void> {
   } finally {
     running.value = false
   }
-}
-
-const resultSummary = computed(() => {
-  const r = result.value
-  if (!r) return ''
-  const parts = [
-    `账号可用：${r.endpoint}`,
-    `首字 ${r.firstByteMs} ms`,
-    `总耗时 ${r.totalMs} ms`,
-    `共 ${r.text.length} 字`
-  ]
-  if (r.thinkingChars) parts.push(`思考 ${r.thinkingChars} 字`)
-  return parts.join(' · ')
-})
-
-
-function cancel(): void {
-  if (!requestId.value) return
-  void window.api.cancelChatTest(requestId.value)
 }
 
 function close(): void {

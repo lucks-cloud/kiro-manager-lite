@@ -22,14 +22,13 @@ export function keyTier(entry: KeyEntry): SubscriptionType {
 /**
  * 卡片上要展示的问题原因：管理面同步错误与对话测活错误取并集。
  * 只看 lastError 会漏掉被封禁的 Key —— 它们在 Get-Usage-Limits 上返回 200，
- * 只有真实对话才会暴露 403。口径与主进程自动刷新共用 shared/refreshPolicy。
+ * 只有真实对话才会暴露 403。口径与主进程自动刷新共用 shared/refreshPolicy，
+ * 这里直接转出那边的实现，渲染层沿用 keyIssue 这个名字。
  */
-export function keyIssue(entry: KeyEntry): string | undefined {
-  return keyIssueOf(entry)
-}
+export { keyIssueOf as keyIssue } from '@shared/refreshPolicy'
 
 export function keyStatusKey(entry: KeyEntry): KeyStatus {
-  if (keyIssue(entry)) return 'error'
+  if (keyIssueOf(entry)) return 'error'
   return entry.lastCheckedAt ? 'normal' : 'unchecked'
 }
 

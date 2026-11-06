@@ -10,7 +10,7 @@ import { computed, nextTick, ref, type Ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { errorMessage } from '@shared/errors'
 
-export type BatchRowState = 'pending' | 'running' | 'ok' | 'fail'
+type BatchRowState = 'pending' | 'running' | 'ok' | 'fail'
 
 export interface BatchRow {
   state: BatchRowState

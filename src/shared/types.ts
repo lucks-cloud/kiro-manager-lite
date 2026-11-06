@@ -545,13 +545,23 @@ export interface KiroCliLoginResult extends KiroCliWriteResult {
   expiresIn: number
 }
 
-/** 当前平台与安装情况是否支持写入 kiro-cli */
-export interface KiroCliSupportInfo {
-  supported: boolean
-  reason?: string
-  dbExists: boolean
-  cliInstalled: boolean
-  dbPath: string
+/** 单个工具的安装检测结果 */
+export interface KiroToolInstall {
+  installed: boolean
+  /** 找到的可执行文件 / .app 位置；没找到为 null */
+  path: string | null
+}
+
+/**
+ * 登录 Kiro CLI 前的安装检测：kiro-cli 是必需的（凭证写给它），
+ * Kiro Crew 可选（它读 kiro-cli 的凭证，装没装都不影响写入）。
+ */
+export interface KiroToolsInstallInfo {
+  platform: 'darwin' | 'win32' | 'linux' | string
+  /** dbExists：kiro-cli 的凭证库 data.sqlite3 是否已存在（装了但从没运行过时没有） */
+  kiroCli: KiroToolInstall & { dbExists: boolean }
+  /** Crew 命令行版 kirocrew 或桌面版任一存在即算已装 */
+  crew: KiroToolInstall & { kind: 'cli' | 'app' | null }
 }
 
 /**
@@ -1632,16 +1642,6 @@ export interface KeyModelInfo {
   effort?: ModelEffort
 }
 
-/** 测试一个 API Key 的结果 */
-export interface KeyTestResult {
-  modelCount: number
-  defaultModel: string
-  subscription: string
-  tier: string
-  used: number | null
-  total: number | null
-  models: KeyModelInfo[]
-}
 
 /**
  * 开启网关前检测到的接管冲突：Kiro IDE 的端点已经指向别的本地网关。

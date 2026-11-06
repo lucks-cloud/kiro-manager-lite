@@ -36,7 +36,7 @@ const CHAT_ENDPOINTS = [
 ]
 
 /** 账号身份信息：决定请求头与 profileArn 的取法 */
-export interface AccountIdentity {
+interface AccountIdentity {
   profileArn?: string
   region?: string
   idp?: string
@@ -101,6 +101,24 @@ function tokenKey(accessToken: string): string {
   return createHash('sha256').update(accessToken).digest('hex').slice(0, 16)
 }
 
+/** 取未过期的缓存项；已过期的顺手删掉 */
+function cachedProfileArn(key: string): { arn?: string; at: number } | undefined {
+  const cached = profileArnCache.get(key)
+  if (!cached) return undefined
+  if (Date.now() - cached.at < PROFILE_ARN_TTL) return cached
+  profileArnCache.delete(key)
+  return undefined
+}
+
+/** 写入缓存，同时清掉其它已过期的条目：accessToken 会轮换，旧 token 的条目不会再被命中 */
+function cacheProfileArn(key: string, arn: string | undefined): void {
+  const now = Date.now()
+  for (const [k, entry] of profileArnCache) {
+    if (now - entry.at >= PROFILE_ARN_TTL) profileArnCache.delete(k)
+  }
+  profileArnCache.set(key, { arn, at: now })
+}
+
 /**
  * 该账号可以依次尝试的 profileArn，按成功率排序。
  *
@@ -127,17 +145,17 @@ export async function arnCandidatesFor(
   } else {
     // IdC / Enterprise：问后端要这个账号自己的 profile
     const key = tokenKey(accessToken)
-    const cached = profileArnCache.get(key)
+    const cached = cachedProfileArn(key)
     /*
      * 查不到时不能把 undefined 推进来：它会排在占位符前面，变成「先不带 profileArn 试一次」，
      * 而不带必然 400（见上）——Builder ID 查 profile 永远是空的，每次测活都白打一轮。
      * 「不带」的兜底统一放在列表末尾。
      */
-    if (cached && Date.now() - cached.at < PROFILE_ARN_TTL) {
+    if (cached) {
       if (cached.arn) pushUnique(out, cached.arn)
     } else {
       const arns = await listAvailableProfiles(accessToken, identity.region)
-      profileArnCache.set(key, { arn: arns[0], at: Date.now() })
+      cacheProfileArn(key, arns[0])
       if (arns[0]) pushUnique(out, arns[0])
     }
     /*
@@ -326,7 +344,7 @@ export async function listKiroModels(input: {
 
 // ============ 对话测活 ============
 
-export interface ChatStreamCallbacks {
+interface ChatStreamCallbacks {
   onDelta: (text: string) => void
 }
 
@@ -408,7 +426,7 @@ class RawRecorder {
 }
 
 /** 测活失败时带着全部尝试的原始返回抛出，IPC 层取出来交给界面 */
-export class ChatTestError extends Error {
+class ChatTestError extends Error {
   constructor(
     message: string,
     readonly trace: ChatRawTrace
@@ -422,7 +440,7 @@ export function chatTraceOf(error: unknown): ChatRawTrace | undefined {
   return error instanceof ChatTestError ? error.trace : undefined
 }
 
-export interface ChatStreamResult {
+interface ChatStreamResult {
   /** 官方原始返回（全部尝试） */
   raw?: ChatRawTrace
   /** 实际用上的端点名，便于界面提示走的是哪条链路 */

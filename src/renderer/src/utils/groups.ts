@@ -9,6 +9,31 @@ import { groupIdsOf, isTrashed, type Groupable, type Trashable } from '@shared/i
  */
 export const UNGROUPED = '__none__'
 
+/** 分组名称为空时的提示，新建与改名共用 */
+export const EMPTY_GROUP_NAME = '分组名称不能为空'
+
+/** 新建分组时的同名分组：同名直接复用已有的那个，避免建出一堆重名分组 */
+export function findGroupByName(
+  groups: readonly AccountGroup[],
+  label: string
+): AccountGroup | undefined {
+  return groups.find((group) => group.name === label)
+}
+
+/**
+ * 改名校验：返回错误文案，通过为 null。label 应已去掉首尾空白。
+ * 和别的分组重名时拒绝，否则筛选里会出现两个同名分组。
+ */
+export function renameGroupError(
+  groups: readonly AccountGroup[],
+  id: string,
+  label: string
+): string | null {
+  if (!label) return EMPTY_GROUP_NAME
+  if (groups.some((group) => group.id !== id && group.name === label)) return `分组「${label}」已存在`
+  return null
+}
+
 /** 按 order 升序排好的分组列表；order 缺失时按 0 处理 */
 export function sortGroups(groups: AccountGroup[] | undefined): AccountGroup[] {
   return [...(groups ?? [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
