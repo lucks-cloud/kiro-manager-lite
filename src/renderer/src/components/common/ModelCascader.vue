@@ -17,6 +17,7 @@ import { computed } from 'vue'
 // 形状与「补默认档位」的逻辑放在 utils/models：script setup 里不能导出运行时函数，
 // 而调用方（两个测活弹窗）在初始化选中项时也要用到同一份逻辑
 import { modelLabel, withDefaultEffort, type CascaderModel } from '@/utils/models'
+import { scrollCascaderToActive } from '@/utils/cascaderScroll'
 
 const props = withDefaults(
   defineProps<{
@@ -79,6 +80,11 @@ function onChange(value: unknown): void {
   emit('change', withDefaultEffort(props.models, path))
 }
 
+/** 展开时把模型列滚到当前选中的模型（antd 默认常停在列表顶部） */
+function onDropdownVisibleChange(open: boolean): void {
+  if (open) scrollCascaderToActive('model-cascader-dropdown', props.value[0])
+}
+
 /** 级联的搜索按「整条路径的 label」匹配，这样输 opus max 也能命中；表头行不参与 */
 function filter(search: string, path: Option[]): boolean {
   if (path[path.length - 1]?.disabled) return false
@@ -97,9 +103,10 @@ function filter(search: string, path: Option[]): boolean {
     :allow-clear="false"
     expand-trigger="hover"
     change-on-select
-    dropdown-class-name="model-cascader-dropdown"
+    popup-class-name="model-cascader-dropdown"
     style="flex: 1 1 auto; min-width: 0"
     @change="onChange"
+    @dropdown-visible-change="onDropdownVisibleChange"
   >
     <template #displayRender>{{ displayText }}</template>
   </a-cascader>

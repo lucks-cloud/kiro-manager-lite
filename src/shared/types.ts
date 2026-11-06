@@ -4,6 +4,7 @@
 import { DEFAULT_REGION } from './regions'
 import { DEFAULT_BACKUP_CYCLE, DEFAULT_BACKUP_KEEP, type BackupCycle } from './backupSchedule'
 import { DEFAULT_PORTAL_LOCALE, type PortalLocale } from './portalLocale'
+import { DEFAULT_AWS_SDK_VERSION, DEFAULT_KIRO_IDE_VERSION } from './kiroVersion'
 import type { ModelEffort } from './modelSchema'
 
 export type IdpType = 'BuilderId' | 'Github' | 'Google' | 'Enterprise'
@@ -1447,6 +1448,10 @@ export interface AppSettings {
    * 后者影响页面里 navigator.language 读到的值——门户按前端语言判断时只有它管用。
    */
   portalLocale: PortalLocale
+  /** 请求头里上报的 Kiro IDE 版本（KiroIDE-<版本>-<机器码>） */
+  kiroIdeVersion: string
+  /** 请求头里上报的 AWS SDK 版本（aws-sdk-js/<版本>） */
+  awsSdkVersion: string
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -1492,7 +1497,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // 固定间隔重试，10 次也只多花 1 秒左右，对话不会有明显卡顿
   gatewayRetryMaxAttempts: 10,
   gatewayRetryDelayMs: 100,
-  portalLocale: DEFAULT_PORTAL_LOCALE
+  portalLocale: DEFAULT_PORTAL_LOCALE,
+  kiroIdeVersion: DEFAULT_KIRO_IDE_VERSION,
+  awsSdkVersion: DEFAULT_AWS_SDK_VERSION
 }
 
 // ============================================

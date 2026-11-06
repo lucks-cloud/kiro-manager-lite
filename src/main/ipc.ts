@@ -53,6 +53,7 @@ import {
 } from './proactiveRenewal'
 import { setUsageApiType } from './kiroApi'
 import { setInAppLocale } from './kiroPortal'
+import { setKiroVersions } from './kiroEndpoints'
 import { setProxyConfig } from './net'
 import { applyThemeMode } from './appearance'
 import { checkForUpdate } from './updater'
@@ -290,6 +291,7 @@ export function applyRuntimeSettings(settings: AppSettings): void {
   setUsageApiType(settings.usageApiType)
   setProxyConfig(settings.proxyEnabled, settings.proxyUrl)
   setInAppLocale(settings.portalLocale)
+  setKiroVersions(settings.kiroIdeVersion, settings.awsSdkVersion)
   setGatewayRetryPolicy(
     settings.gatewayAutoRetryThrottle,
     settings.gatewayRetryStatuses,

@@ -1,0 +1,500 @@
+{
+   "generatedAt" : "Fri Nov  6 13:56:38 2026 UTC",
+   "note" : "awsSdkVersion 取 @aws/codewhisperer-streaming-client 的最高版本；同一 IDE 打包了多份时 packages 里会全部列出",
+   "versions" : [
+      {
+         "awsSdkVersion" : "1.0.44",
+         "bundleVersion" : "1.4.121",
+         "ide" : "1.4.121",
+         "packages" : {
+            "@amzn/codewhisperer-runtime" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-control-plane-bearer-client" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-runtime-service-typescript-client" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-web-portal-service-bearer-typescript-client" : [
+               "1.0.0"
+            ],
+            "@aws/codewhisperer-streaming-client" : [
+               "1.0.39",
+               "1.0.44"
+            ]
+         },
+         "status" : "ok"
+      },
+      {
+         "awsSdkVersion" : "1.0.44",
+         "bundleVersion" : "1.4.62",
+         "ide" : "1.4.62",
+         "packages" : {
+            "@amzn/codewhisperer-runtime" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-control-plane-bearer-client" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-runtime-service-typescript-client" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-web-portal-service-bearer-typescript-client" : [
+               "1.0.0"
+            ],
+            "@aws/codewhisperer-streaming-client" : [
+               "1.0.39",
+               "1.0.44"
+            ]
+         },
+         "status" : "ok"
+      },
+      {
+         "awsSdkVersion" : "1.0.44",
+         "bundleVersion" : "1.4.51",
+         "ide" : "1.4.51",
+         "packages" : {
+            "@amzn/codewhisperer-runtime" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-control-plane-bearer-client" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-runtime-service-typescript-client" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-web-portal-service-bearer-typescript-client" : [
+               "1.0.0"
+            ],
+            "@aws/codewhisperer-streaming-client" : [
+               "1.0.39",
+               "1.0.44"
+            ]
+         },
+         "status" : "ok"
+      },
+      {
+         "awsSdkVersion" : "1.0.44",
+         "bundleVersion" : "1.4.26",
+         "ide" : "1.4.26",
+         "packages" : {
+            "@amzn/codewhisperer-runtime" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-control-plane-bearer-client" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-runtime-service-typescript-client" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-web-portal-service-bearer-typescript-client" : [
+               "1.0.0"
+            ],
+            "@aws/codewhisperer-streaming-client" : [
+               "1.0.39",
+               "1.0.44"
+            ]
+         },
+         "status" : "ok"
+      },
+      {
+         "awsSdkVersion" : "1.0.44",
+         "bundleVersion" : "1.4.10",
+         "ide" : "1.4.10",
+         "packages" : {
+            "@amzn/codewhisperer-runtime" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-control-plane-bearer-client" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-runtime-service-typescript-client" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-web-portal-service-bearer-typescript-client" : [
+               "1.0.0"
+            ],
+            "@aws/codewhisperer-streaming-client" : [
+               "1.0.39",
+               "1.0.44"
+            ]
+         },
+         "status" : "ok"
+      },
+      {
+         "awsSdkVersion" : "1.0.44",
+         "bundleVersion" : "1.4.5",
+         "ide" : "1.4.5",
+         "packages" : {
+            "@amzn/codewhisperer-runtime" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-control-plane-bearer-client" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-runtime-service-typescript-client" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-web-portal-service-bearer-typescript-client" : [
+               "1.0.0"
+            ],
+            "@aws/codewhisperer-streaming-client" : [
+               "1.0.39",
+               "1.0.44"
+            ]
+         },
+         "status" : "ok"
+      },
+      {
+         "awsSdkVersion" : "1.0.44",
+         "bundleVersion" : "1.4.0",
+         "ide" : "1.4.0",
+         "packages" : {
+            "@amzn/codewhisperer-runtime" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-control-plane-bearer-client" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-runtime-service-typescript-client" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-web-portal-service-bearer-typescript-client" : [
+               "1.0.0"
+            ],
+            "@aws/codewhisperer-streaming-client" : [
+               "1.0.39",
+               "1.0.44"
+            ]
+         },
+         "status" : "ok"
+      },
+      {
+         "awsSdkVersion" : "1.0.44",
+         "bundleVersion" : "1.3.11",
+         "ide" : "1.3.11",
+         "packages" : {
+            "@amzn/codewhisperer-runtime" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-control-plane-bearer-client" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-runtime-service-typescript-client" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-web-portal-service-bearer-typescript-client" : [
+               "1.0.0"
+            ],
+            "@aws/codewhisperer-streaming-client" : [
+               "1.0.39",
+               "1.0.44"
+            ]
+         },
+         "status" : "ok"
+      },
+      {
+         "awsSdkVersion" : "1.0.44",
+         "bundleVersion" : "1.3.0",
+         "ide" : "1.3.0",
+         "packages" : {
+            "@amzn/codewhisperer-runtime" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-control-plane-bearer-client" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-runtime-service-typescript-client" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-web-portal-service-bearer-typescript-client" : [
+               "1.0.0"
+            ],
+            "@aws/codewhisperer-streaming-client" : [
+               "1.0.39",
+               "1.0.44"
+            ]
+         },
+         "status" : "ok"
+      },
+      {
+         "awsSdkVersion" : "1.0.44",
+         "bundleVersion" : "1.2.56",
+         "ide" : "1.2.56",
+         "packages" : {
+            "@amzn/codewhisperer-runtime" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-control-plane-bearer-client" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-runtime-service-typescript-client" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-web-portal-service-bearer-typescript-client" : [
+               "1.0.0"
+            ],
+            "@aws/codewhisperer-streaming-client" : [
+               "1.0.39",
+               "1.0.44"
+            ]
+         },
+         "status" : "ok"
+      },
+      {
+         "awsSdkVersion" : "1.0.44",
+         "bundleVersion" : "1.2.37",
+         "ide" : "1.2.37",
+         "packages" : {
+            "@amzn/codewhisperer-runtime" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-control-plane-bearer-client" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-runtime-service-typescript-client" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-web-portal-service-bearer-typescript-client" : [
+               "1.0.0"
+            ],
+            "@aws/codewhisperer-streaming-client" : [
+               "1.0.39",
+               "1.0.44"
+            ]
+         },
+         "status" : "ok"
+      },
+      {
+         "awsSdkVersion" : "1.0.44",
+         "bundleVersion" : "1.1.70",
+         "ide" : "1.1.70",
+         "packages" : {
+            "@amzn/codewhisperer-runtime" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-control-plane-bearer-client" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-runtime-service-typescript-client" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-web-portal-service-bearer-typescript-client" : [
+               "1.0.0"
+            ],
+            "@aws/codewhisperer-streaming-client" : [
+               "1.0.39",
+               "1.0.44"
+            ]
+         },
+         "status" : "ok"
+      },
+      {
+         "awsSdkVersion" : "1.0.44",
+         "bundleVersion" : "1.0.437",
+         "ide" : "1.0.437",
+         "packages" : {
+            "@amzn/codewhisperer-runtime" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-control-plane-bearer-client" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-runtime-service-typescript-client" : [
+               "1.0.0"
+            ],
+            "@amzn/kiro-web-portal-service-bearer-typescript-client" : [
+               "1.0.0"
+            ],
+            "@aws/codewhisperer-streaming-client" : [
+               "1.0.39",
+               "1.0.44"
+            ]
+         },
+         "status" : "ok"
+      },
+      {
+         "awsSdkVersion" : "1.0.39",
+         "bundleVersion" : "0.12.200",
+         "ide" : "0.12.200",
+         "packages" : {
+            "@amzn/codewhisperer-runtime" : [
+               "1.0.0"
+            ],
+            "@aws/codewhisperer-streaming-client" : [
+               "1.0.39"
+            ]
+         },
+         "status" : "ok"
+      },
+      {
+         "awsSdkVersion" : "1.0.39",
+         "bundleVersion" : "0.12.184",
+         "ide" : "0.12.184",
+         "packages" : {
+            "@amzn/codewhisperer-runtime" : [
+               "1.0.0"
+            ],
+            "@aws/codewhisperer-streaming-client" : [
+               "1.0.39"
+            ]
+         },
+         "status" : "ok"
+      },
+      {
+         "awsSdkVersion" : "1.0.34",
+         "bundleVersion" : "0.11.133",
+         "ide" : "0.11.133",
+         "packages" : {
+            "@amzn/codewhisperer-runtime" : [
+               "1.0.0"
+            ],
+            "@aws/codewhisperer-streaming-client" : [
+               "1.0.34"
+            ]
+         },
+         "status" : "ok"
+      },
+      {
+         "awsSdkVersion" : "1.0.34",
+         "bundleVersion" : "0.11.132",
+         "ide" : "0.11.132",
+         "packages" : {
+            "@amzn/codewhisperer-runtime" : [
+               "1.0.0"
+            ],
+            "@aws/codewhisperer-streaming-client" : [
+               "1.0.34"
+            ]
+         },
+         "status" : "ok"
+      },
+      {
+         "awsSdkVersion" : "1.0.34",
+         "bundleVersion" : "0.11.131",
+         "ide" : "0.11.131",
+         "packages" : {
+            "@amzn/codewhisperer-runtime" : [
+               "1.0.0"
+            ],
+            "@aws/codewhisperer-streaming-client" : [
+               "1.0.34"
+            ]
+         },
+         "status" : "ok"
+      },
+      {
+         "awsSdkVersion" : "1.0.34",
+         "bundleVersion" : "0.11.130",
+         "ide" : "0.11.130",
+         "packages" : {
+            "@amzn/codewhisperer-runtime" : [
+               "1.0.0"
+            ],
+            "@aws/codewhisperer-streaming-client" : [
+               "1.0.34"
+            ]
+         },
+         "status" : "ok"
+      },
+      {
+         "awsSdkVersion" : "1.0.34",
+         "bundleVersion" : "0.11.107",
+         "ide" : "0.11.107",
+         "packages" : {
+            "@amzn/codewhisperer-runtime" : [
+               "1.0.0"
+            ],
+            "@aws/codewhisperer-streaming-client" : [
+               "1.0.34"
+            ]
+         },
+         "status" : "ok"
+      },
+      {
+         "awsSdkVersion" : "1.0.34",
+         "bundleVersion" : "0.11.63",
+         "ide" : "0.11.63",
+         "packages" : {
+            "@amzn/codewhisperer-runtime" : [
+               "1.0.0"
+            ],
+            "@aws/codewhisperer-streaming-client" : [
+               "1.0.34"
+            ]
+         },
+         "status" : "ok"
+      },
+      {
+         "awsSdkVersion" : "1.0.34",
+         "bundleVersion" : "0.11.34",
+         "ide" : "0.11.34",
+         "packages" : {
+            "@amzn/codewhisperer-runtime" : [
+               "1.0.0"
+            ],
+            "@aws/codewhisperer-streaming-client" : [
+               "1.0.34"
+            ]
+         },
+         "status" : "ok"
+      },
+      {
+         "awsSdkVersion" : "1.0.27",
+         "bundleVersion" : "0.10.78",
+         "ide" : "0.10.78",
+         "packages" : {
+            "@amzn/codewhisperer-runtime" : [
+               "1.0.0"
+            ],
+            "@aws/codewhisperer-streaming-client" : [
+               "1.0.27"
+            ]
+         },
+         "status" : "ok"
+      },
+      {
+         "awsSdkVersion" : "1.0.27",
+         "bundleVersion" : "0.10.32",
+         "ide" : "0.10.32",
+         "packages" : {
+            "@amzn/codewhisperer-runtime" : [
+               "1.0.0"
+            ],
+            "@aws/codewhisperer-streaming-client" : [
+               "1.0.27"
+            ]
+         },
+         "status" : "ok"
+      },
+      {
+         "awsSdkVersion" : "1.0.27",
+         "bundleVersion" : "0.9.47",
+         "ide" : "0.9.47",
+         "packages" : {
+            "@amzn/codewhisperer-runtime" : [
+               "1.0.0"
+            ],
+            "@aws/codewhisperer-streaming-client" : [
+               "1.0.27"
+            ]
+         },
+         "status" : "ok"
+      },
+      {
+         "awsSdkVersion" : "1.0.27",
+         "bundleVersion" : "0.8.206",
+         "ide" : "0.8.206",
+         "packages" : {
+            "@amzn/codewhisperer-runtime" : [
+               "1.0.0"
+            ],
+            "@aws/codewhisperer-streaming-client" : [
+               "1.0.27"
+            ]
+         },
+         "status" : "ok"
+      }
+   ]
+}

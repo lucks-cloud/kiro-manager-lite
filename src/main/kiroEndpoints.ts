@@ -7,12 +7,17 @@ import { createHash, randomUUID } from 'crypto'
 import { readFileSync } from 'fs'
 import * as os from 'os'
 import * as path from 'path'
+import {
+  DEFAULT_AWS_SDK_VERSION,
+  DEFAULT_KIRO_IDE_VERSION,
+  normalizeVersion
+} from '../shared/kiroVersion'
 
 /**
  * 对齐 Kiro IDE 的版本号与 SDK 版本。**全项目只在这里定义**，也只在本文件里用：
  * 反代、账号测活、模型列表、用量、token 刷新、API Key 网关拼请求头时
  * 一律调用下面的 kiroUserAgent() / kiroAmzUserAgent()，不直接引用这两个常量。
- * 升级时只改这两个常量，别在别的文件里再写一份。
+ * 默认值在 shared/kiroVersion，用户可在「常用工具」里改，运行时经 setKiroVersions() 同步。
  *
  * 这不只是「像不像官方客户端」的问题，服务端会按 UA 里的版本号做准入：
  * 实测同一个 Builder ID token，UA 报 KiroIDE-0.6.18 / aws-sdk-js/1.0.18 时
@@ -24,8 +29,14 @@ import * as path from 'path'
  * @aws/codewhisperer-streaming-client 是 1.0.39（0.12.155 那一代是 1.0.34）。
  * 升级时两个一起核对：只改版本号、SDK 还停在旧值，就是一个官方从没发过的组合。
  */
-const KIRO_IDE_VERSION = '0.12.333'
-const AWS_SDK_VERSION = '1.0.39'
+let KIRO_IDE_VERSION = DEFAULT_KIRO_IDE_VERSION
+let AWS_SDK_VERSION = DEFAULT_AWS_SDK_VERSION
+
+/** 用户在「常用工具 → 请求头版本号」里改过时由 applyRuntimeSettings 同步下来 */
+export function setKiroVersions(ideVersion?: string, sdkVersion?: string): void {
+  KIRO_IDE_VERSION = normalizeVersion(ideVersion, DEFAULT_KIRO_IDE_VERSION)
+  AWS_SDK_VERSION = normalizeVersion(sdkVersion, DEFAULT_AWS_SDK_VERSION)
+}
 
 /*
  * ============ UA 里的机器码 ============
