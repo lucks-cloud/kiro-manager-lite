@@ -7,7 +7,7 @@ import { computed, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import {
   DeleteOutlined,
-  DownloadOutlined,
+  UploadOutlined,
   LineChartOutlined,
   SyncOutlined
 } from '@ant-design/icons-vue'
@@ -15,6 +15,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { CHART_HEIGHT, timeTicks, useChartFrame, valueTicks } from '@/composables/useChartFrame'
 import { formatCredits, formatCreditsPair, formatDateTime, usageColor } from '@/utils/format'
 import { displayEmail } from '@/utils/display'
+import { usePrivacy } from '@/composables/usePrivacy'
 import { smoothLinePath } from '@/utils/chart'
 import { exportStamp, safeNamePart } from '@/utils/transfer'
 import type { Account, UsageHistoryEntry, XlsxSheet } from '@shared/types'
@@ -34,6 +35,8 @@ const props = defineProps<{
 const emit = defineEmits<{ close: [] }>()
 
 const settingsStore = useSettingsStore()
+
+const { maskAccount } = usePrivacy()
 const precision = computed(() => settingsStore.settings.usagePrecision)
 
 const entries = ref<UsageHistoryEntry[]>([])
@@ -44,7 +47,7 @@ const subjectInfo = computed<UsageHistorySubject | null>(() => {
   if (!props.account) return null
   return {
     id: props.account.id,
-    label: displayEmail(props.account.email, settingsStore.settings.privacyMode),
+    label: displayEmail(props.account.email, maskAccount('email')),
     percentUsed: props.account.usage.percentUsed ?? 0,
     noun: '账号'
   }
@@ -285,7 +288,7 @@ async function exportXlsx(): Promise<void> {
             :disabled="!entries.length"
             @click="exportXlsx"
           >
-            <template #icon><DownloadOutlined /></template>
+            <template #icon><UploadOutlined /></template>
           </a-button>
         </a-tooltip>
         <a-tooltip title="重新读取日志">

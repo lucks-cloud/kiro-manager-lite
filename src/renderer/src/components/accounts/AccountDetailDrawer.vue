@@ -1,15 +1,20 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, type Component } from 'vue'
 import { message } from 'ant-design-vue'
 import {
+  CodeOutlined,
   CopyOutlined,
-  DownloadOutlined,
+  DownOutlined,
+  UploadOutlined,
   EyeInvisibleOutlined,
   EyeOutlined,
-  GlobalOutlined
+  GlobalOutlined,
+  LoginOutlined,
+  LogoutOutlined,
+  ThunderboltOutlined
 } from '@ant-design/icons-vue'
 import ExportAccountsModal from '@/components/accounts/ExportAccountsModal.vue'
-import { useAccountsStore } from '@/stores/accounts'
+import { useAccountsStore, type AccountLoginAction } from '@/stores/accounts'
 import { useSettingsStore } from '@/stores/settings'
 import {
   IDP_META,
@@ -21,14 +26,19 @@ import {
   subscriptionLabel,
   usageColor
 } from '@/utils/format'
-import { displayEmail, displayNote } from '@/utils/display'
+import { displayEmail, displayName, displayNote } from '@/utils/display'
+import { usePrivacy } from '@/composables/usePrivacy'
 import { toPlain } from '@/utils/ipc'
 import { copyText, notifyResult } from '@/utils/ui'
 import { regionLabel } from '@shared/regions'
 import type { Account } from '@shared/types'
 
-const props = defineProps<{ account: Account | null }>()
-const emit = defineEmits<{ close: [] }>()
+const props = defineProps<{
+  account: Account | null
+  /** 列表页该账号正在进行的操作（与卡片同一份），登录按钮据此转圈 */
+  busyAction?: string | null
+}>()
+const emit = defineEmits<{ close: []; login: [action: AccountLoginAction, account: Account] }>()
 
 const accountsStore = useAccountsStore()
 const settingsStore = useSettingsStore()
@@ -44,15 +54,24 @@ const account = computed(() =>
 )
 
 const precision = computed(() => settingsStore.settings.usagePrecision)
+const { maskAccount } = usePrivacy()
 
 const email = computed(() =>
-  displayEmail(account.value?.email ?? '', settingsStore.settings.privacyMode)
+  displayEmail(account.value?.email ?? '', maskAccount('email'))
 )
 
 /** 备注同样跟随隐私打码，否则卡片遮住了、点开详情又露出来 */
 const note = computed(() =>
-  displayNote(account.value?.note, settingsStore.settings.privacyMode)
+  displayNote(account.value?.note, maskAccount('note'))
 )
+
+/** 昵称此前在详情里没有跟随打码，这里补上 */
+const nickname = computed(() => {
+  const a = account.value
+  if (!a) return '-'
+  if (maskAccount('nickname')) return displayName(a, true)
+  return a.nickname || '-'
+})
 
 /**
  * 抽屉宽度：与 API Key 详情抽屉同一口径。
@@ -124,22 +143,56 @@ async function openPortal(): Promise<void> {
   }
 }
 
-async function act(kind: 'refresh' | 'check' | 'switch'): Promise<void> {
+async function act(kind: 'refresh' | 'check'): Promise<void> {
   const target = account.value
   if (!target) return
   busy.value = true
   try {
     if (kind === 'refresh') {
       notifyResult(await accountsStore.refreshToken(target.id), { success: '密钥已刷新' })
-    } else if (kind === 'check') {
-      notifyResult(await accountsStore.checkStatus(target.id), { success: '用量已更新' })
     } else {
-      notifyResult(await accountsStore.switchTo(target.id), { success: '已写入 Kiro IDE' })
+      notifyResult(await accountsStore.checkStatus(target.id), { success: '用量已更新' })
     }
   } finally {
     busy.value = false
   }
 }
+
+// ============ 登录按钮组 ============
+interface LoginButton {
+  action: AccountLoginAction
+  label: string
+  icon: Component
+  primary?: boolean
+  danger?: boolean
+}
+
+/** 规则与账号卡片的「登录 / 退出」下拉一致；状态直接读 store 里的最新账号，登录 / 退出后立即跟着变 */
+const loginButtons = computed<LoginButton[]>(() => {
+  const a = account.value
+  if (!a) return []
+  const buttons: LoginButton[] = [
+    a.isActive
+      ? { action: 'logout', label: '退出 Kiro IDE', icon: LogoutOutlined, danger: true }
+      : { action: 'switch', label: '登录 Kiro IDE', icon: LoginOutlined, primary: true },
+    a.isActiveCli
+      ? { action: 'logout-cli', label: '退出 Kiro CLI（含 KiroCrew）', icon: CodeOutlined, danger: true }
+      : { action: 'cli-login', label: '登录 Kiro CLI（含 KiroCrew）', icon: CodeOutlined, primary: true }
+  ]
+  if (!a.isActive && !a.isActiveCli) {
+    buttons.push({ action: 'login-all', label: '全部登录', icon: ThunderboltOutlined, primary: true })
+  }
+  return buttons
+})
+
+function onLoginMenu({ key }: { key: string | number }): void {
+  if (account.value) emit('login', String(key) as AccountLoginAction, account.value)
+}
+
+/** 任一登录动作进行中时，「快捷登录」转圈并禁用，避免两端同时写 */
+const loginBusy = computed(() =>
+  ['switch', 'cli-login', 'login-all', 'logout', 'logout-cli'].includes(props.busyAction ?? '')
+)
 </script>
 
 <template>
@@ -151,22 +204,6 @@ async function act(kind: 'refresh' | 'check' | 'switch'): Promise<void> {
     @close="emit('close')"
   >
     <template v-if="account">
-      <a-space style="margin-bottom: 16px" wrap>
-        <a-button type="primary" :loading="busy" @click="act('switch')">切换到此账号</a-button>
-        <a-button :loading="busy" @click="act('refresh')">刷新密钥</a-button>
-        <a-button :loading="busy" @click="act('check')">刷新用量</a-button>
-        <a-tooltip title="用该账号凭证在私密窗口登录 Kiro 官网后台">
-          <a-button :loading="portalOpening" @click="openPortal">
-            <template #icon><GlobalOutlined /></template>
-            前往官网
-          </a-button>
-        </a-tooltip>
-        <a-button @click="exportOpen = true">
-          <template #icon><DownloadOutlined /></template>
-          导出
-        </a-button>
-      </a-space>
-
       <a-alert
         v-if="account.lastError"
         type="error"
@@ -179,13 +216,14 @@ async function act(kind: 'refresh' | 'check' | 'switch'): Promise<void> {
       <a-descriptions :column="1" size="small" bordered style="margin-bottom: 18px">
         <a-descriptions-item label="状态">
           <a-tag :color="STATUS_META[account.status].color">{{ STATUS_META[account.status].text }}</a-tag>
-          <a-tag v-if="account.isActive" color="green">IDE 当前</a-tag>
+          <a-tag v-if="account.isActive" color="green">IDE 使用中</a-tag>
+          <a-tag v-if="account.isActiveCli" color="blue">CLI 使用中</a-tag>
         </a-descriptions-item>
         <a-descriptions-item label="登录方式">
           <a-tag :color="IDP_META[account.idp].color">{{ IDP_META[account.idp].text }}</a-tag>
           <span class="muted">{{ account.credentials.authMethod }}</span>
         </a-descriptions-item>
-        <a-descriptions-item label="昵称">{{ account.nickname || '-' }}</a-descriptions-item>
+        <a-descriptions-item label="昵称">{{ nickname }}</a-descriptions-item>
         <a-descriptions-item label="备注">{{ note || '-' }}</a-descriptions-item>
         <a-descriptions-item label="User ID">
           <span class="mono">{{ account.userId || '-' }}</span>
@@ -320,5 +358,65 @@ async function act(kind: 'refresh' | 'check' | 'switch'): Promise<void> {
         :selected-ids="[account.id]"
       />
     </template>
+
+    <template v-if="account" #footer>
+      <div class="drawer-footer">
+        <!--
+          「快捷登录」下拉：Kiro IDE、Kiro CLI 各一项，按该端当前是否在用此账号显示「登录」或「退出」；
+          两端都没登录此账号时再给「全部登录」。和账号卡片的「登录 / 退出」下拉完全同一套规则，
+          执行也交给列表页的同一套处理（安装检测、切号结果弹窗、卡片加载态），两边状态同步。
+        -->
+        <a-dropdown :trigger="['click']" placement="topLeft" :disabled="loginBusy">
+            <a-button type="primary" :loading="loginBusy">
+              <template #icon><LoginOutlined /></template>
+              快捷登录
+              <DownOutlined />
+            </a-button>
+            <template #overlay>
+              <a-menu @click="onLoginMenu">
+                <a-menu-item v-for="item in loginButtons" :key="item.action" :danger="item.danger">
+                  <component :is="item.icon" />
+                  {{ item.label }}
+                </a-menu-item>
+              </a-menu>
+            </template>
+          </a-dropdown>
+
+        <div class="footer-actions">
+          <a-button :loading="busy" @click="act('refresh')">刷新密钥</a-button>
+          <a-button :loading="busy" @click="act('check')">刷新用量</a-button>
+          <a-tooltip title="用该账号凭证在私密窗口登录 Kiro 官网后台">
+            <a-button :loading="portalOpening" @click="openPortal">
+              <template #icon><GlobalOutlined /></template>
+              前往官网
+            </a-button>
+          </a-tooltip>
+          <a-button @click="exportOpen = true">
+            <template #icon><UploadOutlined /></template>
+            导出
+          </a-button>
+        </div>
+      </div>
+    </template>
   </a-drawer>
 </template>
+
+<style scoped>
+/* 底部：快捷登录靠左，其余操作靠右；抽屉太窄时右侧一组整体换到下一行并仍靠右 */
+.drawer-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+/* 不用 a-space：它的 wrap 模式会给每项加底部间距，和左侧按钮对不齐 */
+.footer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: auto;
+}
+</style>

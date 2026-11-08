@@ -16,6 +16,7 @@ import ImportApiKeysModal from '@/components/keys/ImportApiKeysModal.vue'
 import { useSettingsStore } from '@/stores/settings'
 import { useBatchRun, type BatchRow } from '@/utils/batchRun'
 import { displayEmail } from '@/utils/display'
+import { usePrivacy } from '@/composables/usePrivacy'
 import { toPlain } from '@/utils/ipc'
 import { confirmDanger, copyText } from '@/utils/ui'
 import { applyRefreshedCredentials, randomKeyName } from '@/utils/accountApiKey'
@@ -26,6 +27,8 @@ const props = defineProps<{ accounts: Account[] }>()
 const emit = defineEmits<{ close: [] }>()
 
 const settingsStore = useSettingsStore()
+
+const { maskAccount, maskKey } = usePrivacy()
 
 interface Row extends BatchRow {
   account: Account
@@ -68,11 +71,11 @@ const importText = computed(() => created.value.map((row) => row.apiKey).join('\
 const importRegion = computed(() => created.value[0]?.region)
 
 function email(row: Row): string {
-  return displayEmail(row.account.email, settingsStore.settings.privacyMode)
+  return displayEmail(row.account.email, maskAccount('email'))
 }
 
 function displayKey(key: string): string {
-  if (!settingsStore.settings.privacyMode) return key
+  if (!maskKey('apiKey')) return key
   return `${key.slice(0, 8)}…${key.slice(-6)}`
 }
 

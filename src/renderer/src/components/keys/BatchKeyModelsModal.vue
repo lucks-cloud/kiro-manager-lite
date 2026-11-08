@@ -18,6 +18,7 @@ import BatchModelsModalBase, { type BatchModelsField } from '@/components/common
 import ExportApiKeysModal from '@/components/keys/ExportApiKeysModal.vue'
 import { useKeysStore } from '@/stores/keys'
 import { useSettingsStore } from '@/stores/settings'
+import { usePrivacy } from '@/composables/usePrivacy'
 import { displayEmail, displayKey } from '@/utils/display'
 import { copyText } from '@/utils/ui'
 import type { IpcResult, KeyEntry, KiroModelInfo } from '@shared/types'
@@ -28,6 +29,7 @@ const emit = defineEmits<{ close: [] }>()
 
 const store = useKeysStore()
 const settingsStore = useSettingsStore()
+const { maskKey } = usePrivacy()
 
 /** 按 id 在主进程取 Key，明文不经渲染进程来回传 */
 function fetchModels(entry: KeyEntry): Promise<IpcResult<KiroModelInfo[]>> {
@@ -43,10 +45,9 @@ function filterAlive(ids: string[]): string[] {
   return ids.filter((id) => alive.has(id))
 }
 
-const privacy = computed(() => settingsStore.settings.privacyMode)
-const keyText = (entry: KeyEntry): string => displayKey(entry.key, privacy.value)
+const keyText = (entry: KeyEntry): string => displayKey(entry.key, maskKey('apiKey'))
 const emailText = (entry: KeyEntry): string =>
-  entry.email ? displayEmail(entry.email, privacy.value) : '-'
+  entry.email ? displayEmail(entry.email, maskKey('email')) : '-'
 
 /** Key 与邮箱都写完整值，不做隐私打码：导出的清单是给人核对用的；其后是模型数量、模型列表 */
 const EXPORT_FIELDS: BatchModelsField<KeyEntry>[] = [

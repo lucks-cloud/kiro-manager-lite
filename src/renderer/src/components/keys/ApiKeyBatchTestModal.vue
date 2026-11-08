@@ -19,6 +19,7 @@ import {
 } from '@ant-design/icons-vue'
 import { useKeysStore } from '@/stores/keys'
 import { useSettingsStore } from '@/stores/settings'
+import { usePrivacy } from '@/composables/usePrivacy'
 import { displayNote as maskedNote } from '@/utils/display'
 import { errorMessage } from '@shared/errors'
 import type { KeyEntry } from '@shared/types'
@@ -29,6 +30,7 @@ const emit = defineEmits<{ 'update:open': [boolean] }>()
 
 const keysStore = useKeysStore()
 const settingsStore = useSettingsStore()
+const { maskKey } = usePrivacy()
 
 /** 最小提示词：可用的 Key 会计一次请求额度，内容越短消耗越小 */
 const PROBE_MESSAGE = '请回复 ok'
@@ -59,13 +61,13 @@ const stat = computed(() => ({
 const finished = computed(() => !running.value && stat.value.pending === 0 && stat.value.total > 0)
 
 function displayKey(key: string): string {
-  if (!settingsStore.settings.privacyMode) return key
+  if (!maskKey('apiKey')) return key
   return `${key.slice(0, 8)}…${key.slice(-6)}`
 }
 
 /** 备注跟随隐私打码；在渲染时算而不是建行时算，中途切开关也能立即生效 */
 function displayNote(note?: string): string {
-  return maskedNote(note, settingsStore.settings.privacyMode)
+  return maskedNote(note, maskKey('note'))
 }
 
 function reset(): void {

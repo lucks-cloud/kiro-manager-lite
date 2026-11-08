@@ -10,6 +10,7 @@ import {
   ThunderboltOutlined
 } from '@ant-design/icons-vue'
 import { useSettingsStore } from '@/stores/settings'
+import { usePrivacy } from '@/composables/usePrivacy'
 import { displayKey as maskedKey } from '@/utils/display'
 import type { KiroCliEnvStatus } from '@shared/types'
 
@@ -23,6 +24,7 @@ const props = defineProps<{
 const emit = defineEmits<{ (e: 'update:open', value: boolean): void }>()
 
 const settingsStore = useSettingsStore()
+const { maskKey } = usePrivacy()
 const DOC_URL = 'https://kiro.dev/docs/getting-started/authentication/#use-the-api-key'
 
 const isWindows = /win/i.test(navigator.platform)
@@ -42,7 +44,7 @@ async function loadStatus(): Promise<void> {
 const writtenThis = computed(() => env.value?.value === props.apiKey)
 const writtenOther = computed(() => !!env.value?.value && !writtenThis.value)
 const otherLabel = computed(() =>
-  env.value?.value ? maskedKey(env.value.value, settingsStore.settings.privacyMode) : ''
+  env.value?.value ? maskedKey(env.value.value, maskKey('apiKey')) : ''
 )
 
 async function writeEnv(): Promise<void> {

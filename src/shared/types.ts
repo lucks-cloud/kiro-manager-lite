@@ -5,6 +5,12 @@ import { DEFAULT_REGION } from './regions'
 import { DEFAULT_BACKUP_CYCLE, DEFAULT_BACKUP_KEEP, type BackupCycle } from './backupSchedule'
 import { DEFAULT_PORTAL_LOCALE, type PortalLocale } from './portalLocale'
 import { DEFAULT_AWS_SDK_VERSION, DEFAULT_KIRO_IDE_VERSION } from './kiroVersion'
+import {
+  DEFAULT_ACCOUNT_PRIVACY_FIELDS,
+  DEFAULT_KEY_PRIVACY_FIELDS,
+  type AccountPrivacyField,
+  type KeyPrivacyField
+} from './privacyFields'
 import type { ModelEffort } from './modelSchema'
 
 export type IdpType = 'BuilderId' | 'Github' | 'Google' | 'Enterprise'
@@ -210,7 +216,7 @@ export interface AccountExportData {
   groups?: AccountGroup[]
 }
 
-/** 简化导入项（卡密 / OIDC JSON / CSV） */
+/** 简化导入项（卡密 / 精简 JSON / CSV） */
 export interface AccountImportItem {
   email?: string
   password?: string
@@ -1452,6 +1458,10 @@ export interface AppSettings {
   kiroIdeVersion: string
   /** 请求头里上报的 AWS SDK 版本（aws-sdk-js/<版本>） */
   awsSdkVersion: string
+  /** 隐私打码开启时，账号相关界面遮住哪些字段 */
+  accountPrivacyFields: AccountPrivacyField[]
+  /** 隐私打码开启时，API Key 相关界面遮住哪些字段 */
+  keyPrivacyFields: KeyPrivacyField[]
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -1499,7 +1509,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   gatewayRetryDelayMs: 100,
   portalLocale: DEFAULT_PORTAL_LOCALE,
   kiroIdeVersion: DEFAULT_KIRO_IDE_VERSION,
-  awsSdkVersion: DEFAULT_AWS_SDK_VERSION
+  awsSdkVersion: DEFAULT_AWS_SDK_VERSION,
+  accountPrivacyFields: [...DEFAULT_ACCOUNT_PRIVACY_FIELDS],
+  keyPrivacyFields: [...DEFAULT_KEY_PRIVACY_FIELDS]
 }
 
 // ============================================
@@ -1593,6 +1605,10 @@ export interface KeyFilter {
   creditMin?: number
   /** 总积分（额度上限）上限（含） */
   creditMax?: number
+  /** 剩余积分（总积分 − 已用积分）下限（含） */
+  remainingMin?: number
+  /** 剩余积分（总积分 − 已用积分）上限（含） */
+  remainingMax?: number
   /** 额度重置剩余天数下限（含） */
   daysRemainingMin?: number
   /** 额度重置剩余天数上限（含） */

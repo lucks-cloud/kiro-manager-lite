@@ -3,9 +3,16 @@
 // 主进程拼 UA 时读取，渲染层用同一份对照表渲染级联下拉。
 import scanned from './data/kiro-sdk-versions.json'
 
-/** 本机实测的官方组合：Kiro 0.12.333 打包的 @aws/codewhisperer-streaming-client 是 1.0.39 */
-export const DEFAULT_KIRO_IDE_VERSION = '0.12.333'
-export const DEFAULT_AWS_SDK_VERSION = '1.0.39'
+/** 默认组合：Kiro 1.4.0 + 它打包的推荐 SDK 1.0.44（来自 dmg 提取的对照表） */
+export const DEFAULT_KIRO_IDE_VERSION = '1.4.0'
+export const DEFAULT_AWS_SDK_VERSION = '1.0.44'
+
+/**
+ * 1.0.47 及之前的默认组合。存值恰好是它时视为用户没改过，读取设置时迁移到新默认；
+ * 用户自己选过的组合不受影响。
+ */
+export const LEGACY_DEFAULT_KIRO_IDE_VERSION = '0.12.333'
+export const LEGACY_DEFAULT_AWS_SDK_VERSION = '1.0.39'
 
 /** 一个 Kiro IDE 版本及其打包的 AWS SDK 版本 */
 export interface KiroVersionPair {

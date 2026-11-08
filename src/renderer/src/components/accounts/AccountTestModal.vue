@@ -16,6 +16,7 @@ import ModelCascader from '@/components/common/ModelCascader.vue'
 import TestOutputPanel from '@/components/common/TestOutputPanel.vue'
 import { useChatTest } from '@/composables/useChatTest'
 import { displayEmail } from '@/utils/display'
+import { usePrivacy } from '@/composables/usePrivacy'
 import { errorMessage } from '@shared/errors'
 import type { Account, KiroModelInfo } from '@shared/types'
 
@@ -23,6 +24,8 @@ const props = defineProps<{ account: Account | null }>()
 const emit = defineEmits<{ close: [] }>()
 
 const settingsStore = useSettingsStore()
+
+const { maskAccount } = usePrivacy()
 const accountsStore = useAccountsStore()
 
 // 模型列表、输入、运行状态、流式片段与结果摘要见 useChatTest
@@ -65,7 +68,7 @@ const {
 const open = computed(() => !!props.account)
 
 const accountLabel = computed(() =>
-  props.account ? displayEmail(props.account.email, settingsStore.settings.privacyMode) : ''
+  props.account ? displayEmail(props.account.email, maskAccount('email')) : ''
 )
 
 const refreshingToken = ref(false)

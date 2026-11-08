@@ -5,6 +5,7 @@ import { useAccountsStore } from '@/stores/accounts'
 import { useSettingsStore } from '@/stores/settings'
 import { IDP_META, STATUS_META, formatCredits, subscriptionLabel, tokenLife } from '@/utils/format'
 import { displayEmail } from '@/utils/display'
+import { usePrivacy } from '@/composables/usePrivacy'
 import { notifyResult } from '@/utils/ui'
 import { isTrashed } from '@shared/itemGroups'
 import type { Account, TrayAction, TraySnapshot } from '@shared/types'
@@ -20,6 +21,7 @@ function tokenLifeText(account: Account): string {
 export function useTrayBridge(): void {
   const accountsStore = useAccountsStore()
   const settingsStore = useSettingsStore()
+  const { maskAccount } = usePrivacy()
 
   /** 只有「正常」且不在回收站里的账号才允许切换 */
   const isUsable = (a: Account): boolean => a.status === 'active' && !isTrashed(a)
@@ -45,7 +47,7 @@ export function useTrayBridge(): void {
     const precision = settingsStore.settings.usagePrecision
     return {
       ...base,
-      email: displayEmail(active.email, settingsStore.settings.privacyMode),
+      email: displayEmail(active.email, maskAccount('email')),
       idp: IDP_META[active.idp].text,
       subscription: subscriptionLabel(active.subscription),
       status: STATUS_META[active.status].text,

@@ -4,7 +4,7 @@ import { message } from 'ant-design-vue'
 import {
   CheckCircleFilled,
   CopyOutlined,
-  DownloadOutlined,
+  UploadOutlined,
   EyeInvisibleOutlined,
   EyeOutlined,
   GlobalOutlined,
@@ -15,6 +15,7 @@ import {
 import RegionSelect from '@/components/common/RegionSelect.vue'
 import { useKeysStore } from '@/stores/keys'
 import { useSettingsStore } from '@/stores/settings'
+import { usePrivacy } from '@/composables/usePrivacy'
 import { copyText } from '@/utils/ui'
 import {
   displayEmail as maskedEmail,
@@ -29,6 +30,7 @@ const props = defineProps<{ keyEntry: KeyEntry | null }>()
 const emit = defineEmits<{ close: []; test: [KeyEntry]; edit: [KeyEntry]; select: [KeyEntry] }>()
 const keysStore = useKeysStore()
 const settingsStore = useSettingsStore()
+const { maskKey } = usePrivacy()
 const showSecret = ref(false)
 const busy = ref('')
 
@@ -64,11 +66,11 @@ const resetDays = computed(() => {
 /** 邮箱跟随全局隐私打码；上游未返回时占位 */
 const emailText = computed(() => {
   const value = entry.value?.email
-  return value ? maskedEmail(value, settingsStore.settings.privacyMode) : '-'
+  return value ? maskedEmail(value, maskKey('email')) : '-'
 })
 /** 备注同样跟随隐私打码，否则卡片遮住了、点开详情又露出来 */
 const noteMasked = computed(() =>
-  maskedNote(entry.value?.note, settingsStore.settings.privacyMode)
+  maskedNote(entry.value?.note, maskKey('note'))
 )
 const noteText = computed(() => noteMasked.value || '-')
 /** 标题也用打码后的备注，否则遮了正文却从标题露出去 */
@@ -76,7 +78,7 @@ const drawerTitle = computed(() => noteMasked.value || 'API Key 详情')
 const maskedKey = computed(() => {
   const key = entry.value?.key || ''
   if (!key) return '-'
-  if (!settingsStore.settings.privacyMode || showSecret.value) return key
+  if (!maskKey('apiKey') || showSecret.value) return key
   return `${key.slice(0, 8)}${'•'.repeat(24)}${key.slice(-8)}`
 })
 /**
@@ -85,14 +87,14 @@ const maskedKey = computed(() => {
  */
 const userIdText = computed(() => {
   const value = entry.value?.userId
-  return value ? displayUserId(value, settingsStore.settings.privacyMode) : '-'
+  return value ? displayUserId(value, maskKey('email')) : '-'
 })
 const isCurrent = computed(() => entry.value?.id === keysStore.data.activeKeyId)
 /** 与卡片一致：管理面同步错误与对话测活错误取并集 */
 const issue = computed(() => entry.value?.lastError || entry.value?.lastChatError)
 
 watch(
-  () => [props.keyEntry?.id, settingsStore.settings.privacyMode],
+  () => [props.keyEntry?.id, maskKey('apiKey')],
   () => { showSecret.value = false }
 )
 
@@ -187,40 +189,42 @@ function subscriptionColor(tier?: string): string {
     placement="right"
     @close="emit('close')"
   >
+    <!-- 底部：切换到该 Key 靠左，其余操作靠右；抽屉太窄时右侧一组整体换到下一行并仍靠右 -->
     <template v-if="entry" #footer>
-      <a-button
-        block
-        :type="isCurrent ? 'default' : 'primary'"
-        :style="isCurrent ? { color: '#52c41a', borderColor: '#52c41a' } : undefined"
-        :disabled="isCurrent || !!busy"
-        @click="onSwitch"
-      >
-        <template #icon>
-          <CheckCircleFilled v-if="isCurrent" />
-          <SwapOutlined v-else />
-        </template>
-        {{ isCurrent ? '当前使用' : '切换到该 Key' }}
-      </a-button>
+      <div class="drawer-footer">
+        <a-button
+          :type="isCurrent ? 'default' : 'primary'"
+          :style="isCurrent ? { color: '#52c41a', borderColor: '#52c41a' } : undefined"
+          :disabled="isCurrent || !!busy"
+          @click="onSwitch"
+        >
+          <template #icon>
+            <CheckCircleFilled v-if="isCurrent" />
+            <SwapOutlined v-else />
+          </template>
+          {{ isCurrent ? '当前使用' : '切换到该 Key' }}
+        </a-button>
+
+        <div class="footer-actions">
+          <a-button
+            :loading="busy === 'sync'"
+            :disabled="!!busy && busy !== 'sync'"
+            @click="sync"
+          >
+            <template #icon><SyncOutlined /></template>刷新用量
+          </a-button>
+          <a-button @click="emit('test', entry)">
+            <template #icon><SendOutlined /></template>在线测活
+          </a-button>
+          <a-button @click="emit('edit', entry)">修改备注</a-button>
+          <a-button @click="exportKey">
+            <template #icon><UploadOutlined /></template>导出
+          </a-button>
+        </div>
+      </div>
     </template>
 
     <template v-if="entry">
-      <a-space style="margin-bottom: 16px" wrap>
-        <a-button
-          :loading="busy === 'sync'"
-          :disabled="!!busy && busy !== 'sync'"
-          @click="sync"
-        >
-          <template #icon><SyncOutlined /></template>刷新用量
-        </a-button>
-        <a-button @click="emit('test', entry)">
-          <template #icon><SendOutlined /></template>在线测活
-        </a-button>
-        <a-button @click="emit('edit', entry)">修改备注</a-button>
-        <a-button @click="exportKey">
-          <template #icon><DownloadOutlined /></template>导出
-        </a-button>
-      </a-space>
-
       <a-alert
         v-if="issue"
         class="issue-alert"
@@ -240,7 +244,7 @@ function subscriptionColor(tier?: string): string {
       <div class="section-title">
         API Key
         <a-button
-          v-if="settingsStore.settings.privacyMode"
+          v-if="maskKey('apiKey')"
           type="link"
           size="small"
           @click="showSecret = !showSecret"
@@ -261,7 +265,7 @@ function subscriptionColor(tier?: string): string {
       >
         <a-descriptions-item label="完整凭证">
           <div class="cell-row">
-            <span class="mono cell-key" :title="showSecret || !settingsStore.settings.privacyMode ? entry.key : undefined">
+            <span class="mono cell-key" :title="showSecret || !maskKey('apiKey') ? entry.key : undefined">
               {{ maskedKey }}
             </span>
             <a-button type="link" size="small" class="cell-action" @click="copyKey">
@@ -274,7 +278,7 @@ function subscriptionColor(tier?: string): string {
           <div v-if="entry.email" class="cell-row">
             <span
               class="cell-key"
-              :title="settingsStore.settings.privacyMode ? undefined : entry.email"
+              :title="maskKey('email') ? undefined : entry.email"
             >{{ emailText }}</span>
             <a-button type="link" size="small" class="cell-action" @click="copyEmail">
               <template #icon><CopyOutlined /></template>
@@ -287,7 +291,7 @@ function subscriptionColor(tier?: string): string {
           <div v-if="entry.userId" class="cell-row">
             <span
               class="mono cell-key"
-              :title="settingsStore.settings.privacyMode ? undefined : entry.userId"
+              :title="maskKey('email') ? undefined : entry.userId"
             >{{ userIdText }}</span>
             <a-button type="link" size="small" class="cell-action" @click="copyUserId">
               <template #icon><CopyOutlined /></template>
@@ -434,4 +438,20 @@ function subscriptionColor(tier?: string): string {
 .muted { color: var(--kal-muted); }
 /* 上游错误是整段 JSON，里面的长 URL 没有可断行的空格，需要按字符断开才不会溢出容器 */
 .issue-alert :deep(.ant-alert-message) { word-break: break-word; overflow-wrap: anywhere; }
+.drawer-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+/* 不用 a-space：它的 wrap 模式会给每项加底部间距，和左侧按钮对不齐 */
+.footer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: auto;
+}
 </style>

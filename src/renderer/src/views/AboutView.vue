@@ -13,6 +13,7 @@ import {
 } from '@ant-design/icons-vue'
 import { useSettingsStore } from '@/stores/settings'
 import { useUpdateStore } from '@/stores/update'
+import { APP_TAGLINE } from '@/utils/appInfo'
 import kiroLogo from '@/assets/kiro-logo.png'
 import qqGroup from '@/assets/qq-group.jpg'
 import authorAvatar from '@/assets/author_avatar.jpg'
@@ -50,26 +51,25 @@ function manualUpdate(): void {
   open(REPO_URL)
 }
 
-/** 关于页展示的功能清单，按应用的模块顺序排列，与 README 的功能特性保持一致 */
+/** 关于页展示的功能清单，按应用的模块顺序排列 */
 const features = [
-  { name: '多账号管理', desc: 'Google / GitHub / Builder ID / Enterprise SSO 在线登录、OIDC 凭证、读取本机登录态五种添加方式，支持搜索、多维筛选、排序与批量操作' },
+  { name: '多账号管理', desc: 'Google / GitHub / Builder ID / Enterprise SSO 在线登录、OIDC 凭证、读取本机登录态五种添加方式；搜索、多维筛选（含总积分与剩余积分）、排序与批量操作，上千账号依然流畅' },
+  { name: 'API Key 管理', desc: '管理 ksk_ 开头的 Kiro API Key，按区域同步额度、测活、查看积分历史；也可用账号凭证直接申请 API Key，支持批量生成' },
   { name: '分组与展示', desc: '账号与 API Key 共用一套自定义分组，卡片、卡片紧凑、列表三种形态可切换并记住选择' },
-  { name: '一键切号', desc: '把账号凭证写入 Kiro IDE，落盘前实测 profileArn，可一键重启 IDE 生效' },
-  { name: '刷新与续期', desc: 'Token 与用量各自定时刷新，IDE 当前账号的 Token 即将过期前主动续期写盘' },
-  { name: '流式测活', desc: '真实对话测活，模型可搜索、二级可选推理档位，可查看官方完整原始返回' },
-  { name: '订阅与官网', desc: '订阅状态、可开通档位与 Stripe 账单页，可批量生成订阅链接；内置私密浏览器免登录进 Kiro 官网后台' },
-  { name: '账号 API Key', desc: '用账号凭证向 Kiro 申请 API Key 并列出已创建的 Key' },
-  { name: 'API Key 管理', desc: '管理 ksk_ 开头的 Kiro API Key，按区域同步额度、测活、查看积分历史' },
-  { name: '本地反代', desc: '账号池转成 OpenAI / Anthropic / Gemini 兼容接口，轮询选号、重试换号、托管联网搜索' },
-  { name: '一键接入客户端', desc: 'Claude Code、Codex、Cursor、VS Code 等 12 个命令行与桌面客户端一键写入，写入前备份、可一键还原' },
-  { name: '本地网关', desc: '把 Kiro IDE 的 AI 请求接管到指定 API Key，运行中可随时换 Key，按真实请求统计' },
+  { name: '快捷登录', desc: '一键把账号写入 Kiro IDE（落盘前实测 profileArn，可自动重启 IDE），也可一键登录 Kiro CLI 与 Kiro Crew，登录前先检测本机安装情况' },
+  { name: '刷新与续期', desc: '密钥与积分各自定时自动刷新，IDE 当前账号的 Token 即将过期前主动续期写盘，避免被登出' },
+  { name: '流式测活', desc: '真实对话测活，模型可搜索、二级可选推理档位，可查看发给官方的每次请求与原始返回' },
+  { name: '订阅与官网', desc: '查看订阅状态与可开通档位、打开 Stripe 账单页、批量生成订阅链接；内置私密浏览器免登录进 Kiro 官网后台' },
+  { name: '本地反代', desc: '账号池或 API Key 池转成 OpenAI / Anthropic / Gemini 兼容接口，轮询选号、失败重试换号、托管联网搜索，带请求日志与按 Key 用量统计' },
+  { name: '客户端接入', desc: 'Claude Code、Codex、Cursor、VS Code 等 12 个命令行与桌面客户端一键写入配置，写入前完整备份、可一键还原' },
+  { name: '本地网关', desc: '把 Kiro IDE 的 AI 请求接管到指定 API Key，运行中可随时换 Key，按真实请求统计请求数、成功率与积分，调用历史可回看' },
   { name: '用量与历史', desc: '记录每次刷新的积分变化，趋势曲线、明细表与 Excel 导出' },
   { name: '导入导出', desc: '卡密、JSON、CSV、TXT 互通，可批量导入多个文件、分割导出为压缩包' },
-  { name: '常用工具', desc: '机器码重置与恢复、出口 IP 与网站连通性检测、自动同意 AI 操作' },
+  { name: '常用工具', desc: '自动同意 AI 操作、网关错误自动续接、机器码重置与恢复、Kiro UA 请求头版本号（按官方真实组合切换 Kiro IDE / AWS SDK 版本）、出站域名统计、出口 IP 与网站连通性检测' },
+  { name: '隐私打码', desc: '一键遮住邮箱、昵称、API Key、备注与分组标签，账号与 API Key 可分别勾选打码内容，截图录屏更安心' },
   { name: '系统日志', desc: '主进程与界面日志同一时间线，按级别、分类、关键字与时间筛选并可导出' },
-  { name: '隐私打码', desc: '一键遮住邮箱、昵称、API Key 与备注，截图录屏更安心' },
   { name: '个性化设置', desc: '主题风格与主题色、左右 / 上下布局、控件尺寸、HTTP 代理、内置浏览器地区、定时备份与初始化' },
-  { name: '桌面端体验', desc: '系统托盘常驻、关闭行为可配、自定义协议唤起、单实例锁' }
+  { name: '桌面端体验', desc: '系统托盘常驻（查看当前账号、刷新、切号）、关闭行为可配、自定义协议唤起、单实例锁' }
 ]
 
 /** 本项目仓库地址，头部按钮与检查更新指向同一个仓库 */
@@ -170,9 +170,7 @@ function open(url: string): void {
           关于本应用
         </span>
       </template>
-      <p class="intro-text">
-        Kiro 多账号一键切换 · 本地反代与客户端一键接入 · 自定义分组与三种展示形态 · 订阅开通与账单管理 · 账号 API Key 管理 · 本地网关与真实调用统计 · 机器码重置与网络检测 · 自动刷新与流式测活 · 内置私密浏览器 · 托盘常驻
-      </p>
+      <p class="intro-text">{{ APP_TAGLINE }}</p>
       <p class="intro-text">
         本应用使用 Electron + Vue 3 + TypeScript 开发，支持 Windows、macOS 和 Linux 平台。
         所有账号数据均加密保存在本机，不会上传到任何服务器。

@@ -25,14 +25,14 @@ import {
  * 403 "User is not authorized to make this call."；换成新版本即 200。
  * 社交账号（Github / Google）不受该门槛影响——所以该 403 只出现在 Builder ID / IdC 上。
  *
- * 两个值都读自本机安装的 Kiro 0.12.333：kiro-agent 扩展里打包的
- * @aws/codewhisperer-streaming-client 是 1.0.39（0.12.155 那一代是 1.0.34）。
+ * 默认值是 Kiro 1.4.0 与它打包的 @aws/codewhisperer-streaming-client 1.0.44，
+ * 各版本的对应关系见 shared/data/kiro-sdk-versions.json（由 scripts/kiro-sdk-versions.sh 从官方 dmg 提取）。
  * 升级时两个一起核对：只改版本号、SDK 还停在旧值，就是一个官方从没发过的组合。
  */
 let KIRO_IDE_VERSION = DEFAULT_KIRO_IDE_VERSION
 let AWS_SDK_VERSION = DEFAULT_AWS_SDK_VERSION
 
-/** 用户在「常用工具 → 请求头版本号」里改过时由 applyRuntimeSettings 同步下来 */
+/** 用户在「常用工具 → Kiro UA 请求头版本号」里改过时由 applyRuntimeSettings 同步下来 */
 export function setKiroVersions(ideVersion?: string, sdkVersion?: string): void {
   KIRO_IDE_VERSION = normalizeVersion(ideVersion, DEFAULT_KIRO_IDE_VERSION)
   AWS_SDK_VERSION = normalizeVersion(sdkVersion, DEFAULT_AWS_SDK_VERSION)

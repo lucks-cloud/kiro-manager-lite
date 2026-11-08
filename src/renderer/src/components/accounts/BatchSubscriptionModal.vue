@@ -24,6 +24,7 @@ import {
 import { useSettingsStore } from '@/stores/settings'
 import { useBatchRun, type BatchRow } from '@/utils/batchRun'
 import { displayEmail } from '@/utils/display'
+import { usePrivacy } from '@/composables/usePrivacy'
 import { subscriptionLabel } from '@/utils/format'
 import { freshAccount } from '@/utils/freshAccount'
 import { toPlain } from '@/utils/ipc'
@@ -36,6 +37,8 @@ const props = defineProps<{ accounts: Account[] }>()
 const emit = defineEmits<{ close: [] }>()
 
 const settingsStore = useSettingsStore()
+
+const { maskAccount } = usePrivacy()
 
 interface Row extends BatchRow {
   account: Account
@@ -85,7 +88,7 @@ function onMorePick(): void {
 const planTitle = computed(() => plans.value.find((p) => p.subscriptionType === planType.value)?.title ?? '')
 
 function email(account: Account): string {
-  return displayEmail(account.email, settingsStore.settings.privacyMode)
+  return displayEmail(account.email, maskAccount('email'))
 }
 
 function priceText(plan: SubscriptionPlan): string {

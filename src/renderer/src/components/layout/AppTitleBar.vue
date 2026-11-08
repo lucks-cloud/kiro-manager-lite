@@ -7,11 +7,13 @@ import { useAccountsStore, type AccountTaskType } from '@/stores/accounts'
 import { useKeysStore } from '@/stores/keys'
 import { useSettingsStore } from '@/stores/settings'
 import { displayEmail, displayKey, displayNote } from '@/utils/display'
+import { usePrivacy } from '@/composables/usePrivacy'
 
 const route = useRoute()
 const accountsStore = useAccountsStore()
 const keysStore = useKeysStore()
 const settingsStore = useSettingsStore()
+const { maskAccount, maskKey } = usePrivacy()
 
 const title = computed(() => (route.meta.title as string) || '主页')
 
@@ -27,10 +29,9 @@ const showIdeStatus = computed(() => route.name === 'accounts')
 const showApiKeyStatus = computed(() => route.name === 'keys')
 
 function keyLabel(entry: { key: string; note?: string }): string {
-  const privacy = settingsStore.settings.privacyMode
-  const shownKey = displayKey(entry.key, privacy)
+  const shownKey = displayKey(entry.key, maskKey('apiKey'))
   // 备注与 Key 一起受隐私打码约束，否则页头会把卡片上遮住的备注露出来
-  const note = displayNote(entry.note, privacy)
+  const note = displayNote(entry.note, maskKey('note'))
   return note ? `${note} · ${shownKey}` : shownKey
 }
 
@@ -55,10 +56,11 @@ async function detectCurrentApiKey(): Promise<void> {
   if (error) message.error(error)
 }
 
-/** 账号展示名，打码模式下只显示打码邮箱 */
+/** 账号展示名：昵称被打码时不显示昵称，邮箱按设置打码 */
 function accountLabel(account: { email: string; nickname?: string }): string {
-  if (settingsStore.settings.privacyMode) return displayEmail(account.email, true)
-  return account.nickname ? `${account.nickname} · ${account.email}` : account.email
+  const email = displayEmail(account.email, maskAccount('email'))
+  if (!account.nickname || maskAccount('nickname')) return email
+  return `${account.nickname} · ${email}`
 }
 
 const activeLabel = computed(() => {

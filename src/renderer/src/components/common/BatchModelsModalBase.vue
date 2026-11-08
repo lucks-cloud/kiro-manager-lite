@@ -41,7 +41,7 @@ import {
   CheckCircleFilled,
   CloseCircleFilled,
   DownOutlined,
-  DownloadOutlined,
+  UploadOutlined,
   FileExcelOutlined,
   FileTextOutlined,
   ReloadOutlined,
@@ -389,7 +389,7 @@ function close(): void {
       -->
       <a-space-compact :size="settingsStore.compactSize">
         <a-button :disabled="noDownload" @click="openItemExport">
-          <template #icon><DownloadOutlined /></template>
+          <template #icon><UploadOutlined /></template>
           {{ props.exportLabel }}（{{ downloadable.length }}）
         </a-button>
         <a-dropdown v-model:open="moreOpen" :disabled="noDownload" placement="topRight" :trigger="['click']">

@@ -24,6 +24,7 @@ import {
 import { useKeysStore } from '@/stores/keys'
 import { useSettingsStore } from '@/stores/settings'
 import { displayEmail, displayKey, displayNote } from '@/utils/display'
+import { maskGroupName, usePrivacy } from '@/composables/usePrivacy'
 import {
   KEY_STATUS_META,
   formatCreditsPair,
@@ -74,14 +75,18 @@ const settingsStore = useSettingsStore()
 
 const BAR_COUNT = 40
 
-const privacy = computed(() => settingsStore.settings.privacyMode)
+/** 隐私打码按字段生效：只遮用户在工具栏勾选的那几项 */
+const { maskKey } = usePrivacy()
+const maskKeyOn = computed(() => maskKey('apiKey'))
+const maskEmailOn = computed(() => maskKey('email'))
+const maskNoteOn = computed(() => maskKey('note'))
 const precision = computed(() => settingsStore.settings.usagePrecision)
 
-const keyText = computed(() => displayKey(props.entry.key, privacy.value))
+const keyText = computed(() => displayKey(props.entry.key, maskKeyOn.value))
 const emailText = computed(() =>
-  props.entry.email ? displayEmail(props.entry.email, privacy.value) : '-'
+  props.entry.email ? displayEmail(props.entry.email, maskEmailOn.value) : '-'
 )
-const noteText = computed(() => displayNote(props.entry.note, privacy.value) || '-')
+const noteText = computed(() => displayNote(props.entry.note, maskNoteOn.value) || '-')
 
 const issue = computed(() => keyIssue(props.entry))
 const status = computed(
@@ -92,7 +97,9 @@ const subscriptionColor = computed(() => subscriptionMeta(keyTier(props.entry)).
 
 /** 所属分组（可多个，按分组顺序）；已被删除的分组不显示 */
 const groupNames = computed(() =>
-  groupsOfItem(props.entry, store.groups).map((group) => group.name)
+  groupsOfItem(props.entry, store.groups).map((group) =>
+    maskKey('group') ? maskGroupName() : group.name
+  )
 )
 
 const ratio = computed(() => keyUsageRatio(props.entry))
@@ -226,14 +233,14 @@ function onContextMenu(e: MouseEvent): void {
           这块开详情，用量块开积分变化，统计格开曲线，右下动作区各干各的。
         -->
         <div class="key-identity" @click.stop="fire('detail')">
-          <span class="key-value mono" :title="privacy ? undefined : props.entry.key">{{ keyText }}</span>
+          <span class="key-value mono" :title="maskKeyOn ? undefined : props.entry.key">{{ keyText }}</span>
           <span
             class="key-email muted"
-            :title="props.entry.email && !privacy ? props.entry.email : undefined"
+            :title="props.entry.email && !maskEmailOn ? props.entry.email : undefined"
           >邮箱：{{ emailText }}</span>
           <span
             class="key-note muted"
-            :title="props.entry.note && !privacy ? props.entry.note : undefined"
+            :title="props.entry.note && !maskNoteOn ? props.entry.note : undefined"
           >备注：{{ noteText }}</span>
         </div>
       </div>
@@ -249,12 +256,12 @@ function onContextMenu(e: MouseEvent): void {
       </a-tag>
       <!-- 分组标签：没分组就不显示，避免每张卡都多一个空标签；多个分组各占一个标签 -->
       <a-tag
-        v-for="groupName in groupNames"
-        :key="groupName"
+        v-for="(groupName, i) in groupNames"
+        :key="i"
         class="group-tag"
         color="purple"
         :bordered="false"
-        :title="`分组：${groupName}`"
+        :title="maskKey('group') ? undefined : `分组：${groupName}`"
       >
         {{ groupName }}
       </a-tag>

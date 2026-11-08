@@ -7,7 +7,7 @@ import {
   CrownOutlined,
   DeleteOutlined,
   DownOutlined,
-  DownloadOutlined,
+  UploadOutlined,
   EditOutlined,
   FileSearchOutlined,
   FilterOutlined,
@@ -18,7 +18,7 @@ import {
   RollbackOutlined,
   SyncOutlined,
   BranchesOutlined,
-  UploadOutlined
+  DownloadOutlined
 } from '@ant-design/icons-vue'
 import AccountCard from '@/components/accounts/AccountCard.vue'
 import CardContextMenu, { type ContextMenuItem } from '@/components/common/CardContextMenu.vue'
@@ -58,9 +58,10 @@ import UsageHistoryModal from '@/components/accounts/UsageHistoryModal.vue'
 import SubscriptionModal from '@/components/accounts/SubscriptionModal.vue'
 import SwitchResultModal from '@/components/accounts/SwitchResultModal.vue'
 import KiroToolsCheckModal from '@/components/accounts/KiroToolsCheckModal.vue'
-import { useAccountsStore } from '@/stores/accounts'
+import { useAccountsStore, type AccountLoginAction } from '@/stores/accounts'
 import { useSettingsStore } from '@/stores/settings'
 import { displayEmail as maskedEmail } from '@/utils/display'
+import { usePrivacy } from '@/composables/usePrivacy'
 import { NO_BATCH_QUERY_HITS, notifyBatchQueryResult } from '@/utils/batchQuery'
 import { accountGroupApi } from '@/utils/groupApi'
 import { toPlain } from '@/utils/ipc'
@@ -197,6 +198,8 @@ const activeFilterCount = computed(() => {
     (f.usageMax != null ? 1 : 0) +
     (f.creditMin != null ? 1 : 0) +
     (f.creditMax != null ? 1 : 0) +
+    (f.remainingMin != null ? 1 : 0) +
+    (f.remainingMax != null ? 1 : 0) +
     (f.daysRemainingMin != null ? 1 : 0) +
     (f.daysRemainingMax != null ? 1 : 0) +
     // 导入时间是一个区间，两端一起设置 / 清空，只算一项
@@ -208,8 +211,8 @@ function clearFilter(): void {
   accountsStore.applyFilter({ search: accountsStore.filter.search })
 }
 
-/** 隐私打码：与设置页同一个开关，工具栏上的切换按钮见 PrivacyToggleButton */
-const privacyMode = computed(() => settingsStore.settings.privacyMode)
+/** 隐私打码：与设置页同一个开关，按字段生效；工具栏上的开关与打码范围见 PrivacyToggleButton */
+const { maskAccount } = usePrivacy()
 
 /** 展示形态：卡片 / 紧凑卡片 / 列表，和隐私打码一样持久化在设置里 */
 const displayMode = computed(() => settingsStore.settings.accountDisplayMode)
@@ -406,7 +409,7 @@ const {
 })
 
 function displayEmail(email: string): string {
-  return maskedEmail(email, privacyMode.value)
+  return maskedEmail(email, maskAccount('email'))
 }
 
 function setBusy(id: string, action?: string): void {
@@ -457,7 +460,7 @@ const subscriptionTarget = ref<Account | null>(null)
 /**
  * 复制凭证 JSON。
  *
- * 内容直接复用导出弹窗的 OIDC JSON 格式（buildExportContent 的 'oidc' 分支），
+ * 内容直接复用导出弹窗的精简 JSON 格式（buildExportContent 的 'oidc' 分支），
  * 两处保持同一份字段定义：以后加字段只改 transfer.ts，不会出现「导出有、复制没有」。
  * 结果是单元素数组，能原样粘进批量添加，也被各家管理器认。
  */
@@ -483,20 +486,16 @@ async function switchTo(account: Account): Promise<void> {
     const res = await accountsStore.switchTo(account.id)
     if (!res.ok || !res.result) return void message.error(`切换失败：${res.error}`)
     switchResult.value = res.result
-    // 打码模式下昵称同样要遮住，只显示打码邮箱
-    switchLabel.value = privacyMode.value
-      ? displayEmail(account.email)
-      : account.nickname
-        ? `${account.nickname}（${account.email}）`
-        : account.email
+    switchLabel.value = accountLabel(account)
     switchModalOpen.value = true
   })
 }
 
-/** 卡片上展示用的账号名，打码模式下只显示打码邮箱 */
+/** 展示用的账号名：昵称被打码时不显示昵称，只留（按设置打码或不打码的）邮箱 */
 function accountLabel(account: Account): string {
-  if (privacyMode.value) return displayEmail(account.email)
-  return account.nickname ? `${account.nickname}（${account.email}）` : account.email
+  const email = displayEmail(account.email)
+  if (!account.nickname || maskAccount('nickname')) return email
+  return `${account.nickname}（${email}）`
 }
 
 /**
@@ -680,7 +679,7 @@ const normalMenu: ContextMenuItem[] = [
   { key: 'apikey', label: '生成 API Key', icon: KeyOutlined },
   { key: 'subscription', label: '获取订阅链接', icon: CrownOutlined },
   { key: 'models', label: '查询可用模型', icon: BranchesOutlined },
-  { key: 'export', label: '导出', icon: DownloadOutlined, divided: true },
+  { key: 'export', label: '导出', icon: UploadOutlined, divided: true },
   { key: 'trash', label: '放入回收站', icon: RestOutlined, divided: true },
   { key: 'remove', label: '删除该账号', icon: DeleteOutlined, danger: true }
 ]
@@ -816,6 +815,30 @@ async function batch(kind: 'refresh' | 'check'): Promise<void> {
 }
 
 /**
+ * 详情抽屉与首页发来的登录 / 退出动作：和卡片下拉走同一套处理，
+ * 安装检测、切号结果弹窗与卡片上的转圈在两处完全一致。
+ */
+function runLoginAction(action: AccountLoginAction, account: Account): void {
+  if (action === 'switch') void switchTo(account)
+  else if (action === 'cli-login') loginToCli(account)
+  else if (action === 'login-all') loginAll(account)
+  else if (action === 'logout') logoutIde(account)
+  else logoutCli(account)
+}
+
+// 首页详情抽屉里点了登录 / 退出：跳到本页后在这里执行；immediate 让刚挂载时也能接到
+watch(
+  () => accountsStore.loginRequest,
+  (req) => {
+    if (!req) return
+    accountsStore.clearLoginRequest()
+    const account = accountsStore.get(req.id)
+    if (account) runLoginAction(req.action, account)
+  },
+  { immediate: true }
+)
+
+/**
  * 退出 IDE 登录。入口只在账号卡片上，因此 account 必传。
  * 实际动作与账号无关（清空整个 sso cache 目录），account 只用于弹窗标题和行级加载态。
  */
@@ -895,7 +918,7 @@ function logoutCli(account: Account): void {
         </a-button>
         <a-dropdown>
           <a-button>
-            <template #icon><UploadOutlined /></template>
+            <template #icon><DownloadOutlined /></template>
             导入
             <DownOutlined />
           </a-button>
@@ -913,7 +936,7 @@ function logoutCli(account: Account): void {
           </template>
         </a-dropdown>
         <a-button @click="openExport">
-          <template #icon><DownloadOutlined /></template>
+          <template #icon><UploadOutlined /></template>
           导出
         </a-button>
       </div>
@@ -1249,7 +1272,9 @@ function logoutCli(account: Account): void {
     <AccountDetailDrawer
       v-if="detailTarget"
       :account="detailTarget"
+      :busy-action="rowBusy[detailTarget.id]"
       @close="detailTarget = null"
+      @login="runLoginAction"
     />
     <AccountTestModal v-if="testTarget" :account="testTarget" @close="testTarget = null" />
     <CreateApiKeyModal

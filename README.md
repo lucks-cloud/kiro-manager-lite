@@ -9,12 +9,12 @@
 </p>
 
 <p align="center">
-  多账号一键切换 · 本地反代与客户端一键接入 · 自定义分组与三种展示形态 · 订阅开通与账单管理 · 账号 API Key 管理 · 本地网关与真实调用统计 · 机器码重置与网络检测 · 自动刷新与流式测活 · 内置私密浏览器 · 托盘常驻
+  Kiro 多账号 / APIKey管理 · 快捷登录 Kiro IDE / CLI / Crew · 本地反代与客户端接入 · 本地网关与调用统计 · 自动刷新密钥/积分 · 常用工具 · 内置隐私浏览器 · 托盘常驻
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.0.47-6c5ce7" alt="version">
-  <img src="https://img.shields.io/badge/updated-2026--11--06-2f9e44" alt="updated">
+  <img src="https://img.shields.io/badge/version-1.0.48-6c5ce7" alt="version">
+  <img src="https://img.shields.io/badge/updated-2026--11--08-2f9e44" alt="updated">
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="license">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="platform">
   <img src="https://img.shields.io/badge/Vue-3-42b883" alt="vue">
@@ -25,12 +25,18 @@
 
 ## ✨ 功能特性
 
+### 🏠 主页
+
+- 按时段问候，凭据总数、账号数、API Key 数与正常 / 异常数一目了然（正常与异常把账号和 API Key 合并统计）
+- 账户额度统计与 API Key 额度统计左右并排：总额度、已使用、可用额度、使用率与总体进度；降档导致的「已用超过额度」单独提示，可用额度按 0 计
+- 「当前使用」一排三张卡：Kiro IDE 账号、Kiro CLI / Crew 账号、本地网关正在使用的 API Key，样式与列表的紧凑卡片一致，点卡片打开详情抽屉；一键重新检测两端登录状态
+
 ### 🔐 多账号管理
 
 **添加与列表**
 
 - 五种添加方式：Google / GitHub 社交登录、AWS Builder ID 设备码、Enterprise IAM Identity Center SSO、OIDC 凭证、读取本机已登录的 Kiro 凭证
-- 搜索、按状态 / 订阅 / 登录方式 / 积分占比 / 导入时间范围（精确到时分秒）筛选、排序、多选与批量操作；上千账号用虚拟列表保持流畅
+- 搜索、按状态 / 订阅 / 登录方式 / 积分占比 / 总积分 / 剩余积分 / 导入时间范围（精确到时分秒）筛选、排序、多选与批量操作；上千账号用虚拟列表保持流畅
 - 自定义分组：新建 / 改名 / 删除、长按拖动排序，按分组（含「未分组」）多选筛选，可批量把选中账号移入或移出分组，卡片上直接显示分组标签
 - 卡片显示邮箱、昵称、备注、订阅档位、积分占比与 Token 剩余时间；备注可自己填，用于标记用途或来源
 - 三种展示形态可切换并记住选择：卡片、卡片紧凑（收起额度明细）、列表（一排一个的横向长条，一屏能看几十个）
@@ -39,6 +45,7 @@
 **换号与保活**
 
 - 一键把账号凭证写入 Kiro IDE 切换当前登录身份，可选切号后自动重启 IDE
+- 一键登录 Kiro CLI（含 Kiro Crew），或「全部登录」同时写入 IDE 与 CLI；登录前先检测本机是否安装 kiro-cli / Kiro Crew，未安装时给出当前平台的安装命令。macOS 与 Windows 均支持，卡片上分别标出「IDE 使用中」「CLI 使用中」
 - 切号前会逐个实测 `profileArn` 候选再落盘 —— 写错这个字段是 IDE 报「Invalid token」的主因
 - 批量刷新 Token / 用量与积分，支持定时自动刷新；「主动续期」会在 IDE 当前账号的 Token 剩约 15 分钟时抢先续期并写盘，避免 IDE 自己刷新时撞车被登出
 - 真实流式对话测活：实时看输出、随时中止。只有 runtime 面的真实对话才能暴露封禁账号；响应区可「查看完整响应」，列出发给官方的每次请求与原始返回（成功、失败、中止都能看）
@@ -70,7 +77,7 @@
 
 ### 🔑 API Key 管理
 
-- 支持单个添加、批量导入、搜索、订阅 / 状态 / 用量 / 重置时间 / 导入时间范围筛选、排序、导出和批量删除
+- 支持单个添加、批量导入、搜索、订阅 / 状态 / 用量 / 总积分 / 剩余积分 / 重置时间 / 导入时间范围筛选、排序、导出和批量删除
 - 与账号列表同一套自定义分组：新建 / 改名 / 删除、长按拖动排序、按分组多选筛选、批量设置分组，卡片上显示分组标签
 - 同样有卡片、卡片紧凑、列表三种展示形态可切换并记住选择
 - 每个 Key 独立绑定区域，展示订阅档位、注册邮箱、User ID、额度、重置时间和异常原因
@@ -141,10 +148,12 @@
 
 ### 🧰 常用工具
 
+- **自动同意 AI 操作**：配置 Kiro 的命令、文件和网络操作权限，开启前明确展示安全风险，关闭时原样恢复
+- **网关错误自动续接**：集中配置重试状态码、次数与间隔
 - **机器码重置与恢复**：一次性重置 Kiro IDE 分散在 `storage.json`、`machineid`、`state.vscdb` 与共享 `deviceid` 四处的设备标识（只改一处 IDE 会从别处读回）；首次重置前自动备份原始值，可一键恢复，每项都能复制或定位文件；写入前自动关闭正在运行的 IDE
 - **网络检测**：查看当前出口 IP 的国家、地区、运营商与时区，一键测试 GitHub、Google、YouTube、Kiro、Amazon 的连通性与延迟；走设置里的代理，看到的就是 Kiro 请求实际经过的出口
-- 「自动同意 AI 操作」可配置 Kiro 的命令、文件和网络操作权限，开启前明确展示安全风险并支持原样恢复
-- 「网关错误自动续接」集中配置重试状态码、次数与间隔
+- **Kiro UA 请求头版本号**：按官方真实组合切换 UA 里上报的 Kiro IDE 与 AWS SDK 版本，级联选择保证两者成对（对照表由 `scripts/kiro-sdk-versions.sh` 逐个解析官方安装包生成）；修改与恢复默认都需二次确认，反代、测活、用量、令牌刷新与网关统一生效
+- **出站域名统计**：记录本应用对外访问过的所有域名，按完整主机名去重，可查看每个域名的出站明细并导出 Excel
 - 工具状态、目标配置路径和不兼容原因均在页面内可视化展示
 
 ### 🧾 系统日志
@@ -156,7 +165,8 @@
 ### ⚙️ 个性化设置
 
 - 主题风格（自动 / 浅色 / 深色）、主题色（7 种预设，默认紫罗兰）、布局风格（左右布局 / 上下布局，上下布局把导航放到窗口顶部）、控件尺寸（默认 / 大尺寸，两个列表页的工具栏那一排跟着一起变）、积分精度与删除前确认
-- **隐私打码**：一键遮住邮箱、昵称、API Key、User ID 与备注，截图或录屏前很有用。
+- **隐私打码**：一键遮住邮箱、昵称、API Key、User ID、备注与分组标签，截图或录屏前很有用。
+  列表工具栏「隐私打码」旁的设置图标可分别为账号与 API Key 勾选打码内容（账号的邮箱、API Key 的 Key 始终打码）；
   邮箱的遮罩串由 md5 前缀生成，同一账号每次结果一致，打码状态下仍能横向比对是不是同一个号
 - **内置浏览器**：指定应用内打开的网页使用哪个地区，50 个常用地区可搜索选择，也可自定义 BCP 47 标签。
   只影响应用内的网页，不改界面语言、也不影响账号所属的 AWS 区域
@@ -178,25 +188,29 @@
 
 <p align="center">
   <a href="https://github.com/lucks-cloud/kiro-manager-lite/releases/latest">
-    <img src="https://img.shields.io/badge/⬇%20下载最新版-v1.0.41-6c5ce7?style=for-the-badge" alt="下载最新版">
+    <img src="https://img.shields.io/badge/⬇%20下载最新版-v1.0.48-6c5ce7?style=for-the-badge" alt="下载最新版">
   </a>
   <a href="https://github.com/lucks-cloud/kiro-manager-lite/releases">
     <img src="https://img.shields.io/badge/全部版本-Releases-24292f?style=for-the-badge&logo=github" alt="全部版本">
   </a>
 </p>
 
-**最新版本：v1.0.41**（2026-10-29） · 变更详情见 [CHANGELOG.md](CHANGELOG.md)
+**最新版本：v1.0.48**（2026-11-08） · 变更详情见 [CHANGELOG.md](CHANGELOG.md)
 
 ### 选择对应的安装包
 
-| 平台 | 文件 | 适用设备 |
-| --- | --- | --- |
-| macOS (Apple Silicon) | `*-mac-arm64.dmg` | Apple M 系列芯片 |
-| macOS (Intel) | `*-mac-x64.dmg` | Intel 芯片 |
-| Windows | `*-win-x64-setup.exe` | 64 位 Windows |
-| Linux | `*-linux-x86_64.AppImage` | 64 位 x86 Linux |
+<!-- 发版时与 package.json 的 version 一起改：版本号出现在本节的徽章、最新版本与下表每条直链里 -->
+
+| 平台 | 文件 | 适用设备 | 快捷下载 |
+| --- | --- | --- | --- |
+| macOS (Apple Silicon) | `*-mac-arm64.pkg`（推荐）或 `*-mac-arm64.dmg` | Apple M 系列芯片 | [.pkg 安装包（推荐）](https://github.com/lucks-cloud/kiro-manager-lite/releases/download/v1.0.48/kiro-account-lite-1.0.48-mac-arm64.pkg) · [.dmg 镜像](https://github.com/lucks-cloud/kiro-manager-lite/releases/download/v1.0.48/kiro-account-lite-1.0.48-mac-arm64.dmg) |
+| macOS (Intel) | `*-mac-x64.pkg`（推荐）或 `*-mac-x64.dmg` | Intel 芯片 | [.pkg 安装包（推荐）](https://github.com/lucks-cloud/kiro-manager-lite/releases/download/v1.0.48/kiro-account-lite-1.0.48-mac-x64.pkg) · [.dmg 镜像](https://github.com/lucks-cloud/kiro-manager-lite/releases/download/v1.0.48/kiro-account-lite-1.0.48-mac-x64.dmg) |
+| Windows | `*-win-x64-setup.exe` | 64 位 Windows | [.exe 安装包](https://github.com/lucks-cloud/kiro-manager-lite/releases/download/v1.0.48/kiro-account-lite-1.0.48-win-x64-setup.exe) |
+| Linux | `*-linux-x86_64.AppImage` | 64 位 x86 Linux | [.AppImage](https://github.com/lucks-cloud/kiro-manager-lite/releases/download/v1.0.48/kiro-account-lite-1.0.48-linux-x86_64.AppImage) |
 
 不确定 Mac 是哪种芯片：**苹果菜单 → 关于本机**，看「芯片」一栏。
+
+macOS 推荐用 `.pkg`：双击按向导安装，装好后打开应用不会再提示「已损坏」。
 
 `.zip`、`.blockmap` 与 `latest*.yml` 是自动更新用的，手动安装不需要下载。
 
@@ -218,7 +232,8 @@ Windows 与 Linux 暂不提供 arm64 包：原生依赖 `cbor-extract` 没有对
 
 - **Windows**：双击 `.exe` 安装。安装包未做代码签名，SmartScreen 可能提示「已保护你的电脑」，
   确认文件来自官方 Releases 后选「更多信息 → 仍要运行」即可，**不要为此关闭 SmartScreen 或杀毒软件**。
-- **macOS**：拖入「应用程序」。未做公证，首次打开可能提示「已损坏」或「无法验证开发者」，
+- **macOS**：推荐双击 `.pkg` 按向导安装；首次双击若被拦截，在「系统设置 → 隐私与安全性」中点「仍要打开」。
+  用 `.dmg` 则拖入「应用程序」，未做公证，首次打开可能提示「已损坏」或「无法验证开发者」，
   DMG 里附了「安装指南.txt」说明处理办法。
 - **Linux**：AppImage 免安装，`chmod +x` 后直接运行；缺 FUSE 时用 `--appimage-extract-and-run`。
 - **升级**：先完全退出应用（含托盘 / 菜单栏后台进程），再用新包覆盖安装，用户数据不受影响。
@@ -329,6 +344,38 @@ npm run build:mac
 ## 📂 目录结构
 
 ```
+.
+├── .github/workflows/
+│   └── release.yml          推送 v* 标签后三平台构建，并生成带「快捷下载」直链的发布说明
+├── build/                   打包资源
+│   ├── background*.png      DMG 窗口背景（1x / Retina）
+│   ├── entitlements.mac*.plist  macOS 权限声明
+│   ├── icon.png             应用图标源图
+│   ├── pkg-scripts/postinstall  pkg 装完后清除隔离属性，避免提示「已损坏」
+│   └── 安装指南.txt          打进 macOS DMG 的安装说明
+├── docs/
+│   ├── image/               README 用的 logo 与交流群二维码
+│   ├── proxy/proxy-clients.md  一键接入客户端的实测截图
+│   └── screenshots/         README 截图
+├── resources/
+│   ├── icons/               macOS / Windows 应用图标
+│   └── tray/                托盘菜单图标
+├── scripts/
+│   ├── build-mac.mjs        macOS 打包：先打两架构的 dmg + zip，再按架构依次打 pkg
+│   ├── clean.mjs            打包前清理 dist 与 out
+│   ├── dev-register-kiro-scheme.sh  开发模式下给 Electron.app 声明 kiro:// 协议
+│   ├── dmg-background.swift 生成 DMG 窗口背景图
+│   ├── pad-mac-icon.py      把满幅图标缩放居中，符合 macOS 图标留边规范
+│   └── kiro-sdk-versions.sh 下载官方 Kiro dmg，提取 IDE ↔ AWS SDK 版本对照表
+├── src/                     源码，见下
+├── electron-builder.yml     打包配置（产物命名：kiro-account-lite-<版本>-<平台>-<架构>）
+├── electron.vite.config.ts  主进程 / preload / 渲染进程三端构建配置
+├── tsconfig*.json           node 端与 web 端两套类型检查配置
+├── CHANGELOG.md             更新日志
+└── INSTALL.md               安装说明与常见问题
+```
+
+```
 src/
   shared/                主进程与渲染进程共享的单一真源
     types.ts             共享类型与默认设置
@@ -340,11 +387,18 @@ src/
     subscription.ts      订阅档位归一
     modelSchema.ts       从模型 schema 解析推理档位并拼请求字段
     proxyModels.ts       反代的模型名映射与兜底模型表
+    itemGroups.ts        账号与 API Key 共用的多分组、回收站字段读写
+    backupSchedule.ts    备份计划的周期定义与下次执行时间
+    kiroVersion.ts       Kiro UA 请求头版本号：默认值、IDE ↔ SDK 对照表、版本号规范化
+    privacyFields.ts     隐私打码的可选字段、默认范围与锁定项
+    data/
+      kiro-sdk-versions.json  scripts/kiro-sdk-versions.sh 生成的版本对照表
   main/
     index.ts             应用生命周期与窗口
     ipc.ts               IPC 注册与运行时设置下发
     appMenu.ts           macOS 中文菜单栏
     appProtocol.ts       自定义协议注册与唤起
+    appearance.ts        主题风格同步给 Chromium
     ── 账号
     accountService.ts    校验 / 刷新 / 状态检查 / 切号
     onlineLogin.ts       在线登录：设备码、社交登录、Enterprise SSO
@@ -354,8 +408,11 @@ src/
     kiroApiKey.ts        账号维度的 API Key 申请与列表（控制面）
     kiroSubscription.ts  订阅：可开通档位与 Stripe 账单 / 结算链接（门户 CSRF 双提交）
     kiroAuth.ts          IDE 凭证文件读写与 profileArn 决策
+    kiroCliAuth.ts       Kiro CLI / Kiro Crew 凭证库写入、whoami 校验与退出登录
+    kiroCliEnv.ts        把 API Key 写成 Kiro CLI 认的 KIRO_API_KEY 环境变量
+    kiroToolsInstall.ts  登录 CLI 前检测 kiro-cli 与 Kiro Crew 的安装情况
     kiroChat.ts          测活：模型列表与流式对话
-    kiroEndpoints.ts     端点、区域映射、Kiro 版本号与客户端 UA 的唯一定义（服务端按版本号准入）
+    kiroEndpoints.ts     端点、区域映射与客户端 UA 的唯一定义（版本号来自设置，服务端按版本号准入）
     kiroMachineId.ts     机器码读取、重置、备份与恢复
     kiroSettings.ts      IDE settings.json 读写与端点接管
     kiroPermissions.ts   自动同意 AI 操作：两套机制读写与还原
@@ -374,27 +431,47 @@ src/
     proxyConvert.ts      OpenAI / Anthropic / Gemini 与 Kiro 请求响应互转
     proxyUpstream.ts     选号策略、重试换号与上游事件流解析
     proxyClients.ts      各客户端的一键写入、检测、重启与外科式还原
+    proxyClientInstall.ts  各客户端的安装位置查找（macOS / Windows 分开处理）
     proxyKeys.ts         反代 API Key 与按 Key 用量
     proxyLogStore.ts     请求日志与统计持久化
+    proxyUsageStore.ts   按账号、按反代 Key 的用量统计（独立小文件，合并落盘）
     kiroWebSearch.ts     Kiro MCP 联网搜索
+    searchMemory.ts      代执行的联网搜索结果跨请求保留
     ── 基础设施
     net.ts               统一 fetch 与代理
     networkCheck.ts      出口 IP 查询与网站连通性测试
-    store.ts             加密持久化
+    outboundLog.ts       出站域名统计
+    store.ts             加密持久化与设置读写（含旧默认值迁移）
+    dataBackup.ts        数据导出 / 导入（明文 JSON）与初始化
+    backupScheduler.ts   备份计划：按周期静默导出，只保留最新几份
     usageHistory.ts      积分历史（防抖落盘）
     logger.ts            内存环形缓冲、分片落盘、接管 console
     tray.ts              系统托盘
     updater.ts           版本检查
     browser.ts           系统浏览器唤起
+    childEnv.ts          拉起其它应用时剥离本应用自身的环境变量
     xlsxWriter.ts        Excel 导出
+    utils.ts             主进程通用小工具
   preload/               contextBridge 暴露的 API 白名单
     index.ts             主窗口用
+    index.d.ts           渲染进程可见的 window.api 类型
     portalBar.ts         内置浏览器工具条用，与主窗口完全隔离
   renderer/src/
+    App.vue / main.ts    根组件与启动入口（加载账号与 API Key、启动自动刷新）
+    router/              路由
     stores/              Pinia：accounts / keys / proxy / settings / update
     views/               Home / Accounts / Keys / Proxy / Tools / Logs / Settings / About
-    components/          layout、accounts、keys、proxy、tools、common
-    utils/               格式化、打码、导入导出、图表、托盘桥接
+    components/
+      layout/            侧栏、顶部导航、标题栏
+      home/              主页的「当前使用」卡片与额度统计卡
+      accounts/          账号卡片、详情抽屉、添加 / 导入 / 导出、测活、订阅、批量操作
+      keys/              API Key 卡片、详情抽屉、导入 / 导出、测活、网关历史、CLI 环境变量
+      proxy/             反代的客户端图标、接口列表、反代 Key 管理
+      tools/             常用工具卡片：机器码、Kiro UA 请求头版本号、出站域名、网络检测
+      common/            两个列表页共用：筛选、分组、排序、批量查询、隐私打码、模型级联、虚拟列表等
+    composables/         隐私打码判断、列表多选、右键菜单、流式测活、近期用量、图表尺寸
+    utils/               格式化、打码、导入导出、Key 派生值、级联定位、图表、托盘桥接等
+    assets/              全局样式与图片
 ```
 
 ---
@@ -416,7 +493,7 @@ src/
 
 ## 🔖 更新日志
 
-各版本变更记录见 [CHANGELOG.md](CHANGELOG.md)，当前版本 v1.0.41，最后更新于 2026-10-29。
+各版本变更记录见 [CHANGELOG.md](CHANGELOG.md)，当前版本 v1.0.48，最后更新于 2026-11-08。
 
 ---
 

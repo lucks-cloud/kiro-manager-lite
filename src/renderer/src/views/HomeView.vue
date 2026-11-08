@@ -1,17 +1,12 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted, ref, type Component } from 'vue'
 import { useRouter } from 'vue-router'
+import { APP_TAGLINE } from '@/utils/appInfo'
 import {
-  BarChartOutlined,
-  ClockCircleOutlined,
   CheckCircleOutlined,
-  ExclamationCircleOutlined,
-  LineChartOutlined,
-  RightOutlined,
-  RiseOutlined,
-  SafetyOutlined,
-  StopOutlined,
-  SwapOutlined,
+  KeyOutlined,
+  ReloadOutlined,
+  SafetyCertificateOutlined,
   TeamOutlined,
   ThunderboltOutlined,
   WarningOutlined
@@ -19,290 +14,293 @@ import {
 import kiroLogo from '@/assets/kiro-logo.png'
 import { useAccountsStore } from '@/stores/accounts'
 import { useSettingsStore } from '@/stores/settings'
+import { useKeysStore } from '@/stores/keys'
 import {
   IDP_META,
-  subscriptionMeta,
-  formatCreditsGrouped,
+  KEY_STATUS_META,
+  STATUS_META,
+  formatCheckedAt,
   formatCreditsPair,
-  formatDate,
-  relativeTime,
+  formatDateTime,
   subscriptionLabel,
+  subscriptionMeta,
   tokenLife
 } from '@/utils/format'
-import { displayEmail as maskedEmail, displayName as accountName } from '@/utils/display'
-import type { AccountFilter } from '@/stores/accounts'
-import type { Account } from '@shared/types'
-
-/** 额度告急阈值（0-1） */
-const QUOTA_WARN_RATIO = 0.9
-/** 即将到期阈值（天） */
-const EXPIRE_WARN_DAYS = 7
+import { groupsOfItem } from '@/utils/groups'
+import { now as clock } from '@/utils/now'
+import { displayEmail, displayKey, displayName as accountName, displayNote } from '@/utils/display'
+import { keyDaysRemaining, keyIssue, keyStatusKey, keyTier, keyUsageRatio } from '@/utils/keyEntry'
+import { maskGroupName, usePrivacy } from '@/composables/usePrivacy'
+import { regionLabel } from '@shared/regions'
+import HomeActiveCard, { type HomeCardData } from '@/components/home/HomeActiveCard.vue'
+import QuotaStatsCard, { sumQuota } from '@/components/home/QuotaStatsCard.vue'
+import AccountDetailDrawer from '@/components/accounts/AccountDetailDrawer.vue'
+import ApiKeyDetailDrawer from '@/components/keys/ApiKeyDetailDrawer.vue'
+import ApiKeyTestModal from '@/components/keys/ApiKeyTestModal.vue'
+import type { AccountFilter, AccountLoginAction } from '@/stores/accounts'
+import type { Account, KeyEntry } from '@shared/types'
 
 const router = useRouter()
 const accountsStore = useAccountsStore()
+const keysStore = useKeysStore()
 const settingsStore = useSettingsStore()
 
 const precision = computed(() => settingsStore.settings.usagePrecision)
-const stats = computed(() => accountsStore.stats)
 const active = computed(() => accountsStore.activeAccount)
 
-const statCards = computed(() => [
-  {
-    key: 'total',
-    label: '总账号数',
-    value: stats.value.total,
-    icon: TeamOutlined,
-    color: '#1677ff',
-    onClick: () => jumpToAccounts({})
-  },
-  {
-    key: 'active',
-    label: '正常账号',
-    value: stats.value.byStatus.active,
-    icon: CheckCircleOutlined,
-    color: '#52c41a',
-    onClick: () => jumpToAccounts({ statuses: ['active'] })
-  },
-  {
-    key: 'abnormal',
-    label: '异常 / 封禁',
-    value: stats.value.byStatus.error + stats.value.byStatus.banned,
-    icon: WarningOutlined,
-    color: '#ff4d4f',
-    onClick: () => jumpToAccounts({ statuses: ['error', 'banned'] })
-  },
-  {
-    key: 'expiring',
-    label: `即将到期（≤${EXPIRE_WARN_DAYS}天）`,
-    value: stats.value.expiringSoon,
-    icon: ClockCircleOutlined,
-    color: '#faad14',
-    onClick: () => jumpToAccounts({ daysRemainingMax: EXPIRE_WARN_DAYS })
-  }
-])
-
-/** 告警聚合：一次遍历分出封禁 / 异常 / 即将到期 / 额度告急 */
-const warnings = computed(() => {
-  const banned: Account[] = []
-  const error: Account[] = []
-  const expiring: Account[] = []
-  const quotaHigh: Account[] = []
-  // 回收站里的账号是冷藏的，不在主页提醒
-  for (const a of accountsStore.liveAccounts) {
-    if (a.status === 'banned') {
-      banned.push(a)
-      continue
-    }
-    if (a.status === 'error') error.push(a)
-    if ((a.subscription.daysRemaining ?? Number.POSITIVE_INFINITY) <= EXPIRE_WARN_DAYS) {
-      expiring.push(a)
-    }
-    if (a.status === 'active' && a.usage.limit > 0 && (a.usage.percentUsed || 0) >= QUOTA_WARN_RATIO) {
-      quotaHigh.push(a)
-    }
-  }
-  return { banned, error, expiring, quotaHigh }
-})
-
-const warnRows = computed(() =>
-  [
-    {
-      key: 'banned',
-      list: warnings.value.banned,
-      icon: StopOutlined,
-      color: '#ff4d4f',
-      label: '已封禁',
-      onClick: () => jumpToAccounts({ statuses: ['banned'] })
-    },
-    {
-      key: 'error',
-      list: warnings.value.error,
-      icon: ExclamationCircleOutlined,
-      color: '#ff7a45',
-      label: '状态异常',
-      onClick: () => jumpToAccounts({ statuses: ['error'] })
-    },
-    {
-      key: 'expiring',
-      list: warnings.value.expiring,
-      icon: ClockCircleOutlined,
-      color: '#faad14',
-      label: `即将到期（≤${EXPIRE_WARN_DAYS}天）`,
-      onClick: () => jumpToAccounts({ daysRemainingMax: EXPIRE_WARN_DAYS })
-    },
-    {
-      key: 'quota',
-      list: warnings.value.quotaHigh,
-      icon: ThunderboltOutlined,
-      color: '#fa8c16',
-      label: `额度告急（≥${Math.round(QUOTA_WARN_RATIO * 100)}%）`,
-      onClick: () => jumpToAccounts({ usageMin: QUOTA_WARN_RATIO })
-    }
-  ].filter((row) => row.list.length > 0)
-)
-
 /**
- * 额度统计：只统计正常且有额度的账号。
- *
- * 可用额度必须**逐账号先 clamp 再求和**，不能用「总额度 − 总已用」：
- * 账号降档后 limit 会跟着变小（比如原本 2000 的号用掉 1900，之后掉成 50 积分的普通号），
- * 这一个号就贡献 −1850，直接把汇总值拖成负数——而实际上它的可用额度是 0，不是负的。
- * 同理进度条按 min(已用, 额度) 累加，percentUsed 天然落在 0~100，不会出现「已超额」的假象。
+ * 凭据统计：账号与 API Key 合在一起算，回收站里的都不计。
+ * 正常 / 异常两端口径各自沿用列表页：账号看 status（异常 = 异常 + 封禁），
+ * Key 看 keyStatusKey（异常 = 同步或测活报错）；未检查、已过期的两边都不算进这两项。
  */
-const usageStats = computed(() => {
-  let totalLimit = 0
-  let totalUsed = 0
-  /** 计入进度的已用量：单账号不超过它自己的额度 */
-  let effectiveUsed = 0
-  /** 可用额度：Σ max(0, 额度 − 已用) */
-  let available = 0
-  /** 已用超过当前额度的账号数，多半是降过档 */
-  let overQuotaCount = 0
-  let validAccountCount = 0
-
-  // 回收站里的账号是冷藏的，不计入额度统计
+const credentialStats = computed(() => {
+  let accountNormal = 0
+  let accountAbnormal = 0
   for (const a of accountsStore.liveAccounts) {
-    if (a.status !== 'active') continue
-    const limit = a.usage.limit ?? 0
-    if (limit <= 0) continue
-    const used = a.usage.current ?? 0
-
-    totalLimit += limit
-    totalUsed += used
-    effectiveUsed += Math.min(used, limit)
-    available += Math.max(0, limit - used)
-    if (used > limit) overQuotaCount++
-    validAccountCount++
+    if (a.status === 'active') accountNormal++
+    else if (a.status === 'error' || a.status === 'banned') accountAbnormal++
   }
-
-  return {
-    totalLimit,
-    totalUsed,
-    available,
-    /** 已用超出各自额度的部分合计，仅用于提示 */
-    excess: totalUsed - effectiveUsed,
-    percentUsed: totalLimit > 0 ? (effectiveUsed / totalLimit) * 100 : 0,
-    overQuotaCount,
-    validAccountCount
+  let keyNormal = 0
+  let keyAbnormal = 0
+  for (const entry of keysStore.liveKeys) {
+    const s = keyStatusKey(entry)
+    if (s === 'normal') keyNormal++
+    else if (s === 'error') keyAbnormal++
   }
+  const accounts = accountsStore.liveAccounts.length
+  const keys = keysStore.liveKeys.length
+  return { accounts, keys, accountNormal, accountAbnormal, keyNormal, keyAbnormal }
 })
 
-/** 可用额度见底时标红 */
-const noQuotaLeft = computed(
-  () => usageStats.value.validAccountCount > 0 && usageStats.value.available <= 0
-)
+interface StatCard {
+  key: string
+  label: string
+  value: number
+  icon: Component
+  color: string
+  onClick?: () => void
+}
 
-/** 使用率文案：开启两位小数时保留 2 位，否则 1 位 */
-const percentText = computed(() => usageStats.value.percentUsed.toFixed(precision.value ? 2 : 1))
-
-const usageBarColor = computed(() => {
-  const p = usageStats.value.percentUsed
-  if (p > 100) return '#f5222d'
-  if (p >= 80) return '#fa8c16'
-  if (p >= 50) return '#fadb14'
-  return '#52c41a'
-})
-
-/** 当前账号 Token 剩余时间：越紧张颜色越警示 */
-const tokenState = computed(() => {
-  const life = tokenLife(active.value?.credentials.expiresAt)
-  switch (life.state) {
-    case 'unknown':
-      return { text: '未知', color: 'var(--kal-muted)' }
-    case 'expired':
-      return { text: '已过期', color: '#ff4d4f' }
-    case 'minutes':
-      return { text: `${life.minutes} 分钟`, color: '#faad14' }
-    default:
-      return { text: `${life.hours} 小时`, color: '#52c41a' }
-  }
-})
-
-const activeUsagePercent = computed(() => {
-  const usage = active.value?.usage
-  if (!usage || !usage.limit) return 0
-  return Math.min((usage.current / usage.limit) * 100, 100)
-})
-
-const activeUsageColor = computed(() => {
-  const p = (active.value?.usage.percentUsed ?? 0) * 100
-  if (p > 80) return '#ff4d4f'
-  if (p > 50) return '#faad14'
-  return '#52c41a'
-})
-
-const quotaDetails = computed(() => {
-  const usage = active.value?.usage
-  if (!usage) return []
-  const rows: { key: string; color: string; label: string; value: string; extra?: string }[] = []
-  const p = precision.value
-  if (usage.baseLimit) {
-    rows.push({
-      key: 'base',
+const statCards = computed<StatCard[]>(() => {
+  const s = credentialStats.value
+  return [
+    {
+      key: 'total',
+      label: '凭据总数',
+      value: s.accounts + s.keys,
+      icon: SafetyCertificateOutlined,
+      color: '#722ed1'
+    },
+    {
+      key: 'accounts',
+      label: '账号数',
+      value: s.accounts,
+      icon: TeamOutlined,
       color: '#1677ff',
-      label: '基础额度',
-      value: formatCreditsPair(usage.baseCurrent ?? 0, usage.baseLimit, p)
-    })
-  }
-  if (usage.freeTrialLimit) {
-    rows.push({
-      key: 'trial',
-      color: '#722ed1',
-      label: '试用额度',
-      value: formatCreditsPair(usage.freeTrialCurrent ?? 0, usage.freeTrialLimit, p),
-      extra: usage.freeTrialExpiry ? `至 ${formatDate(usage.freeTrialExpiry)}` : undefined
-    })
-  }
-  for (const bonus of usage.bonuses ?? []) {
-    rows.push({
-      key: `bonus-${bonus.code}`,
+      onClick: () => jumpToAccounts({})
+    },
+    {
+      key: 'keys',
+      label: 'API Key 数',
+      value: s.keys,
+      icon: KeyOutlined,
       color: '#13c2c2',
-      label: bonus.name,
-      value: formatCreditsPair(bonus.current, bonus.limit, p),
-      extra: bonus.expiresAt ? `至 ${formatDate(bonus.expiresAt)}` : undefined
-    })
-  }
-  return rows
+      onClick: () => void router.push({ name: 'keys' })
+    },
+    {
+      key: 'normal',
+      label: '正常',
+      value: s.accountNormal + s.keyNormal,
+      icon: CheckCircleOutlined,
+      color: '#52c41a'
+    },
+    {
+      key: 'abnormal',
+      label: '异常',
+      value: s.accountAbnormal + s.keyAbnormal,
+      icon: WarningOutlined,
+      color: '#ff4d4f'
+    }
+  ]
 })
 
-/** 当前账号显示名，模板里多处复用 */
-const activeName = computed(() => (active.value ? accountName(active.value, privacy.value) : ''))
+/** 账户额度统计：只统计状态正常的账号，回收站里的不计 */
+const accountQuota = computed(() =>
+  sumQuota(
+    accountsStore.liveAccounts
+      .filter((a) => a.status === 'active')
+      .map((a) => ({ limit: a.usage.limit ?? 0, used: a.usage.current ?? 0 }))
+  )
+)
+
+/** API Key 额度统计：不算报错的 Key（额度数据不可信），回收站里的不计 */
+const keyQuota = computed(() =>
+  sumQuota(
+    keysStore.liveKeys
+      .filter((entry) => keyStatusKey(entry) !== 'error')
+      .map((entry) => ({ limit: entry.totalCredits ?? 0, used: entry.usedCredits ?? 0 }))
+  )
+)
+
+// ============ 当前使用：IDE 账号 / CLI 账号 / 网关 API Key ============
+const activeCli = computed(() => accountsStore.activeAccountCli)
+/** 网关开启且选中的 Key；网关没开时为空 */
+const gatewayKey = computed(() => keysStore.activeKey ?? null)
+
+const { maskAccount, maskKey } = usePrivacy()
+
+/** Token 剩余有效期，与账号卡片同一口径：不足 10 分钟标黄 */
+function tokenFoot(account: Account): { text: string; warn: boolean } {
+  const life = tokenLife(account.credentials.expiresAt, 'round')
+  if (life.state === 'unknown') return { text: 'Token 未知', warn: true }
+  if (life.state === 'expired') return { text: 'Token 已过期', warn: true }
+  if (life.state === 'minutes') return { text: `Token ${life.minutes} 分钟`, warn: life.minutes < 10 }
+  return { text: `Token ${life.hours} 小时`, warn: false }
+}
+
+/** 分组标签：跟随打码设置 */
+function groupTags(names: string[], masked: boolean): HomeCardData['tags'] {
+  return names.map((name) => ({
+    text: masked ? maskGroupName() : name,
+    color: 'purple',
+    title: masked ? undefined : `分组：${name}`
+  }))
+}
 
 /**
- * 最近使用的 5 个账号。只要前 5 个，没必要把上千个账号整表复制再排序：
- * 一次遍历维护一个长度不超过 5 的有序小数组，效果相同。
+ * 账号卡片的数据，字段与账户管理「卡片紧凑」一一对应。
+ * 两端同号时两张卡都挂上 IDE / CLI 两个使用中标签，一眼看出是同一个号。
  */
-const RECENT_COUNT = 5
-const recent = computed(() => {
-  const top: Account[] = []
-  const lastUsed = (a: Account): number => a.lastUsedAt || 0
-  for (const account of accountsStore.liveAccounts) {
-    if (top.length === RECENT_COUNT && lastUsed(account) <= lastUsed(top[RECENT_COUNT - 1])) continue
-    // 插到第一个比它旧的位置前面；相等时排在已有的后面，和稳定排序的结果一致
-    let i = top.length
-    while (i > 0 && lastUsed(top[i - 1]) < lastUsed(account)) i--
-    top.splice(i, 0, account)
-    if (top.length > RECENT_COUNT) top.pop()
+function accountCard(account: Account | null): HomeCardData | null {
+  if (!account) return null
+  const usage = account.usage
+  const status = STATUS_META[account.status]
+  const headTags: HomeCardData['headTags'] = []
+  if (account.isActive) headTags.push({ text: 'IDE 使用中', color: 'green' })
+  if (account.isActiveCli) headTags.push({ text: 'CLI 使用中', color: 'blue' })
+  headTags.push({ text: status.text, color: status.color })
+  const foot = tokenFoot(account)
+  const days = account.subscription.daysRemaining
+  return {
+    primary: displayEmail(account.email, maskAccount('email')),
+    secondary: accountName(account, maskAccount('nickname')),
+    note: displayNote(account.note, maskAccount('note')),
+    headTags,
+    tags: [
+      {
+        text: subscriptionLabel(account.subscription),
+        color: subscriptionMeta(account.subscription.type).color
+      },
+      { text: IDP_META[account.idp].text, color: IDP_META[account.idp].color },
+      ...groupTags(
+        groupsOfItem(account, accountsStore.groups).map((g) => g.name),
+        maskAccount('group')
+      )
+    ],
+    ratio: usage.percentUsed || 0,
+    usageText: formatCreditsPair(usage.current, usage.limit, precision.value),
+    updatedText: formatCheckedAt(account.lastCheckedAt, clock.value),
+    updatedTitle: `用量与积分更新于 ${formatDateTime(account.lastCheckedAt)}`,
+    footText: foot.text,
+    footWarn: foot.warn,
+    footExtra: days != null ? `订阅剩 ${days} 天` : undefined,
+    // IDE 使用中优先绿边，与账号列表里两端同号时的规则一致
+    borderColor: account.isActive ? '#52c41a' : '#1677ff',
+    error: account.lastError
   }
-  return top
+}
+
+const ideCard = computed(() => accountCard(active.value))
+const cliCard = computed(() => accountCard(activeCli.value))
+
+/** 网关 Key 卡片：对应 API Key 管理「卡片紧凑」，第一行 Key、第二行邮箱、第三行备注 */
+const keyCard = computed<HomeCardData | null>(() => {
+  const entry = gatewayKey.value
+  if (!entry) return null
+  const issue = keyIssue(entry)
+  const status = KEY_STATUS_META[issue ? 'error' : entry.lastCheckedAt ? 'normal' : 'unchecked']
+  const days = keyDaysRemaining(entry)
+  return {
+    primary: displayKey(entry.key, maskKey('apiKey')),
+    secondary: entry.email ? displayEmail(entry.email, maskKey('email')) : undefined,
+    note: displayNote(entry.note, maskKey('note')),
+    headTags: [
+      { text: '网关使用中', color: 'purple' },
+      { text: status.text, color: status.color }
+    ],
+    tags: [
+      { text: entry.subscription || '等级未知', color: subscriptionMeta(keyTier(entry)).color },
+      { text: regionLabel(entry.region), color: 'default' },
+      ...groupTags(
+        groupsOfItem(entry, keysStore.groups).map((g) => g.name),
+        maskKey('group')
+      )
+    ],
+    ratio: keyUsageRatio(entry),
+    usageText: formatCreditsPair(entry.usedCredits, entry.totalCredits, precision.value),
+    updatedText: entry.lastCheckedAt ? formatCheckedAt(entry.lastCheckedAt, clock.value) : '尚未同步',
+    updatedTitle: entry.lastCheckedAt
+      ? `用量与积分更新于 ${formatDateTime(entry.lastCheckedAt)}`
+      : undefined,
+    footText: days != null ? `额度 ${days} 天后重置` : '重置时间未知',
+    borderColor: '#722ed1',
+    error: issue || undefined
+  }
 })
 
-const tips = [
-  '点击左侧「账户管理」可以查看和管理所有账号',
-  '在账号卡片上点击切换图标可以一键写入 Kiro IDE',
-  '开启「自动刷新」后，即将过期的 Token 会自动续期',
-  '使用「隐私模式」可以隐藏邮箱等敏感信息'
-]
+// ============ 详情抽屉 ============
+const accountDetail = ref<Account | null>(null)
+const keyDetail = ref<KeyEntry | null>(null)
+/** 抽屉里点在线测活：弹窗叠在抽屉上，抽屉保持打开 */
+const keyTestTarget = ref<KeyEntry | null>(null)
 
-const privacy = computed(() => settingsStore.settings.privacyMode)
-
-function displayEmail(email: string): string {
-  return maskedEmail(email, privacy.value)
+/** 抽屉里的「修改备注」在首页没有对应弹窗，跳到 API Key 管理页处理 */
+/**
+ * 首页抽屉里的登录 / 退出：交给账户管理页执行（那里有安装检测、切号结果弹窗与卡片加载态），
+ * 两处行为与状态完全一致。
+ */
+function loginFromHome(action: AccountLoginAction, account: Account): void {
+  accountDetail.value = null
+  accountsStore.requestAccountLogin(account.id, action)
+  void router.push({ name: 'accounts' })
 }
 
-function displayName(account: Account): string {
-  return accountName(account, privacy.value)
+function goKeys(): void {
+  keyDetail.value = null
+  void router.push({ name: 'keys' })
 }
+
+/** 两端一起重新检测；CLI 要跑一次 kiro-cli whoami，较慢，所以显示加载态 */
+const detecting = ref(false)
+async function redetect(): Promise<void> {
+  if (detecting.value) return
+  detecting.value = true
+  try {
+    await Promise.all([accountsStore.syncActiveFromIde(), accountsStore.syncActiveFromCli()])
+  } finally {
+    detecting.value = false
+  }
+}
+
+// ============ 问候语 ============
+/** 按本地时间分段问候；每分钟校一次，窗口挂着跨过时段也会跟着变 */
+const now = ref(new Date())
+let greetTimer: ReturnType<typeof setInterval> | null = null
+onMounted(() => {
+  greetTimer = setInterval(() => (now.value = new Date()), 60_000)
+})
+onUnmounted(() => {
+  if (greetTimer) clearInterval(greetTimer)
+})
+const greeting = computed(() => {
+  const h = now.value.getHours()
+  if (h < 5) return '夜深了'
+  if (h < 9) return '早上好'
+  if (h < 12) return '上午好'
+  if (h < 14) return '中午好'
+  if (h < 18) return '下午好'
+  return '晚上好'
+})
 
 function jumpToAccounts(patch: Partial<AccountFilter>): void {
   // 从首页点过去是「给我看这批账号」，遗留的分组筛选与批量查询会把结果挡掉，一并清空
@@ -310,13 +308,6 @@ function jumpToAccounts(patch: Partial<AccountFilter>): void {
   void router.push({ name: 'accounts' })
 }
 
-function previewOf(list: Account[]): string {
-  const head = list
-    .slice(0, 3)
-    .map((a) => displayName(a))
-    .join('、')
-  return list.length > 3 ? `${head} 等 ${list.length} 个` : head
-}
 </script>
 
 <template>
@@ -328,8 +319,8 @@ function previewOf(list: Account[]): string {
       <div class="hero-main">
         <img class="hero-logo" :src="kiroLogo" alt="Kiro Manager Lite" />
         <div>
-          <h1 class="hero-title">欢迎使用 Kiro Manager Lite</h1>
-          <p class="hero-sub muted">管理你的 Kiro IDE 账号，一键切换，高效开发</p>
+          <h1 class="hero-title">{{ greeting }}，欢迎使用 Kiro Manager Lite</h1>
+          <p class="hero-sub muted">{{ APP_TAGLINE }}</p>
         </div>
       </div>
     </section>
@@ -340,266 +331,107 @@ function previewOf(list: Account[]): string {
         v-for="card in statCards"
         :key="card.key"
         size="small"
-        hoverable
+        :hoverable="!!card.onClick"
         class="stat-card"
+        :class="{ 'is-static': !card.onClick }"
         :body-style="{ padding: '16px' }"
-        @click="card.onClick"
+        @click="card.onClick?.()"
       >
         <div class="stat-row">
           <span class="icon-box" :style="{ background: `${card.color}1a`, color: card.color }">
             <component :is="card.icon" />
           </span>
-          <div>
-            <div class="stat-value">{{ card.value }}</div>
+          <div class="stat-text">
             <div class="stat-label muted">{{ card.label }}</div>
+            <div class="stat-value">{{ card.value }}</div>
           </div>
         </div>
       </a-card>
     </div>
 
-    <!-- 需要关注 -->
-    <a-card v-if="warnRows.length" size="small" class="warn-card">
-      <template #title>
-        <span class="card-title">
-          <span class="icon-box sm" style="background: rgba(250, 173, 20, 0.12); color: #faad14">
-            <WarningOutlined />
-          </span>
-          需要关注
-          <span class="muted title-hint">点击查看受影响的账号</span>
-        </span>
-      </template>
-      <button v-for="row in warnRows" :key="row.key" class="warn-row" type="button" @click="row.onClick">
-        <span class="icon-box sm" :style="{ background: `${row.color}1a`, color: row.color }">
-          <component :is="row.icon" />
-        </span>
-        <span class="warn-count">{{ row.list.length }}</span>
-        <span class="warn-label">{{ row.label }}</span>
-        <span class="warn-preview muted">{{ previewOf(row.list) }}</span>
-        <RightOutlined class="muted" />
-      </button>
-    </a-card>
-
-    <!-- 额度统计 -->
-    <a-card v-if="usageStats.validAccountCount" size="small">
-      <template #title>
-        <span class="card-title">
-          <span class="icon-box sm" style="background: rgba(22, 119, 255, 0.12); color: #1677ff">
-            <BarChartOutlined />
-          </span>
-          额度统计
-          <span class="muted title-hint">基于 {{ usageStats.validAccountCount }} 个有效账号</span>
-        </span>
-      </template>
-
-      <div class="tile-grid">
-        <div class="tile">
-          <div class="tile-head muted"><RiseOutlined style="color: #1677ff" /> 总额度</div>
-          <div class="tile-value">{{ formatCreditsGrouped(usageStats.totalLimit) }}</div>
-        </div>
-        <div class="tile">
-          <div class="tile-head muted"><LineChartOutlined style="color: #fa8c16" /> 已使用</div>
-          <div class="tile-value">{{ formatCreditsGrouped(usageStats.totalUsed, precision) }}</div>
-        </div>
-        <div class="tile">
-          <div class="tile-head muted"><ThunderboltOutlined style="color: #52c41a" /> 可用额度</div>
-          <div class="tile-value" :style="{ color: noQuotaLeft ? '#ff4d4f' : '#52c41a' }">
-            {{ formatCreditsGrouped(usageStats.available, precision) }}
-          </div>
-        </div>
-        <div class="tile">
-          <div class="tile-head muted"><BarChartOutlined style="color: #722ed1" /> 使用率</div>
-          <div class="tile-value">{{ percentText }}%</div>
-        </div>
-      </div>
-
-      <div class="progress-head">
-        <span class="muted">总体使用进度</span>
-        <span class="progress-meta">
-          <span class="muted">
-            {{ formatCreditsGrouped(usageStats.totalUsed, precision) }} /
-            {{ formatCreditsGrouped(usageStats.totalLimit) }}
-          </span>
-          <span
-            class="percent-pill"
-            :style="{ background: `${usageBarColor}26`, color: usageBarColor }"
-          >
-            {{ percentText }}%
-          </span>
-        </span>
-      </div>
-      <a-progress
-        :percent="usageStats.percentUsed"
-        :stroke-color="usageBarColor"
-        :show-info="false"
-        :stroke-width="10"
+    <!-- 额度统计：账户与 API Key 左右排列，两边都没有数据时整行不显示 -->
+    <div v-if="accountQuota.validCount || keyQuota.validCount" class="quota-grid">
+      <QuotaStatsCard
+        title="账户额度统计"
+        :icon="TeamOutlined"
+        color="#1677ff"
+        noun="账号"
+        :stats="accountQuota"
+        :precision="precision"
       />
-      <!--
-        降档提示：已用量超过当前额度不是「超额消费」，而是额度变小了
-        （原本高档位用掉的积分，掉档后比新额度还多）。这类账号可用额度按 0 计。
-      -->
-      <a-alert
-        v-if="usageStats.overQuotaCount"
-        type="warning"
-        show-icon
-        style="margin-top: 8px"
-        :message="`${usageStats.overQuotaCount} 个账号的已用积分超过当前额度（合计 ${formatCreditsGrouped(usageStats.excess, precision)}），多为订阅降档所致，其可用额度按 0 计算`"
+      <QuotaStatsCard
+        title="API Key 额度统计"
+        :icon="KeyOutlined"
+        color="#13c2c2"
+        noun="API Key"
+        :stats="keyQuota"
+        :precision="precision"
       />
-    </a-card>
+    </div>
 
     <!-- 当前使用账号 -->
-    <a-card size="small" class="active-card">
+    <a-card size="small" class="active-card section-card">
       <template #title>
         <span class="card-title">
           <span class="icon-box sm" style="background: rgba(124, 58, 237, 0.12); color: #7c3aed">
             <ThunderboltOutlined />
           </span>
-          当前使用账号
+          当前使用
         </span>
       </template>
 
-      <template v-if="active">
-        <div class="active-head">
-          <div class="active-id">
-            <a-avatar :size="40" :style="{ background: 'rgba(124,58,237,0.18)', color: '#7c3aed' }">
-              {{ (activeName || '?')[0].toUpperCase() }}
-            </a-avatar>
-            <div>
-              <div class="active-name">{{ activeName }}</div>
-              <div class="muted" style="font-size: 13px">{{ displayEmail(active.email) }}</div>
-            </div>
-          </div>
-          <a-tag :color="subscriptionMeta(active.subscription.type).color" :bordered="false">
-            {{ subscriptionLabel(active.subscription) }}
-          </a-tag>
-        </div>
-
-        <div class="info-grid bordered-top">
-          <div class="info-cell">
-            <div class="info-label muted">本月用量</div>
-            <div class="info-value">
-              {{ formatCreditsPair(active.usage.current, active.usage.limit, precision) }}
-            </div>
-            <a-progress
-              :percent="activeUsagePercent"
-              :stroke-color="activeUsageColor"
-              :show-info="false"
-              :stroke-width="6"
-            />
-          </div>
-          <div class="info-cell">
-            <div class="info-label muted">订阅剩余</div>
-            <div class="info-value">
-              {{ active.subscription.daysRemaining != null ? `${active.subscription.daysRemaining} 天` : '永久' }}
-            </div>
-          </div>
-          <div class="info-cell">
-            <div class="info-label muted">Token 状态</div>
-            <div class="info-value" :style="{ color: tokenState.color }">{{ tokenState.text }}</div>
-          </div>
-          <div class="info-cell">
-            <div class="info-label muted">登录方式</div>
-            <div class="info-value">{{ IDP_META[active.idp].text }}</div>
-          </div>
-        </div>
-
-        <div class="bordered-top">
-          <div class="block-title muted">订阅详情</div>
-          <div class="kv-grid">
-            <div class="kv">
-              <span class="muted">订阅类型</span>
-              <span>{{ subscriptionLabel(active.subscription) }}</span>
-            </div>
-            <div v-if="active.subscription.rawType" class="kv">
-              <span class="muted">原始类型</span>
-              <span class="mono">{{ active.subscription.rawType }}</span>
-            </div>
-            <div v-if="active.subscription.expiresAt" class="kv">
-              <span class="muted">下次重置</span>
-              <span>{{ formatDate(active.subscription.expiresAt) }}</span>
-            </div>
-            <div v-if="active.usage.nextResetDate" class="kv">
-              <span class="muted">重置日期</span>
-              <span>{{ formatDate(active.usage.nextResetDate) }}</span>
-            </div>
-          </div>
-        </div>
-
-        <div v-if="quotaDetails.length" class="bordered-top">
-          <div class="block-title muted">额度明细</div>
-          <div class="kv-grid">
-            <div v-for="row in quotaDetails" :key="row.key" class="kv">
-              <span class="dot" :style="{ background: row.color }" />
-              <span class="muted">{{ row.label }}</span>
-              <span>{{ row.value }}</span>
-              <span v-if="row.extra" class="muted" style="font-size: 11px">（{{ row.extra }}）</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="bordered-top">
-          <div class="block-title muted">账户信息</div>
-          <div class="kv-grid">
-            <div v-if="active.userId" class="kv">
-              <span class="muted">User ID</span>
-              <span class="mono">{{ active.userId }}</span>
-            </div>
-            <div class="kv">
-              <span class="muted">IDP</span>
-              <span>{{ active.idp }}</span>
-            </div>
-            <div class="kv">
-              <span class="muted">最后检查</span>
-              <span>{{ relativeTime(active.lastCheckedAt) }}</span>
-            </div>
-          </div>
-        </div>
+      <template #extra>
+        <a-button size="small" :loading="detecting" @click="redetect">
+          <template #icon><ReloadOutlined /></template>
+          重新检测
+        </a-button>
       </template>
 
-      <a-empty v-else description="本地 Kiro 凭证未匹配到已管理的账号">
-        <a-space>
-          <a-button type="primary" @click="router.push({ name: 'accounts' })">去账户管理</a-button>
-          <a-button @click="accountsStore.syncActiveFromIde()">重新检测</a-button>
-        </a-space>
-      </a-empty>
+      <!-- IDE 与 CLI 各占一栏；同一个号两边都在用时合成一栏，顶部同时显示两个使用中标签 -->
+      <!-- 一排固定三张：IDE 账号、CLI 账号、网关 API Key；点卡片打开对应详情抽屉 -->
+      <div class="active-grid">
+        <HomeActiveCard
+          title="Kiro IDE"
+          :data="ideCard"
+          empty="Kiro IDE 当前登录的不是已管理的账号"
+          empty-action="去账户管理"
+          @open="accountDetail = active"
+          @empty="router.push({ name: 'accounts' })"
+        />
+        <HomeActiveCard
+          title="Kiro CLI · Crew"
+          :data="cliCard"
+          empty="Kiro CLI / Crew 未登录已管理的账号"
+          empty-action="去账户管理"
+          @open="accountDetail = activeCli"
+          @empty="router.push({ name: 'accounts' })"
+        />
+        <HomeActiveCard
+          title="Kiro API Key（网关）"
+          :data="keyCard"
+          empty="本地网关未开启，或还没有选中 API Key"
+          empty-action="去 API Key 管理"
+          @open="keyDetail = gatewayKey"
+          @empty="router.push({ name: 'keys' })"
+        />
+      </div>
     </a-card>
 
-    <a-row :gutter="16">
-      <a-col :xs="24" :lg="14">
-        <a-card size="small" style="height: 100%">
-          <template #title>
-            <span class="card-title">
-              <span class="icon-box sm" style="background: rgba(82, 196, 26, 0.12); color: #52c41a">
-                <SafetyOutlined />
-              </span>
-              快速提示
-            </span>
-          </template>
-          <ul class="tip-list">
-            <li v-for="tip in tips" :key="tip">
-              <span class="tip-dot">•</span>
-              <span class="muted">{{ tip }}</span>
-            </li>
-          </ul>
-        </a-card>
-      </a-col>
-
-      <a-col :xs="24" :lg="10">
-        <a-card size="small" title="最近使用" style="height: 100%">
-          <a-list size="small" :data-source="recent" :split="false">
-            <template #renderItem="{ item }">
-              <a-list-item style="padding: 5px 0">
-                <a-space :size="6">
-                  <SwapOutlined v-if="item.isActive" style="color: #52c41a" />
-                  <span>{{ displayName(item) }}</span>
-                  <span class="muted" style="font-size: 12px">{{ relativeTime(item.lastUsedAt) }}</span>
-                </a-space>
-              </a-list-item>
-            </template>
-            <template #empty><span class="muted">暂无记录</span></template>
-          </a-list>
-        </a-card>
-      </a-col>
-    </a-row>
+    <AccountDetailDrawer
+      v-if="accountDetail"
+      :account="accountDetail"
+      @close="accountDetail = null"
+      @login="loginFromHome"
+    />
+    <ApiKeyDetailDrawer
+      v-if="keyDetail"
+      :key-entry="keyDetail"
+      @close="keyDetail = null"
+      @test="(entry) => (keyTestTarget = entry)"
+      @edit="goKeys"
+      @select="keyDetail = null"
+    />
+    <ApiKeyTestModal v-if="keyTestTarget" :key-entry="keyTestTarget" @close="keyTestTarget = null" />
   </div>
 </template>
 
@@ -672,7 +504,8 @@ function previewOf(list: Account[]): string {
 }
 
 .hero-sub {
-  margin: 2px 0 0;
+  margin: 3px 0 0;
+  line-height: 1.7;
   font-size: 13px;
 }
 
@@ -686,7 +519,12 @@ function previewOf(list: Account[]): string {
  * hoverable 默认阴影偏重，压淡一档，改用一层很浅的主题色底做可点击反馈。
  * color-mix 让底色随主题色变化，不写死某个具体颜色。
  */
-.stat-card:hover {
+/* 合计类的卡片不跳转，不给可点的手势和悬停反馈 */
+.stat-card.is-static {
+  cursor: default;
+}
+
+.stat-card:not(.is-static):hover {
   box-shadow: var(--kal-hover-shadow);
   border-color: color-mix(in srgb, var(--kal-primary) 32%, var(--kal-border));
   background: color-mix(in srgb, var(--kal-primary) 8%, var(--kal-card-bg));
@@ -716,13 +554,34 @@ function previewOf(list: Account[]): string {
 }
 
 .stat-value {
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 700;
-  line-height: 1.2;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
 }
 
+/* 标题在上、数字在下：标题字号放大一档，数字仍是视觉重点 */
 .stat-label {
-  font-size: 12px;
+  font-size: 14px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stat-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* 一排五张：首页统计卡固定五列，窗口窄时再退 */
+.home .stat-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+@media (max-width: 900px) {
+  .home .stat-grid { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
 }
 
 /* 卡片标题 */
@@ -738,196 +597,33 @@ function previewOf(list: Account[]): string {
   font-weight: 400;
 }
 
-/* 告警 */
-.warn-card {
-  border-color: rgba(250, 173, 20, 0.4);
+/* 额度统计 / 当前使用账号：small 卡片的标题栏默认只有 38px 高、上下几乎贴边，这里放松一点 */
+.section-card :deep(.ant-card-head) {
+  min-height: 52px;
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+.section-card :deep(.ant-card-body) {
+  padding-top: 16px;
 }
 
-.warn-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 9px 12px;
-  margin-bottom: 8px;
-  border: none;
-  border-radius: 10px;
-  background: var(--kal-code-bg);
-  cursor: pointer;
-  text-align: left;
-  font: inherit;
-  color: inherit;
-  transition: background 0.15s ease;
-}
-
-.warn-row:last-child {
-  margin-bottom: 0;
-}
-
-/* 跟随主题色，切换主题时保持一致 */
-.warn-row:hover {
-  background: color-mix(in srgb, var(--kal-primary) 12%, var(--kal-code-bg));
-}
-
-.warn-count {
-  font-size: 17px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-
-.warn-label {
-  font-size: 13px;
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-.warn-preview {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 额度统计 */
-.tile-grid {
+/* 额度统计：左右两张等宽，窗口窄时上下排列 */
+.quota-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 12px;
-  margin-bottom: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+@media (max-width: 900px) {
+  .quota-grid { grid-template-columns: 1fr; }
 }
 
-.tile {
-  padding: 10px 12px;
-  border-radius: 10px;
-  background: var(--kal-code-bg);
-}
-
-.tile-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  margin-bottom: 4px;
-}
-
-.tile-value {
-  font-size: 18px;
-  font-weight: 700;
-}
-
-.progress-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 12px;
-  margin-bottom: 2px;
-}
-
-.progress-meta {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.percent-pill {
-  padding: 1px 8px;
-  border-radius: 6px;
-  font-weight: 700;
-}
-
-/* 当前账号 */
-.active-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 14px;
-}
-
-.active-id {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
-
-.active-name {
-  font-weight: 600;
-}
-
-.bordered-top {
-  border-top: 1px solid var(--kal-border);
-  padding-top: 12px;
-  margin-top: 12px;
-}
-
-.info-grid {
+/* 当前使用：一排固定三张，窗口很窄时才退成一列 */
+.active-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
 }
-
-.info-label {
-  font-size: 12px;
-  margin-bottom: 2px;
-}
-
-.info-value {
-  font-size: 14px;
-  font-weight: 500;
-}
-
-.block-title {
-  font-size: 12px;
-  font-weight: 600;
-  margin-bottom: 8px;
-}
-
-.kv-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 6px 16px;
-}
-
-.kv {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  font-size: 12px;
-  min-width: 0;
-}
-
-.kv .mono {
-  word-break: break-all;
-  user-select: all;
-}
-
-.dot {
-  flex: 0 0 auto;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-}
-
-/* 提示 */
-.tip-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  font-size: 13px;
-}
-
-.tip-list li {
-  display: flex;
-  gap: 8px;
-}
-
-.tip-dot {
-  color: var(--kal-primary);
+@media (max-width: 760px) {
+  .active-grid { grid-template-columns: 1fr; }
 }
 </style>

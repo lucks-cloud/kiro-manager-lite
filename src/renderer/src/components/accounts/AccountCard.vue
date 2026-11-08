@@ -30,6 +30,7 @@ import {
   usageColor
 } from '@/utils/format'
 import { displayEmail, displayName, displayNote } from '@/utils/display'
+import { maskGroupName, usePrivacy } from '@/composables/usePrivacy'
 import { groupsOfItem } from '@/utils/groups'
 import { now } from '@/utils/now'
 import type { Account, AccountDisplayMode } from '@shared/types'
@@ -94,17 +95,22 @@ const settingsStore = useSettingsStore()
 
 const precision = computed(() => settingsStore.settings.usagePrecision)
 
-const privacy = computed(() => settingsStore.settings.privacyMode)
+/** 隐私打码按字段生效：只遮用户在工具栏勾选的那几项 */
+const { maskAccount } = usePrivacy()
+const maskEmailOn = computed(() => maskAccount('email'))
+const maskNoteOn = computed(() => maskAccount('note'))
 
-const email = computed(() => displayEmail(props.account.email, privacy.value))
-const nickname = computed(() => displayName(props.account, privacy.value))
+const email = computed(() => displayEmail(props.account.email, maskEmailOn.value))
+const nickname = computed(() => displayName(props.account, maskAccount('nickname')))
 
 /** 备注在隐私模式下整段遮住；留空时显示占位符，保证同排卡片高度一致 */
-const note = computed(() => displayNote(props.account.note, privacy.value))
+const note = computed(() => displayNote(props.account.note, maskNoteOn.value))
 
 /** 所属分组（可多个，按分组顺序）；已被删除的分组不显示 */
 const groupNames = computed(() =>
-  groupsOfItem(props.account, accountsStore.groups).map((group) => group.name)
+  groupsOfItem(props.account, accountsStore.groups).map((group) =>
+    maskAccount('group') ? maskGroupName() : group.name
+  )
 )
 
 /** 使用率百分比原始值，用量条与文案各自再做取整 */
@@ -346,11 +352,11 @@ function onCardClick(): void {
         @change="onCheckChange"
       />
       <div class="identity" @click.stop="trigger('detail')">
-        <span class="email" :title="privacy ? undefined : props.account.email">{{ email }}</span>
+        <span class="email" :title="maskEmailOn ? undefined : props.account.email">{{ email }}</span>
         <span class="nickname">{{ nickname }}</span>
         <span
           class="note"
-          :title="props.account.note && !privacy ? props.account.note : undefined"
+          :title="props.account.note && !maskNoteOn ? props.account.note : undefined"
         >备注：{{ note || '-' }}</span>
       </div>
       <!-- 「使用中」按端区分：Kiro IDE 绿色、Kiro CLI 蓝色，各一个标签摆右上角 -->
@@ -382,12 +388,12 @@ function onCardClick(): void {
       <a-tag :color="idp.color" :bordered="false">{{ idp.text }}</a-tag>
       <!-- 分组标签：没分组就不显示，避免每张卡都多一个空标签；多个分组各占一个标签 -->
       <a-tag
-        v-for="groupName in groupNames"
-        :key="groupName"
+        v-for="(groupName, i) in groupNames"
+        :key="i"
         class="group-tag"
         color="purple"
         :bordered="false"
-        :title="`分组：${groupName}`"
+        :title="maskAccount('group') ? undefined : `分组：${groupName}`"
       >
         {{ groupName }}
       </a-tag>

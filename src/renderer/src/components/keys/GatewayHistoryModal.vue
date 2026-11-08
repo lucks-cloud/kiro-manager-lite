@@ -11,6 +11,7 @@ import { ReloadOutlined } from '@ant-design/icons-vue'
 import { CHART_HEIGHT, timeTicks, useChartFrame, valueTicks } from '@/composables/useChartFrame'
 import { useKeysStore } from '@/stores/keys'
 import { useSettingsStore } from '@/stores/settings'
+import { usePrivacy } from '@/composables/usePrivacy'
 import { confirmDanger } from '@/utils/ui'
 import { smoothLinePath } from '@/utils/chart'
 import { displayNote } from '@/utils/display'
@@ -25,6 +26,7 @@ const props = defineProps<{
 const emit = defineEmits<{ close: [] }>()
 const keysStore = useKeysStore()
 const settingsStore = useSettingsStore()
+const { maskKey } = usePrivacy()
 
 const points = ref<GatewayCallPoint[]>([])
 const loading = ref(false)
@@ -35,13 +37,13 @@ const title = computed(() => {
   if (!props.keyEntry) return '网关调用历史'
   // 备注同样受隐私打码约束，否则这里会把卡片上遮住的备注原样显示出来
   const label =
-    displayNote(props.keyEntry.note, settingsStore.settings.privacyMode) || maskedKey.value
+    displayNote(props.keyEntry.note, maskKey('note')) || maskedKey.value
   return `网关调用历史 · ${label}`
 })
 const maskedKey = computed(() => {
   const key = props.keyEntry?.key || ''
   if (!key) return ''
-  return settingsStore.settings.privacyMode ? `${key.slice(0, 8)}…${key.slice(-4)}` : key
+  return maskKey('apiKey') ? `${key.slice(0, 8)}…${key.slice(-4)}` : key
 })
 
 async function load(): Promise<void> {

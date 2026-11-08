@@ -5,7 +5,7 @@ import {
   CodeOutlined,
   CopyOutlined,
   DownOutlined,
-  DownloadOutlined,
+  UploadOutlined,
   FileOutlined,
   FileTextOutlined,
   FileZipOutlined,
@@ -51,6 +51,9 @@ const selected = computed(() => accountsStore.accounts.filter((a) => selectedSet
 /** 有勾选导勾选的，没勾选导全部 */
 const targets = computed(() => (selected.value.length ? selected.value : accountsStore.accounts))
 
+/** 按钮上的数量：多个时显示「（x个）」，单个导出不显示 */
+const countSuffix = computed(() => (targets.value.length > 1 ? `（${targets.value.length}个）` : ''))
+
 /** 标题上只说明这次会导出什么，不提供切换 */
 const scopeText = computed(
   () => `${selected.value.length ? '已选' : '全部'} ${targets.value.length} 个`
@@ -60,7 +63,7 @@ const formats = computed<{ value: ExportFormat; label: string; icon: Component; 
   { value: 'json', label: 'JSON', icon: FileOutlined, desc: '完整数据，可用于导入，完美适配Kiro Manager Lite。' },
   {
     value: 'oidc',
-    label: 'OIDC JSON（兼容性高）',
+    label: '精简 JSON（兼容性高）',
     icon: CodeOutlined,
     desc: '兼容各大主流 Kiro 账号管理器，也可粘贴到批量添加。'
   },
@@ -195,10 +198,10 @@ function submit(): void {
 </script>
 
 <template>
-  <a-modal :open="props.open" width="560px" :footer="null" @cancel="close">
+  <a-modal :open="props.open" width="640px" :footer="null" @cancel="close">
     <template #title>
       <span class="kal-export-title">
-        <DownloadOutlined />
+        <UploadOutlined />
         导出账号
         <a-tag style="margin: 0">{{ scopeText }}</a-tag>
       </span>
@@ -236,13 +239,13 @@ function submit(): void {
       <a-button @click="close">取消</a-button>
       <a-button v-if="showCopyButton" @click="copy">
         <template #icon><CopyOutlined /></template>
-        复制到剪贴板
+        复制到剪贴板{{ countSuffix }}
       </a-button>
       <!-- 多账号时导出按钮右侧挂一个下拉，提供打包与分割两种方式 -->
       <a-button-group v-if="canBundle">
         <a-button type="primary" :loading="zipping" @click="submit">
-          <template #icon><DownloadOutlined /></template>
-          导出
+          <template #icon><UploadOutlined /></template>
+          导出{{ countSuffix }}
         </a-button>
         <a-dropdown placement="topRight">
           <a-button type="primary" :loading="zipping">
@@ -266,9 +269,9 @@ function submit(): void {
       <a-button v-else type="primary" @click="submit">
         <template #icon>
           <SnippetsOutlined v-if="format === 'clipboard'" />
-          <DownloadOutlined v-else />
+          <UploadOutlined v-else />
         </template>
-        {{ format === 'clipboard' ? '复制到剪贴板' : '导出' }}
+        {{ format === 'clipboard' ? '复制到剪贴板' : '导出' }}{{ countSuffix }}
       </a-button>
     </a-space>
   </a-modal>

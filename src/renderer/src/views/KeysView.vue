@@ -7,7 +7,7 @@ import {
   CheckCircleFilled,
   DeleteOutlined,
   DownOutlined,
-  DownloadOutlined,
+  UploadOutlined,
   EditOutlined,
   ExclamationCircleFilled,
   FileSearchOutlined,
@@ -22,10 +22,11 @@ import {
   SyncOutlined,
   ThunderboltOutlined,
   BranchesOutlined,
-  UploadOutlined
+  DownloadOutlined
 } from '@ant-design/icons-vue'
 import { useKeysStore } from '@/stores/keys'
 import { useSettingsStore } from '@/stores/settings'
+import { usePrivacy } from '@/composables/usePrivacy'
 import { bodyPopupContainer, confirmDelete, confirmUseApiKey } from '@/utils/ui'
 import {
   displayKey as maskedKey,
@@ -92,6 +93,7 @@ import type {
 
 const store = useKeysStore()
 const settingsStore = useSettingsStore()
+const { maskKey } = usePrivacy()
 
 /**
  * 工具栏那一排的控件尺寸：大尺寸下用标准尺寸，默认尺寸下仍用 small。
@@ -99,7 +101,6 @@ const settingsStore = useSettingsStore()
  */
 const toolbarSize = computed(() => settingsStore.toolbarSize)
 const { data, status, activeKey, loading } = storeToRefs(store)
-const privacyMode = computed(() => settingsStore.settings.privacyMode)
 const search = ref('')
 
 /** 搜索范围：默认智能搜索（Key + 邮箱 + 备注），也可以只搜某一个字段 */
@@ -158,6 +159,8 @@ const activeFilterCount = computed(() => {
     (f.usageMax != null ? 1 : 0) +
     (f.creditMin != null ? 1 : 0) +
     (f.creditMax != null ? 1 : 0) +
+    (f.remainingMin != null ? 1 : 0) +
+    (f.remainingMax != null ? 1 : 0) +
     (f.daysRemainingMin != null ? 1 : 0) +
     (f.daysRemainingMax != null ? 1 : 0) +
     // 导入时间是一个区间，两端一起设置 / 清空，只算一项
@@ -431,6 +434,8 @@ const matchedKeys = computed(() => {
     usageMax,
     creditMin,
     creditMax,
+    remainingMin,
+    remainingMax,
     daysRemainingMin,
     daysRemainingMax,
     createdFrom,
@@ -458,6 +463,9 @@ const matchedKeys = computed(() => {
     if (usageRanged && !inRange(usageRatio(entry), usageMin, usageMax)) return false
     // 积分：按总积分（额度上限）过滤
     if (!inRange(entry.totalCredits || 0, creditMin, creditMax)) return false
+    // 剩余积分：总积分 − 已用积分，超额使用时按 0 算
+    const remaining = Math.max(0, (entry.totalCredits || 0) - (entry.usedCredits || 0))
+    if (!inRange(remaining, remainingMin, remainingMax)) return false
     if (!daysInRange(keyDaysRemaining(entry), daysRemainingMin, daysRemainingMax)) return false
     // 导入时间：界面给过来的是精确到秒的时刻
     if (!inRange(entry.createdAt, createdFrom, createdTo)) return false
@@ -558,13 +566,13 @@ const errorCount = computed(() => keyStats.value.byStatus.error)
  * 接管面板、删除确认等处不要另写无条件打码的实现，否则关掉开关也看不到完整 Key。
  */
 function displayKey(key: string): string {
-  return maskedKey(key, privacyMode.value)
+  return maskedKey(key, maskKey('apiKey'))
 }
 
 
 /** 备注同样跟随隐私打码：里面常写着用途、渠道等不比邮箱次要的信息 */
 function displayNote(note?: string): string {
-  return maskedNote(note, privacyMode.value)
+  return maskedNote(note, maskKey('note'))
 }
 
 const usageSubject = computed(() => {
@@ -1196,9 +1204,9 @@ onUnmounted(() => store.stopStatsPolling())
         <a-button type="primary" @click="addOpen = true">
           <template #icon><PlusOutlined /></template>添加 API Key
         </a-button>
-        <a-button @click="importOpen = true"><template #icon><UploadOutlined /></template>导入</a-button>
+        <a-button @click="importOpen = true"><template #icon><DownloadOutlined /></template>导入</a-button>
         <a-button :disabled="!data.keys.length" @click="exportKeys">
-          <template #icon><DownloadOutlined /></template>导出
+          <template #icon><UploadOutlined /></template>导出
         </a-button>
       </div>
 
@@ -1272,7 +1280,7 @@ onUnmounted(() => store.stopStatsPolling())
           <template #icon><SyncOutlined /></template>
           {{ syncing ? `正在刷新${selectedIds.length ? selectedIds.length + '个API Key' : ''}用量/积分...` : `刷新用量/积分${batchScopeSuffix}` }}
         </a-button>
-        <PrivacyToggleButton :size="toolbarSize" />
+        <PrivacyToggleButton :size="toolbarSize" scope="key" />
 
         <!-- 展示形态：卡片 / 紧凑 / 列表，选择会持久化 -->
         <DisplayModeSelect :value="displayMode" :size="toolbarSize" @change="setDisplayMode" />
@@ -1503,7 +1511,7 @@ onUnmounted(() => store.stopStatsPolling())
       v-if="detailTarget"
       :key-entry="detailTarget"
       @close="detailTarget = null"
-      @test="(entry) => { detailTarget = null; testTarget = entry }"
+      @test="(entry) => { testTarget = entry }"
       @edit="openEdit"
       @select="select"
     />

@@ -4,6 +4,10 @@ import { app } from 'electron'
 import * as path from 'path'
 import { copyFileSync, existsSync, mkdirSync } from 'fs'
 import {
+  LEGACY_DEFAULT_AWS_SDK_VERSION,
+  LEGACY_DEFAULT_KIRO_IDE_VERSION
+} from '../shared/kiroVersion'
+import {
   DEFAULT_KEY_GATEWAY_DATA,
   DEFAULT_PRIMARY_COLOR,
   DEFAULT_SETTINGS,
@@ -557,6 +561,18 @@ export function getSettings(): AppSettings {
   }
   // 存值不是十六进制色值（如 system）时回到默认紫
   if (!/^#[0-9a-f]{6}$/i.test(merged.primaryColor)) merged.primaryColor = DEFAULT_PRIMARY_COLOR
+  /*
+   * Kiro UA 请求头版本号的默认值升级：每次保存设置都会把整份合并结果写盘，没动过这项的用户
+   * 存的也是旧默认值。存值恰好等于旧默认组合时视为「没改过」，换成新默认；
+   * 用户自己选过的组合原样保留（旧默认 0.12.333 不在级联可选列表里，只可能来自默认值或恢复默认）。
+   */
+  if (
+    merged.kiroIdeVersion === LEGACY_DEFAULT_KIRO_IDE_VERSION &&
+    merged.awsSdkVersion === LEGACY_DEFAULT_AWS_SDK_VERSION
+  ) {
+    merged.kiroIdeVersion = DEFAULT_SETTINGS.kiroIdeVersion
+    merged.awsSdkVersion = DEFAULT_SETTINGS.awsSdkVersion
+  }
   return merged
 }
 

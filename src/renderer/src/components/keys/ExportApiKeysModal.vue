@@ -3,7 +3,7 @@ import { computed, ref, watch, type Component } from 'vue'
 import { message } from 'ant-design-vue'
 import {
   CopyOutlined,
-  DownloadOutlined,
+  UploadOutlined,
   GlobalOutlined,
   KeyOutlined
 } from '@ant-design/icons-vue'
@@ -39,6 +39,9 @@ const targets = computed(() => (selected.value.length ? selected.value : allKeys
 const scopeText = computed(
   () => `${selected.value.length ? '已选' : '全部'} ${targets.value.length} 个`
 )
+
+/** 按钮上的数量：多个时显示「（x个）」，单个导出不显示 */
+const countSuffix = computed(() => (targets.value.length > 1 ? `（${targets.value.length}个）` : ''))
 
 const formats = computed<
   { value: ApiKeyExportFormat; label: string; icon: Component; desc: string }[]
@@ -92,7 +95,7 @@ async function saveFile(): Promise<void> {
   <a-modal :open="props.open" width="560px" :footer="null" @cancel="close">
     <template #title>
       <span class="kal-export-title">
-        <DownloadOutlined />
+        <UploadOutlined />
         导出 API Key
         <a-tag style="margin: 0">{{ scopeText }}</a-tag>
       </span>
@@ -122,11 +125,11 @@ async function saveFile(): Promise<void> {
       <a-button @click="close">取消</a-button>
       <a-button @click="copy">
         <template #icon><CopyOutlined /></template>
-        复制到剪贴板
+        复制到剪贴板{{ countSuffix }}
       </a-button>
       <a-button type="primary" @click="saveFile">
-        <template #icon><DownloadOutlined /></template>
-        导出
+        <template #icon><UploadOutlined /></template>
+        导出{{ countSuffix }}
       </a-button>
     </a-space>
   </a-modal>

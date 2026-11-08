@@ -21,7 +21,8 @@ import { useAccountsStore } from '@/stores/accounts'
 import { useSettingsStore } from '@/stores/settings'
 import { useKeysStore } from '@/stores/keys'
 import { confirmDanger, copyText } from '@/utils/ui'
-import { displayEmail, displayKey, endpointName, maskKey } from '@/utils/display'
+import { displayEmail, displayKey, displayNote, endpointName, maskKey } from '@/utils/display'
+import { usePrivacy } from '@/composables/usePrivacy'
 import { formatCheckedAt, formatCredits, formatLogTime, maskEmail } from '@/utils/format'
 import { withDefaultEffort, type CascaderModel } from '@/utils/models'
 import ModelCascader from '@/components/common/ModelCascader.vue'
@@ -53,7 +54,8 @@ const accountsStore = useAccountsStore()
 const settingsStore = useSettingsStore()
 const keysStore = useKeysStore()
 
-const privacy = computed(() => settingsStore.settings.privacyMode)
+/** 隐私打码按字段生效：账号与 API Key 各自的打码范围 */
+const { maskAccount, maskKey: maskKeyField } = usePrivacy()
 /**
  * 卡片标题栏的按钮组跟随设置里的控件尺寸，口径与两个列表页的工具栏一致
  * （默认尺寸用 small，大尺寸用 middle）；参数里的选择器不写 size，直接跟随全局尺寸。
@@ -79,7 +81,7 @@ const accountOptions = computed(() =>
   // 回收站里的账号不会被选用，下拉里也不列
   accountsStore.liveAccounts.map((account) => ({
     value: account.id,
-    label: `${displayEmail(account.email, privacy.value)}${account.nickname ? ` · ${account.nickname}` : ''}`,
+    label: `${displayEmail(account.email, maskAccount('email'))}${account.nickname && !maskAccount('nickname') ? ` · ${account.nickname}` : ''}`,
     disabled: account.status === 'banned'
   }))
 )
@@ -163,9 +165,10 @@ const sourceNoun = computed(() => (config.value.accountSource === 'apiKey' ? 'AP
 
 /** Key 下拉的展示名：绑定邮箱 > 备注 > Key 本身，打码都跟随隐私开关 */
 function keyOptionLabel(entry: { key: string; note?: string; email?: string }): string {
-  const key = displayKey(entry.key, privacy.value)
-  if (entry.email) return `${displayEmail(entry.email, privacy.value)} · ${key}`
-  return entry.note ? `${entry.note} · ${key}` : key
+  const key = displayKey(entry.key, maskKeyField('apiKey'))
+  if (entry.email) return `${displayEmail(entry.email, maskKeyField('email'))} · ${key}`
+  const note = displayNote(entry.note, maskKeyField('note'))
+  return note ? `${note} · ${key}` : key
 }
 
 /** 指定账号 / 指定 Key 的候选 */
@@ -961,7 +964,7 @@ const stateMeta: Record<ProxyLogEntry['state'], { color: string; text: string }>
 
 function accountLabel(entry: ProxyLogEntry): string {
   if (!entry.accountEmail) return '-'
-  return displayEmail(entry.accountEmail, privacy.value)
+  return displayEmail(entry.accountEmail, maskAccount('email'))
 }
 
 /** a-table 的 bodyCell 给的 record 是 any，绕一层函数把类型接回来 */
@@ -1737,7 +1740,7 @@ onUnmounted(() => stop?.())
     <a-card v-if="store.usage.length" class="tool-card" :bordered="false" title="按账号消耗">
       <div class="usage-list">
         <div v-for="item in store.usage" :key="item.accountId" class="usage-row">
-          <span class="usage-email">{{ displayEmail(item.email, privacy) }}</span>
+          <span class="usage-email">{{ displayEmail(item.email, maskAccount('email')) }}</span>
           <span class="muted">{{ item.requests }} 次请求</span>
           <span v-if="item.failed" class="warn">{{ item.failed }} 次失败</span>
           <span class="credit">{{ formatCredits(item.credits, true) }} 积分</span>

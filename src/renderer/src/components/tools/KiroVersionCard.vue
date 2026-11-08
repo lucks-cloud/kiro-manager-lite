@@ -4,9 +4,6 @@ import { message } from 'ant-design-vue'
 import type { CascaderProps } from 'ant-design-vue'
 import {
   ArrowRightOutlined,
-  CheckOutlined,
-  CloseOutlined,
-  EditOutlined,
   ExclamationCircleFilled,
   TagsOutlined,
   UndoOutlined
@@ -76,7 +73,7 @@ function onCascaderChange(value: unknown): void {
 
 /**
  * 传给级联的值。级联展开时按这个值自动打开对应的二级菜单并滚到该项，
- * 但它只认对照表里存在的路径：当前值不在表里（如默认的 0.12.333）时，
+ * 但它只认对照表里存在的路径：当前值不在表里（如旧版本留下的 0.12.333）时，
  * 就落到不高于它的最近一个 IDE 版本，保证一展开就停在附近、二级菜单也是打开的。
  * 只影响下拉里的定位，真正的草稿与保存仍以 draft 为准。
  */
@@ -178,7 +175,7 @@ const resetChanges = computed(() =>
     { key: 'sdk', label: 'AWS SDK 版本', from: sdkVersion.value, to: DEFAULT_AWS_SDK_VERSION }
   ].filter((c) => c.from !== c.to)
 )
-/** 默认组合不在 26 个对照版本里，文案里如实说明来源 */
+/** 默认组合是否在对照表里（不在时文案里如实说明，选择框按原值显示） */
 const defaultIsListed = isKnownPair(DEFAULT_KIRO_IDE_VERSION, DEFAULT_AWS_SDK_VERSION)
 
 async function confirmReset(): Promise<void> {
@@ -205,7 +202,7 @@ async function confirmReset(): Promise<void> {
       <div class="kal-tool-main">
         <div class="kal-tool-title">
           <TagsOutlined />
-          <strong>请求头版本号</strong>
+          <strong>Kiro UA 请求头版本号</strong>
         </div>
         <div class="kal-tool-desc">
           自定义对外请求 UA 里上报的 Kiro IDE 版本与 AWS SDK 版本，反代、测活、用量、令牌刷新与网关共用。
@@ -244,22 +241,19 @@ async function confirmReset(): Promise<void> {
           placeholder="选择 IDE 版本 / AWS SDK 版本"
           style="width: 260px"
         />
-        <a-button v-if="!editing" title="修改" aria-label="修改请求头版本号" @click="startEdit">
-          <template #icon><EditOutlined /></template>
-        </a-button>
+        <a-button v-if="!editing" aria-label="修改Kiro UA 请求头版本号" @click="startEdit">修改</a-button>
         <template v-else>
           <a-button
             type="primary"
-            title="保存"
-            aria-label="保存请求头版本号"
+            aria-label="保存Kiro UA 请求头版本号"
             :loading="saving"
             :disabled="!dirty || !draftComplete"
             @click="requestSave"
           >
-            <template #icon><CheckOutlined /></template>
+            确定
           </a-button>
-          <a-button title="取消" aria-label="取消修改请求头版本号" :disabled="saving" @click="cancelEdit">
-            <template #icon><CloseOutlined /></template>
+          <a-button aria-label="取消修改Kiro UA 请求头版本号" :disabled="saving" @click="cancelEdit">
+            取消
           </a-button>
         </template>
       </a-input-group>
@@ -272,7 +266,7 @@ async function confirmReset(): Promise<void> {
       <template #title>
         <span class="modal-title">
           <ExclamationCircleFilled style="color: #faad14" />
-          确认更换请求头版本号
+          确认更换Kiro UA 请求头版本号
         </span>
       </template>
 
@@ -293,7 +287,7 @@ async function confirmReset(): Promise<void> {
       <a-alert
         type="warning"
         style="margin: 14px 0"
-        message="修改请求头版本号可能导致账号请求失败"
+        message="修改Kiro UA 请求头版本号可能导致账号请求失败"
         description="该值会写入反代、账号测活、模型列表、用量查询、令牌刷新与 API Key 网关的全部请求头，保存后立即对后续请求生效。"
       />
 
@@ -341,7 +335,7 @@ async function confirmReset(): Promise<void> {
 
       <ul class="modal-points" style="margin-top: 14px">
         <li>
-          默认组合 {{ DEFAULT_KIRO_IDE_VERSION }} / {{ DEFAULT_AWS_SDK_VERSION }} 是本机实测过的官方搭配{{
+          默认组合 {{ DEFAULT_KIRO_IDE_VERSION }} / {{ DEFAULT_AWS_SDK_VERSION }} 是官方安装包里实际打包的搭配{{
             defaultIsListed ? '' : '（不在下拉对照表的 26 个版本里，恢复后选择框按原值显示）'
           }}。
         </li>

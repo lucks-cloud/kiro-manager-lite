@@ -49,6 +49,9 @@ import { useSettingsStore } from './settings'
 /** 搜索框左侧的范围选择 */
 export type AccountSearchScope = 'all' | 'email' | 'nickname' | 'note'
 
+/** 账号的登录 / 退出动作，与账号卡片「登录 / 退出」下拉的各项一一对应 */
+export type AccountLoginAction = 'switch' | 'cli-login' | 'login-all' | 'logout' | 'logout-cli'
+
 export interface AccountFilter {
   search: string
   statuses: AccountStatus[]
@@ -66,6 +69,10 @@ export interface AccountFilter {
   creditMin?: number
   /** 总积分（额度上限）上限（含） */
   creditMax?: number
+  /** 剩余积分（总积分 − 已用积分）下限（含） */
+  remainingMin?: number
+  /** 剩余积分（总积分 − 已用积分）上限（含） */
+  remainingMax?: number
   /**
    * 导入时间（createdAt）范围，含两端，单位毫秒，精度到秒。
    * 只选日期不碰时间时，界面会补成起点 00:00:00 / 终点 23:59:59。
@@ -315,6 +322,19 @@ export const useAccountsStore = defineStore('accounts', () => {
     detailRequest.value = { id, at: Date.now() }
   }
 
+  /**
+   * 别的页面（首页详情抽屉）要求对某个账号执行登录 / 退出：交给账户管理页执行，
+   * 那里有安装检测弹窗、切号结果弹窗与卡片上的加载态，两处行为完全一致。
+   * 账户管理页消费后清空，避免返回时重复执行。
+   */
+  const loginRequest = ref<{ id: string; action: AccountLoginAction; at: number } | null>(null)
+  function requestAccountLogin(id: string, action: AccountLoginAction): void {
+    loginRequest.value = { id, action, at: Date.now() }
+  }
+  function clearLoginRequest(): void {
+    loginRequest.value = null
+  }
+
   // ============ 分组 ============
 
   /** id -> 分组，供卡片取名与筛选判断已删除分组 */
@@ -460,6 +480,8 @@ export const useAccountsStore = defineStore('accounts', () => {
       usageMax,
       creditMin,
       creditMax,
+      remainingMin,
+      remainingMax,
       createdFrom,
       createdTo,
       groupIds,
@@ -489,6 +511,9 @@ export const useAccountsStore = defineStore('accounts', () => {
       if (!inRange(a.usage.percentUsed || 0, usageMin, usageMax)) return false
       // 积分：按总积分（额度上限）过滤
       if (!inRange(a.usage.limit || 0, creditMin, creditMax)) return false
+      // 剩余积分：总积分 − 已用积分，超额使用时按 0 算
+      const remaining = Math.max(0, (a.usage.limit || 0) - (a.usage.current || 0))
+      if (!inRange(remaining, remainingMin, remainingMax)) return false
       // 导入时间：界面给过来的是精确到秒的时刻
       if (!inRange(a.createdAt, createdFrom, createdTo)) return false
       return true
@@ -519,6 +544,8 @@ export const useAccountsStore = defineStore('accounts', () => {
       usageMax: undefined,
       creditMin: undefined,
       creditMax: undefined,
+      remainingMin: undefined,
+      remainingMax: undefined,
       createdFrom: undefined,
       createdTo: undefined,
       ...patch
@@ -1534,6 +1561,9 @@ export const useAccountsStore = defineStore('accounts', () => {
     activeAccountCli,
     detailRequest,
     requestAccountDetail,
+    loginRequest,
+    requestAccountLogin,
+    clearLoginRequest,
     selectedIds,
     loading,
     task,

@@ -18,6 +18,7 @@ import ExportAccountsModal from '@/components/accounts/ExportAccountsModal.vue'
 import { useAccountsStore } from '@/stores/accounts'
 import { useSettingsStore } from '@/stores/settings'
 import { displayEmail } from '@/utils/display'
+import { usePrivacy } from '@/composables/usePrivacy'
 import { subscriptionLabel } from '@/utils/format'
 import { freshAccount } from '@/utils/freshAccount'
 import { copyText } from '@/utils/ui'
@@ -28,6 +29,8 @@ const props = defineProps<{ accounts: Account[] }>()
 const emit = defineEmits<{ close: [] }>()
 
 const settingsStore = useSettingsStore()
+
+const { maskAccount } = usePrivacy()
 const accountsStore = useAccountsStore()
 
 async function fetchModels(row: Account): Promise<IpcResult<KiroModelInfo[]>> {
@@ -51,7 +54,7 @@ function filterAlive(ids: string[]): string[] {
 }
 
 function email(account: Account): string {
-  return displayEmail(account.email, settingsStore.settings.privacyMode)
+  return displayEmail(account.email, maskAccount('email'))
 }
 
 /** 邮箱写完整值，不做隐私打码：导出的清单是给人核对用的；其后是模型数量、模型列表 */

@@ -8,6 +8,7 @@ import {
 } from '@ant-design/icons-vue'
 import { useKeysStore } from '@/stores/keys'
 import { useSettingsStore } from '@/stores/settings'
+import { usePrivacy } from '@/composables/usePrivacy'
 import ModelCascader from '@/components/common/ModelCascader.vue'
 import TestOutputPanel from '@/components/common/TestOutputPanel.vue'
 import { useChatTest } from '@/composables/useChatTest'
@@ -18,6 +19,7 @@ const props = defineProps<{ keyEntry: KeyEntry | null }>()
 const emit = defineEmits<{ close: [] }>()
 const keysStore = useKeysStore()
 const settingsStore = useSettingsStore()
+const { maskKey } = usePrivacy()
 
 // 模型列表、输入、运行状态、流式片段与结果摘要见 useChatTest
 const {
@@ -53,7 +55,7 @@ const {
 const open = computed(() => !!props.keyEntry)
 const label = computed(() => {
   const key = props.keyEntry?.key || ''
-  return settingsStore.settings.privacyMode ? mask(key) : key
+  return maskKey('apiKey') ? mask(key) : key
 })
 
 function mask(key: string): string {

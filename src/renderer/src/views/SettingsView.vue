@@ -3,10 +3,10 @@ import { computed, h, onMounted, onUnmounted, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import {
   CloudUploadOutlined,
-  DownloadOutlined,
+  UploadOutlined,
   FolderOpenOutlined,
   ReloadOutlined,
-  UploadOutlined
+  DownloadOutlined
 } from '@ant-design/icons-vue'
 import {
   BACKUP_CYCLE_OPTIONS,
@@ -700,11 +700,11 @@ function resetAll(): void {
         <a-form-item label="导入导出">
           <a-space wrap>
             <a-button :loading="exporting" @click="exportAll">
-              <template #icon><DownloadOutlined /></template>
+              <template #icon><UploadOutlined /></template>
               导出数据
             </a-button>
             <a-button :loading="importing" @click="importAll">
-              <template #icon><UploadOutlined /></template>
+              <template #icon><DownloadOutlined /></template>
               导入数据
             </a-button>
             <a-button danger :loading="resetting" @click="resetAll">

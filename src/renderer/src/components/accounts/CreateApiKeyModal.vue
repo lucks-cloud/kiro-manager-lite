@@ -5,6 +5,7 @@ import { CopyOutlined, DeleteOutlined, KeyOutlined, ReloadOutlined } from '@ant-
 import AddApiKeyModal from '@/components/keys/AddApiKeyModal.vue'
 import { useSettingsStore } from '@/stores/settings'
 import { displayEmail } from '@/utils/display'
+import { usePrivacy } from '@/composables/usePrivacy'
 import { formatFullDateTime } from '@/utils/format'
 import { toPlain } from '@/utils/ipc'
 import { applyRefreshedCredentials, randomKeyName } from '@/utils/accountApiKey'
@@ -15,6 +16,8 @@ const props = defineProps<{ account: Account }>()
 const emit = defineEmits<{ close: [] }>()
 
 const settingsStore = useSettingsStore()
+
+const { maskAccount } = usePrivacy()
 
 const label = ref('')
 const creating = ref(false)
@@ -34,7 +37,7 @@ const addOpen = ref(false)
 /** 明文弹窗要压在管理弹窗之上，添加弹窗再压在它之上 */
 const FRESH_MODAL_Z_INDEX = 1100
 
-const email = computed(() => displayEmail(props.account.email, settingsStore.settings.privacyMode))
+const email = computed(() => displayEmail(props.account.email, maskAccount('email')))
 
 const columns = [
   { title: '名称', dataIndex: 'label', key: 'label', width: 130, ellipsis: true },

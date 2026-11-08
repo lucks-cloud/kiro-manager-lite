@@ -40,6 +40,8 @@ interface ItemFilter<K extends string> {
   usageMax?: number
   creditMin?: number
   creditMax?: number
+  remainingMin?: number
+  remainingMax?: number
   daysRemainingMin?: number
   daysRemainingMax?: number
   createdFrom?: number
@@ -102,6 +104,19 @@ const creditMax = computed<number | null>({
   get: () => filter.value.creditMax ?? null,
   set: (v) => {
     filter.value.creditMax = v == null ? undefined : Math.max(0, v)
+  }
+})
+/** 剩余积分（总积分 − 已用积分）范围 */
+const remainingMin = computed<number | null>({
+  get: () => filter.value.remainingMin ?? null,
+  set: (v) => {
+    filter.value.remainingMin = v == null ? undefined : Math.max(0, v)
+  }
+})
+const remainingMax = computed<number | null>({
+  get: () => filter.value.remainingMax ?? null,
+  set: (v) => {
+    filter.value.remainingMax = v == null ? undefined : Math.max(0, v)
   }
 })
 const daysRemainingMin = computed<number | null>({
@@ -189,8 +204,12 @@ function setCreated(from: number | undefined, to: number | undefined): void {
       </div>
     </div>
 
+    <!-- 按总积分（基础额度 + 奖励额度的上限合计）筛选，不是剩余或已用积分 -->
     <div class="filter-row">
-      <span class="filter-label">积分</span>
+      <span
+        class="filter-label"
+        title="按总积分筛选：基础额度 + 奖励额度的上限合计，不是剩余积分，也不是已用积分"
+      >总积分</span>
       <div class="range">
         <a-input-number
           v-model:value="creditMin"
@@ -202,6 +221,29 @@ function setCreated(from: number | undefined, to: number | undefined): void {
         <span class="muted">-</span>
         <a-input-number
           v-model:value="creditMax"
+          :min="0"
+          placeholder="max"
+          size="small"
+          style="width: 88px"
+        />
+        <span class="muted">积分</span>
+      </div>
+    </div>
+
+    <!-- 按剩余积分（总积分 − 已用积分）筛选，找还有余量的号用这个 -->
+    <div class="filter-row">
+      <span class="filter-label" title="按剩余积分筛选：总积分 − 已用积分">剩余积分</span>
+      <div class="range">
+        <a-input-number
+          v-model:value="remainingMin"
+          :min="0"
+          placeholder="min"
+          size="small"
+          style="width: 88px"
+        />
+        <span class="muted">-</span>
+        <a-input-number
+          v-model:value="remainingMax"
           :min="0"
           placeholder="max"
           size="small"
