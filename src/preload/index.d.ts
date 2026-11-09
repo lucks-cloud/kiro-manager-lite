@@ -69,6 +69,7 @@ import type {
   TrayAction,
   TraySnapshot,
   UpdateCheckResult,
+  UpdateProgress,
   UsageHistoryEntry,
   VerifyCredentialsInput,
   XlsxSheet
@@ -264,6 +265,15 @@ export interface Api {
   saveSettings: (patch: Partial<AppSettings>) => Promise<IpcResult<AppSettings>>
   getAppInfo: () => Promise<IpcResult<AppInfo>>
   checkUpdate: () => Promise<IpcResult<UpdateCheckResult>>
+  /** 应用内更新：当前下载状态（界面重新挂载时用来恢复进度） */
+  getUpdateProgress: () => Promise<IpcResult<UpdateProgress>>
+  /** 下载并校验指定版本的安装包，结束时（就绪 / 失败 / 取消）才返回 */
+  downloadUpdate: (version: string) => Promise<IpcResult<UpdateProgress>>
+  /** 中断下载；已下好未安装的一并丢弃 */
+  cancelUpdate: () => Promise<IpcResult<UpdateProgress>>
+  /** 拉起安装助手并退出应用（开发模式同样真实执行） */
+  installUpdate: () => Promise<IpcResult<{ quitting: boolean }>>
+  onUpdateProgress: (handler: (progress: UpdateProgress) => void) => () => void
   getShellAutoApproveStatus: () => Promise<IpcResult<ShellAutoApproveStatus>>
   enableShellAutoApprove: () => Promise<IpcResult<ShellAutoApproveStatus>>
   disableShellAutoApprove: () => Promise<IpcResult<ShellAutoApproveStatus>>

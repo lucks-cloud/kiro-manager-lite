@@ -299,6 +299,17 @@ app.on('before-quit', () => {
   isQuitting = true
 })
 
+/*
+ * 收到 SIGTERM 时走正常退出，而不是直接被结束。
+ * 应用内更新的助手脚本、pkg 的 preinstall 在本应用迟迟不退时会发 TERM；
+ * 走 app.quit() 才会执行 will-quit 里的收尾（还原 Kiro IDE 端点、停反代、刷盘）。
+ * Windows 没有这个信号，安装助手在那边按进程号等待。
+ */
+process.on('SIGTERM', () => {
+  isQuitting = true
+  app.quit()
+})
+
 // 退出前一定要把临时接管的 kiro:// 协议还给 Kiro IDE，
 // 并把还没落盘的积分日志刷出去
 app.on('will-quit', () => {

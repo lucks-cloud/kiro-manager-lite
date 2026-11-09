@@ -1,0 +1,24 @@
+#!/bin/sh
+# pkg 开始安装前执行（以 root 身份）。
+#
+# 系统安装器不会结束正在运行的应用，直接覆盖 /Applications 里的 .app 时，
+# 进程已加载的旧代码会和磁盘上的新文件混在一起，读资源时可能出错。
+# 应用内更新会先让应用正常退出再打开 pkg，这里是给「手动双击 pkg 覆盖安装」兜底的。
+#
+# 先发 TERM：主进程收到后走正常退出（还原 Kiro IDE 端点、停本地反代、刷盘），
+# 最多等 20 秒；还不退才强制结束，避免安装一直卡住。任何一步失败都不影响安装结果。
+#
+# 按完整路径匹配，不用 pgrep -x：macOS 的进程名最多 16 个字符，「Kiro Manager Lite」会被截断，-x 永远匹配不上。
+# 只认 /Applications 下的主进程（pkg 只装到这里），路径后必须是空格或结尾：
+# Helper 子进程的路径是 .app/Contents/Frameworks/... 不会命中，其它位置的同名副本也不会被误杀。
+PATTERN='^/Applications/Kiro Manager Lite\.app/Contents/MacOS/Kiro Manager Lite( |$)'
+if /usr/bin/pgrep -f "$PATTERN" >/dev/null 2>&1; then
+  /usr/bin/pkill -TERM -f "$PATTERN" 2>/dev/null
+  i=0
+  while /usr/bin/pgrep -f "$PATTERN" >/dev/null 2>&1 && [ "$i" -lt 40 ]; do
+    sleep 0.5
+    i=$((i + 1))
+  done
+  /usr/bin/pkill -KILL -f "$PATTERN" 2>/dev/null
+fi
+exit 0

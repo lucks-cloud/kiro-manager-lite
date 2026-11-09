@@ -1,6 +1,6 @@
 import { acceptHMRUpdate, defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import type { UpdateCheckResult } from '@shared/types'
+import type { UpdateCheckResult, UpdateProgress } from '@shared/types'
 
 const CACHE_KEY = 'kal:update-check:v1'
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000
@@ -32,6 +32,29 @@ function readCache(currentVersion: string): UpdateCache | null {
     return { checkedAt: parsed.checkedAt, result: parsed.result }
   } catch {
     return null
+  }
+}
+
+/**
+ * 用户关掉过「发现新版本」弹窗的版本号。
+ * 启动时只对没关过的新版本自动弹一次；关掉后同一版本不再自动弹，
+ * 想再看可以点侧栏 / 顶栏的「新版本」角标，或在关于页手动检查更新。出了更新的版本会重新弹。
+ */
+const DISMISSED_KEY = 'kal:update-dismissed:v1'
+
+function readDismissed(): string {
+  try {
+    return localStorage.getItem(DISMISSED_KEY) || ''
+  } catch {
+    return ''
+  }
+}
+
+function writeDismissed(version: string): void {
+  try {
+    localStorage.setItem(DISMISSED_KEY, version)
+  } catch {
+    // 写不进去最多就是下次启动再弹一次
   }
 }
 
@@ -76,6 +99,11 @@ export const useUpdateStore = defineStore('update', () => {
     return request
   }
 
+  /** 启动时是否自动弹窗：有新版本，且用户没关过这个版本的弹窗 */
+  function shouldAutoOpen(data?: UpdateCheckResult | null): boolean {
+    return data?.hasUpdate === true && readDismissed() !== data.latest
+  }
+
   async function initialize(currentVersion: string): Promise<void> {
     if (initialized || !currentVersion) return
     initialized = true
@@ -83,12 +111,12 @@ export const useUpdateStore = defineStore('update', () => {
     if (cache) {
       result.value = cache.result
       if (Date.now() - cache.checkedAt < CACHE_TTL_MS) {
-        if (cache.result.hasUpdate) modalOpen.value = true
+        if (shouldAutoOpen(cache.result)) modalOpen.value = true
         return
       }
     }
     const response = await fetchLatest()
-    modalOpen.value = response.data?.hasUpdate === true
+    modalOpen.value = shouldAutoOpen(response.data)
   }
 
   async function checkNow(): Promise<{ data?: UpdateCheckResult; error?: string }> {
@@ -102,7 +130,69 @@ export const useUpdateStore = defineStore('update', () => {
   }
 
   function closeModal(): void {
+    // 下载或安装进行中不允许关掉，避免进度蒙层没了、下载还在后台跑
+    if (busy.value) return
     modalOpen.value = false
+    // 关过就记下这个版本，之后启动不再自动弹；手动检查、点角标仍能打开
+    if (result.value?.hasUpdate) writeDismissed(result.value.latest)
+  }
+
+  // ============ 应用内更新 ============
+  const progress = ref<UpdateProgress | null>(null)
+  /** 蒙层是否显示：点了「开始更新」到下载结束（成功等安装 / 失败等重试）都显示，取消后收起 */
+  const overlayOpen = ref(false)
+  let unsubscribe: (() => void) | null = null
+
+  const phase = computed(() => progress.value?.phase ?? 'idle')
+  /** 下载、校验、安装中：这时弹窗与蒙层都不能被关掉 */
+  const busy = computed(() =>
+    phase.value === 'downloading' || phase.value === 'verifying' || phase.value === 'installing'
+  )
+
+  function listen(): void {
+    if (unsubscribe) return
+    unsubscribe = window.api.onUpdateProgress((next) => {
+      progress.value = next
+      if (next.phase === 'canceled') overlayOpen.value = false
+    })
+  }
+
+  async function startUpdate(): Promise<void> {
+    const version = result.value?.latest
+    if (!version || busy.value) return
+    listen()
+    overlayOpen.value = true
+    progress.value = {
+      phase: 'downloading',
+      version,
+      fileName: result.value?.asset?.name ?? '',
+      received: 0,
+      total: result.value?.asset?.size ?? 0,
+      speed: 0
+    }
+    const res = await window.api.downloadUpdate(version)
+    if (res.success && res.data) progress.value = res.data
+    else progress.value = { ...progress.value, phase: 'error', error: res.error || '下载失败' }
+    if (progress.value?.phase === 'canceled') overlayOpen.value = false
+  }
+
+  async function cancelUpdate(): Promise<void> {
+    const res = await window.api.cancelUpdate()
+    if (!res.success) return
+    // 正在下载时主进程会推一条 canceled；已下好未安装的直接收起
+    if (res.data) progress.value = res.data
+    if (phase.value !== 'downloading' && phase.value !== 'verifying') overlayOpen.value = false
+  }
+
+  async function installUpdate(): Promise<{ error?: string; quitting?: boolean }> {
+    const res = await window.api.installUpdate()
+    if (!res.success) return { error: res.error || '启动安装失败' }
+    return { quitting: res.data?.quitting === true }
+  }
+
+  /** 错误后收起蒙层，回到弹窗 */
+  function dismissOverlay(): void {
+    if (!busy.value) overlayOpen.value = false
   }
 
   return {
@@ -113,7 +203,15 @@ export const useUpdateStore = defineStore('update', () => {
     initialize,
     checkNow,
     showModal,
-    closeModal
+    closeModal,
+    progress,
+    phase,
+    busy,
+    overlayOpen,
+    startUpdate,
+    cancelUpdate,
+    installUpdate,
+    dismissOverlay
   }
 })
 

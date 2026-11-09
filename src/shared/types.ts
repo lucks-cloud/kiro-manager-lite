@@ -1321,6 +1321,52 @@ export interface UpdateCheckResult {
   notes: string
   /** 发布时间 ISO 字符串，可能为空 */
   publishedAt: string
+  /**
+   * 当前平台与架构对应的安装包，应用内更新用它下载与校验。
+   * 走 Releases 页面兜底检查、或该平台没有对应包时为空，界面退回「去 GitHub 下载」。
+   */
+  asset?: UpdateAsset
+}
+
+/** Release 里的一个安装包附件 */
+export interface UpdateAsset {
+  name: string
+  /** 只接受本仓库 releases/download 下的地址 */
+  url: string
+  /** 字节数 */
+  size: number
+  /** GitHub 给每个附件算好的 sha256（十六进制），下载完逐字节校验 */
+  sha256: string
+}
+
+/** 应用内更新的阶段 */
+export type UpdatePhase =
+  | 'idle'
+  | 'downloading'
+  | 'verifying'
+  /** 下载并校验完成，等用户点「安装并重启」 */
+  | 'ready'
+  /** 已拉起安装助手，应用正在退出 */
+  | 'installing'
+  | 'error'
+  | 'canceled'
+
+/** 主进程推给界面的下载进度 */
+export interface UpdateProgress {
+  phase: UpdatePhase
+  version: string
+  fileName: string
+  /** 已下载字节数 */
+  received: number
+  /** 总字节数 */
+  total: number
+  /** 最近一段时间的平均速度（字节 / 秒） */
+  speed: number
+  error?: string
+  /** GitHub 给这个附件算好的 sha256，开始下载时就有 */
+  expectedSha256?: string
+  /** 下载完本地算出的 sha256，校验阶段之后才有 */
+  actualSha256?: string
 }
 
 /**

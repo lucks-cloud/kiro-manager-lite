@@ -165,6 +165,11 @@ const api = {
   saveSettings: (patch: unknown) => invoke('settings:save', patch),
   getAppInfo: () => invoke('app:info'),
   checkUpdate: () => invoke('app:check-update'),
+  getUpdateProgress: () => invoke('app:update-progress'),
+  downloadUpdate: (version: string) => invoke('app:update-download', version),
+  cancelUpdate: () => invoke('app:update-cancel'),
+  installUpdate: () => invoke('app:update-install'),
+  onUpdateProgress: (handler: (progress: unknown) => void) => subscribe('update:progress', handler),
 
   // 常用工具：Kiro Agent 权限
   getShellAutoApproveStatus: () => invoke('tools:shell-approve-status'),

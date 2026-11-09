@@ -9,6 +9,7 @@ import {
   type SaveDialogOptions
 } from 'electron'
 import { readFile, writeFile } from 'fs/promises'
+import { sendToRenderer } from './utils'
 import { existsSync } from 'fs'
 import { dirname, extname, join } from 'path'
 import {
@@ -57,6 +58,13 @@ import { setKiroVersions } from './kiroEndpoints'
 import { setProxyConfig } from './net'
 import { applyThemeMode } from './appearance'
 import { checkForUpdate } from './updater'
+import {
+  cancelUpdate,
+  downloadUpdate,
+  getUpdateProgress,
+  initUpdateInstaller,
+  installUpdate
+} from './updateInstaller'
 import {
   disableShellAutoApprove,
   enableShellAutoApprove,
@@ -732,6 +740,15 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
 
   // 检查更新：对比 GitHub 最新 Release 的版本号，只给结论不做下载
   handle('app:check-update', async () => ok(await checkForUpdate()))
+
+  // ============ 应用内更新：下载、取消、安装（进度经 update:progress 推送） ============
+  initUpdateInstaller((progress) => sendToRenderer(getWindow(), 'update:progress', progress))
+  handle('app:update-progress', () => ok(getUpdateProgress()))
+  handle('app:update-download', async (_e, version: string) =>
+    ok(await downloadUpdate(String(version ?? '')))
+  )
+  handle('app:update-cancel', async () => ok(await cancelUpdate()))
+  handle('app:update-install', async () => ok(await installUpdate()))
 
   // ============ 常用工具：Kiro Agent 权限 ============
   handle('tools:shell-approve-status', async () => ok(await getShellAutoApproveStatus()))

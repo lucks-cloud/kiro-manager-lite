@@ -13,8 +13,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.0.48-6c5ce7" alt="version">
-  <img src="https://img.shields.io/badge/updated-2026--11--08-2f9e44" alt="updated">
+  <img src="https://img.shields.io/badge/version-1.0.49-6c5ce7" alt="version">
+  <img src="https://img.shields.io/badge/updated-2026--11--09-2f9e44" alt="updated">
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="license">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="platform">
   <img src="https://img.shields.io/badge/Vue-3-42b883" alt="vue">
@@ -180,6 +180,7 @@
 - 系统托盘常驻，可查看当前账号、刷新、切号、复制邮箱和显示窗口；关闭行为支持最小化到托盘 / 退出 / 每次询问
 - macOS 中文菜单栏、自定义协议 `kiro-manager-lite://` / `kml://` 和单实例唤起
 - 管理页详情、图表和各类模态框按用户操作实时挂载，页面切换不再等待退出动画，减少大数据量下的白屏感
+- 应用内更新：发现新版本后在应用里下载当前平台的安装包，显示进度并可随时取消，下载完校验 SHA-256（并排显示 GitHub 与本地的值）；「安装并重启」时应用先正常退出，再由安装助手打开系统安装器（macOS pkg）、安装向导（Windows）或替换 AppImage（Linux）
 - 关于页手动检查更新会立即显示加载态；GitHub API 失败时自动重试并通过 Releases 页面兜底，失败后可重试或手动更新
 
 ---
@@ -188,14 +189,14 @@
 
 <p align="center">
   <a href="https://github.com/lucks-cloud/kiro-manager-lite/releases/latest">
-    <img src="https://img.shields.io/badge/⬇%20下载最新版-v1.0.48-6c5ce7?style=for-the-badge" alt="下载最新版">
+    <img src="https://img.shields.io/badge/⬇%20下载最新版-v1.0.49-6c5ce7?style=for-the-badge" alt="下载最新版">
   </a>
   <a href="https://github.com/lucks-cloud/kiro-manager-lite/releases">
     <img src="https://img.shields.io/badge/全部版本-Releases-24292f?style=for-the-badge&logo=github" alt="全部版本">
   </a>
 </p>
 
-**最新版本：v1.0.48**（2026-11-08） · 变更详情见 [CHANGELOG.md](CHANGELOG.md)
+**最新版本：v1.0.49**（2026-11-09） · 变更详情见 [CHANGELOG.md](CHANGELOG.md)
 
 ### 选择对应的安装包
 
@@ -203,10 +204,10 @@
 
 | 平台 | 文件 | 适用设备 | 快捷下载 |
 | --- | --- | --- | --- |
-| macOS (Apple Silicon) | `*-mac-arm64.pkg`（推荐）或 `*-mac-arm64.dmg` | Apple M 系列芯片 | [.pkg 安装包（推荐）](https://github.com/lucks-cloud/kiro-manager-lite/releases/download/v1.0.48/kiro-account-lite-1.0.48-mac-arm64.pkg) · [.dmg 镜像](https://github.com/lucks-cloud/kiro-manager-lite/releases/download/v1.0.48/kiro-account-lite-1.0.48-mac-arm64.dmg) |
-| macOS (Intel) | `*-mac-x64.pkg`（推荐）或 `*-mac-x64.dmg` | Intel 芯片 | [.pkg 安装包（推荐）](https://github.com/lucks-cloud/kiro-manager-lite/releases/download/v1.0.48/kiro-account-lite-1.0.48-mac-x64.pkg) · [.dmg 镜像](https://github.com/lucks-cloud/kiro-manager-lite/releases/download/v1.0.48/kiro-account-lite-1.0.48-mac-x64.dmg) |
-| Windows | `*-win-x64-setup.exe` | 64 位 Windows | [.exe 安装包](https://github.com/lucks-cloud/kiro-manager-lite/releases/download/v1.0.48/kiro-account-lite-1.0.48-win-x64-setup.exe) |
-| Linux | `*-linux-x86_64.AppImage` | 64 位 x86 Linux | [.AppImage](https://github.com/lucks-cloud/kiro-manager-lite/releases/download/v1.0.48/kiro-account-lite-1.0.48-linux-x86_64.AppImage) |
+| macOS (Apple Silicon) | `*-mac-arm64.pkg`（推荐）或 `*-mac-arm64.dmg` | Apple M 系列芯片 | [.pkg 安装包（推荐）](https://github.com/lucks-cloud/kiro-manager-lite/releases/download/v1.0.49/kiro-account-lite-1.0.49-mac-arm64.pkg) · [.dmg 镜像](https://github.com/lucks-cloud/kiro-manager-lite/releases/download/v1.0.49/kiro-account-lite-1.0.49-mac-arm64.dmg) |
+| macOS (Intel) | `*-mac-x64.pkg`（推荐）或 `*-mac-x64.dmg` | Intel 芯片 | [.pkg 安装包（推荐）](https://github.com/lucks-cloud/kiro-manager-lite/releases/download/v1.0.49/kiro-account-lite-1.0.49-mac-x64.pkg) · [.dmg 镜像](https://github.com/lucks-cloud/kiro-manager-lite/releases/download/v1.0.49/kiro-account-lite-1.0.49-mac-x64.dmg) |
+| Windows | `*-win-x64-setup.exe` | 64 位 Windows | [.exe 安装包](https://github.com/lucks-cloud/kiro-manager-lite/releases/download/v1.0.49/kiro-account-lite-1.0.49-win-x64-setup.exe) |
+| Linux | `*-linux-x86_64.AppImage` | 64 位 x86 Linux | [.AppImage](https://github.com/lucks-cloud/kiro-manager-lite/releases/download/v1.0.49/kiro-account-lite-1.0.49-linux-x86_64.AppImage) |
 
 不确定 Mac 是哪种芯片：**苹果菜单 → 关于本机**，看「芯片」一栏。
 
@@ -351,6 +352,7 @@ npm run build:mac
 │   ├── background*.png      DMG 窗口背景（1x / Retina）
 │   ├── entitlements.mac*.plist  macOS 权限声明
 │   ├── icon.png             应用图标源图
+│   ├── pkg-scripts/preinstall   pkg 安装前让仍在运行的应用正常退出
 │   ├── pkg-scripts/postinstall  pkg 装完后清除隔离属性，避免提示「已损坏」
 │   └── 安装指南.txt          打进 macOS DMG 的安装说明
 ├── docs/
@@ -447,7 +449,8 @@ src/
     usageHistory.ts      积分历史（防抖落盘）
     logger.ts            内存环形缓冲、分片落盘、接管 console
     tray.ts              系统托盘
-    updater.ts           版本检查
+    updater.ts           版本检查，并带出当前平台安装包的大小与 SHA-256
+    updateInstaller.ts   应用内更新：下载、校验、拉起安装助手并正常退出
     browser.ts           系统浏览器唤起
     childEnv.ts          拉起其它应用时剥离本应用自身的环境变量
     xlsxWriter.ts        Excel 导出
@@ -493,7 +496,7 @@ src/
 
 ## 🔖 更新日志
 
-各版本变更记录见 [CHANGELOG.md](CHANGELOG.md)，当前版本 v1.0.48，最后更新于 2026-11-08。
+各版本变更记录见 [CHANGELOG.md](CHANGELOG.md)，当前版本 v1.0.49，最后更新于 2026-11-09。
 
 ---
 
