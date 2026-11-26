@@ -336,7 +336,7 @@ async function confirmReset(): Promise<void> {
       <ul class="modal-points" style="margin-top: 14px">
         <li>
           默认组合 {{ DEFAULT_KIRO_IDE_VERSION }} / {{ DEFAULT_AWS_SDK_VERSION }} 是官方安装包里实际打包的搭配{{
-            defaultIsListed ? '' : '（不在下拉对照表的 26 个版本里，恢复后选择框按原值显示）'
+            defaultIsListed ? '' : `（不在下拉对照表的 ${KIRO_VERSION_PAIRS.length} 个版本里，恢复后选择框按原值显示）`
           }}。
         </li>
         <li>保存后立即作用于反代、测活、用量、令牌刷新与网关的后续请求。</li>
@@ -394,7 +394,7 @@ async function confirmReset(): Promise<void> {
 
 <!--
   浮层 teleport 到 body，scoped 样式够不着，靠 popupClassName 限定作用范围。
-  antd 默认每列高 180px，26 个 IDE 版本一屏只能看到 5 行，这里加高、加宽，更好点选。
+  antd 默认每列高 180px，几十个 IDE 版本一屏只能看到 5 行，这里加高、加宽，更好点选。
 -->
 <style>
 .kiro-version-cascader-dropdown .ant-cascader-menu {

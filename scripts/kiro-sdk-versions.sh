@@ -5,20 +5,28 @@
 # 新版还会额外打包 @amzn/kiro-runtime-service-typescript-client 等，这里一并列出。
 #
 # 用法：
-#   scripts/kiro-sdk-versions.sh                   # 处理全部版本
-#   scripts/kiro-sdk-versions.sh 0.10.78 1.4.121   # 只处理指定版本（会覆盖输出文件，只剩这几条）
+#   scripts/kiro-sdk-versions.sh                   # 增量：只处理输出文件里还没有（或上次失败）的版本
+#   scripts/kiro-sdk-versions.sh 1.5.49 1.5.44     # 只处理指定版本，结果合并进输出文件
+#   FORCE=1 scripts/kiro-sdk-versions.sh           # 已成功提取过的版本也重新处理
+#   MERGE=0 scripts/kiro-sdk-versions.sh 1.5.49    # 旧行为：覆盖输出文件，只剩本次处理的版本
 #
-# 新版本发布后：把版本号加进下面的 VERSIONS 重跑，生成的 JSON 直接被
-# src/shared/kiroVersion.ts 读取，「常用工具 → 请求头版本号」的级联下拉随之更新，无需改代码。
+# 新版本发布后：把版本号加进下面的 VERSIONS 重跑即可，已有条目不会重复下载。
+# 版本列表可对照官网 https://kiro.dev/downloads/ide/ 的更新日志（changelog）。
+# 生成的 JSON 直接被 src/shared/kiroVersion.ts 读取，「常用工具 → 请求头版本号」的级联下拉随之更新，无需改代码。
+# 注意：下载页的下载按钮有时停在旧版本（2026-11-26 按钮是 1.4.154，自动更新已推 1.5.49），以更新日志为准。
 #
 # 环境变量：
 #   DMG_DIR   dmg 存放目录，默认 ~/Downloads/kiro-dmgs（~/Downloads 下已有同名 dmg 会直接复用，不重复下载）
 #   OUT       输出 JSON 路径，默认 src/shared/data/kiro-sdk-versions.json（与脚本所在位置相对，在哪个目录执行都一样）
 #   KEEP_DMG  1=保留下载的 dmg（默认），0=提取完即删除，节省磁盘（不会删 ~/Downloads 里原有的文件）
+#   MERGE     1=合并进已有输出文件（默认），0=覆盖
+#   FORCE     1=已成功的版本也重新处理，默认 0
 #   https_proxy / all_proxy   curl 会自动走代理，例如 https_proxy=http://127.0.0.1:7897
 set -u
 
 VERSIONS=(
+  1.5.49 1.5.44 1.5.37 1.5.11
+  1.4.236 1.4.215 1.4.178 1.4.154
   1.4.121 1.4.62 1.4.51 1.4.26 1.4.10 1.4.5 1.4.0
   1.3.11 1.3.0
   1.2.56 1.2.37
@@ -38,6 +46,17 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 OUT=${OUT:-$SCRIPT_DIR/../src/shared/data/kiro-sdk-versions.json}
 mkdir -p "$(dirname "$OUT")"
 KEEP_DMG=${KEEP_DMG:-1}
+MERGE=${MERGE:-1}
+FORCE=${FORCE:-0}
+
+# 输出文件里已成功提取的 IDE 版本，增量模式下跳过
+DONE_VERSIONS=" "
+if [ "$MERGE" != 0 ] && [ "$FORCE" != 1 ] && [ -s "$OUT" ]; then
+  DONE_VERSIONS=" $(perl -MJSON::PP -e '
+    local $/; my $d = decode_json(<STDIN>);
+    print join(" ", map { $_->{ide} } grep { ($_->{status} // "") eq "ok" } @{ $d->{versions} || [] });
+  ' <"$OUT") "
+fi
 
 mkdir -p "$DMG_DIR"
 MNT=$(mktemp -d /tmp/kiro-dmg.XXXXXX)
@@ -84,12 +103,17 @@ add_entry() {
     "$1" "$2" "$sdk" "${4:-{\}}" "$5" >>"$ENTRIES"
 }
 
-echo "共 ${#VERSIONS[@]} 个版本，每个 dmg 约 200~300 MB，dmg 目录：$DMG_DIR"
+echo "共 ${#VERSIONS[@]} 个版本，每个 dmg 约 300~500 MB，dmg 目录：$DMG_DIR"
 
 for ver in "${VERSIONS[@]}"; do
   name="kiro-ide-$ver-stable-darwin-arm64.dmg"
   echo
   echo "==== $ver"
+
+  if [[ "$DONE_VERSIONS" == *" $ver "* ]]; then
+    echo "对照表里已有，跳过（FORCE=1 可重新处理）"
+    continue
+  fi
 
   # 1. 找本地已有的 dmg，没有再下载
   downloaded=0
@@ -144,15 +168,29 @@ done
 
 # 4. 汇总成格式化 JSON（JSON::PP 是 macOS 自带 perl 的核心模块）
 # 不开 utf8：note 里的中文按原始字节透传，避免二次编码成乱码
+# 合并模式：旧文件里的条目保留，本次处理的同名 IDE 版本以新结果为准；按 IDE 版本从新到旧排序
+EXISTING=/dev/null
+[ "$MERGE" != 0 ] && [ -s "$OUT" ] && EXISTING="$OUT"
+TMP_OUT=$(mktemp /tmp/kiro-sdk-out.XXXXXX)
 perl -MJSON::PP -e '
-  my @rows; while (<STDIN>) { chomp; push @rows, JSON::PP->new->decode($_) if length }
+  my ($existing) = @ARGV;
+  my %by_ide;
+  if ($existing ne "/dev/null") {
+    open my $fh, "<", $existing or die "读取 $existing 失败: $!";
+    local $/; my $old = JSON::PP->new->decode(<$fh>); close $fh;
+    $by_ide{$_->{ide}} = $_ for @{ $old->{versions} || [] };
+  }
+  while (<STDIN>) { chomp; next unless length; my $r = JSON::PP->new->decode($_); $by_ide{$r->{ide}} = $r }
+  sub vcmp { my @a = split /[.-]/, $_[0]; my @b = split /[.-]/, $_[1];
+    for my $i (0..2) { my $d = ($a[$i] // 0) <=> ($b[$i] // 0); return $d if $d } 0 }
+  my @rows = map { $by_ide{$_} } sort { vcmp($b, $a) } keys %by_ide;
   my $doc = {
     generatedAt => scalar(gmtime) . " UTC",
     note => q{awsSdkVersion 取 @aws/codewhisperer-streaming-client 的最高版本；同一 IDE 打包了多份时 packages 里会全部列出},
     versions => \@rows,
   };
   print JSON::PP->new->pretty->canonical->encode($doc);
-' <"$ENTRIES" >"$OUT"
+' "$EXISTING" <"$ENTRIES" >"$TMP_OUT" && mv "$TMP_OUT" "$OUT"
 
 echo
 echo "完成，对照表已写入 $OUT"
